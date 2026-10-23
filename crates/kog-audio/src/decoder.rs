@@ -1668,7 +1668,7 @@ pub fn read_standard_midi_subsong(
     if selected.title.is_none() {
         selected.title = document.title.as_deref().and_then(decode_midi_text);
     }
-    if let Some(trimmed) = trim_trailing_silence(&selected.bytes) {
+    if let Some(trimmed) = trim_silence(&selected.bytes) {
         selected.bytes = trimmed;
     }
     Ok(selected)
@@ -1676,18 +1676,24 @@ pub fn read_standard_midi_subsong(
 
 /// How long a song may keep sounding after its last note event.
 const MIDI_SILENT_TAIL_SECONDS: f64 = 3.0;
+/// Leading silence longer than this is cut down to `MIDI_LEAD_IN_SECONDS`.
+const MIDI_LONGEST_LEAD_IN_SECONDS: f64 = 1.0;
+/// Kept before the first note so setup messages (resets, patches) land.
+const MIDI_LEAD_IN_SECONDS: f64 = 0.5;
 
-/// Some files put End of Track long after their last note (Ultima 8's
-/// Chopping sits silent for 98 s). End every track a few seconds after the
-/// last note instead, for every synth, so the next song follows promptly.
-/// Returns `None` when the file already ends in time.
-fn trim_trailing_silence(bytes: &[u8]) -> Option<Vec<u8>> {
+/// Some files sit silent around their notes: Maniac Mansion's intro waits
+/// 4.5 s before its first note, and Ultima 8's Chopping keeps going 98 s
+/// after its last. For every synth, start half a second before the first
+/// note and end a few seconds after the last. Setup messages before the
+/// first note keep their order. Returns `None` when nothing needs cutting.
+fn trim_silence(bytes: &[u8]) -> Option<Vec<u8>> {
     let smf = Smf::parse(bytes).ok()?;
     let Timing::Metrical(ticks_per_beat) = smf.header.timing else {
         return None;
     };
     let ticks_per_beat = f64::from(ticks_per_beat.as_int().max(1));
     let mut tempos = Vec::new();
+    let mut first_note = None::<u64>;
     let mut last_note = None::<u64>;
     let mut end = 0_u64;
     for track in &smf.tracks {
@@ -1696,18 +1702,21 @@ fn trim_trailing_silence(bytes: &[u8]) -> Option<Vec<u8>> {
             tick += u64::from(event.delta.as_int());
             match event.kind {
                 TrackEventKind::Meta(MetaMessage::Tempo(tempo)) => tempos.push((tick, tempo.as_int())),
-                TrackEventKind::Midi {
-                    message: MidiMessage::NoteOn { .. } | MidiMessage::NoteOff { .. },
-                    ..
-                } => last_note = Some(last_note.map_or(tick, |last| last.max(tick))),
+                TrackEventKind::Midi { message, .. } => {
+                    if matches!(message, MidiMessage::NoteOn { vel, .. } if vel.as_int() > 0) {
+                        first_note = Some(first_note.map_or(tick, |first| first.min(tick)));
+                    }
+                    if matches!(message, MidiMessage::NoteOn { .. } | MidiMessage::NoteOff { .. }) {
+                        last_note = Some(last_note.map_or(tick, |last| last.max(tick)));
+                    }
+                }
                 _ => {}
             }
         }
         end = end.max(tick);
     }
-    let last_note = last_note?;
+    let (first_note, last_note) = (first_note?, last_note?);
     tempos.sort_by_key(|(tick, _)| *tick);
-    // Seconds at a tick, and the tick a number of seconds in.
     let seconds_at = |target: u64| {
         let (mut seconds, mut at, mut tempo) = (0.0, 0_u64, 500_000.0);
         for &(tick, next) in tempos.iter().take_while(|(tick, _)| *tick < target) {
@@ -1717,23 +1726,30 @@ fn trim_trailing_silence(bytes: &[u8]) -> Option<Vec<u8>> {
         }
         seconds + (target - at) as f64 * tempo / ticks_per_beat / 1e6
     };
-    let cutoff_seconds = seconds_at(last_note) + MIDI_SILENT_TAIL_SECONDS;
-    if seconds_at(end) <= cutoff_seconds {
-        return None;
-    }
-    let cutoff = {
+    let tick_at = |target_seconds: f64| {
         let (mut seconds, mut at, mut tempo) = (0.0, 0_u64, 500_000.0);
         for &(tick, next) in &tempos {
             let span = (tick - at) as f64 * tempo / ticks_per_beat / 1e6;
-            if seconds + span >= cutoff_seconds {
+            if seconds + span >= target_seconds {
                 break;
             }
             seconds += span;
             at = tick;
             tempo = f64::from(next);
         }
-        at + ((cutoff_seconds - seconds) * 1e6 * ticks_per_beat / tempo) as u64
+        at + ((target_seconds - seconds).max(0.0) * 1e6 * ticks_per_beat / tempo) as u64
     };
+    let cutoff_seconds = seconds_at(last_note) + MIDI_SILENT_TAIL_SECONDS;
+    let cutoff = if seconds_at(end) > cutoff_seconds { tick_at(cutoff_seconds) } else { u64::MAX };
+    let lead_seconds = seconds_at(first_note);
+    let shift = if lead_seconds > MIDI_LONGEST_LEAD_IN_SECONDS {
+        tick_at(lead_seconds - MIDI_LEAD_IN_SECONDS).min(first_note)
+    } else {
+        0
+    };
+    if cutoff == u64::MAX && shift == 0 {
+        return None;
+    }
     let tracks = smf
         .tracks
         .iter()
@@ -1742,18 +1758,16 @@ fn trim_trailing_silence(bytes: &[u8]) -> Option<Vec<u8>> {
             let (mut tick, mut written) = (0_u64, 0_u64);
             for event in track {
                 tick += u64::from(event.delta.as_int());
-                if matches!(event.kind, TrackEventKind::Meta(MetaMessage::EndOfTrack)) {
+                if matches!(event.kind, TrackEventKind::Meta(MetaMessage::EndOfTrack)) || tick > cutoff {
                     break;
                 }
-                if tick > cutoff {
-                    break;
-                }
+                let at = tick.saturating_sub(shift);
                 let mut event = *event;
-                event.delta = u28::new((tick - written) as u32);
-                written = tick;
+                event.delta = u28::new((at - written) as u32);
+                written = at;
                 kept.push(event);
             }
-            let end_of_track = tick.min(cutoff).max(written);
+            let end_of_track = tick.min(cutoff).saturating_sub(shift).max(written);
             kept.push(midly::TrackEvent {
                 delta: u28::new((end_of_track - written) as u32),
                 kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
@@ -2499,6 +2513,39 @@ fn create_midi_sequencer(
 
 #[cfg(any(test, feature = "test-util"))]
 mod tests {
+
+    #[test]
+    fn midi_silence_before_the_first_and_after_the_last_note_is_cut() {
+        use midly::num::{u4, u7, u24};
+        // Maniac Mansion's intro: 5 s beats at 300 ticks each, setup at 0,
+        // first note 270 ticks (4.5 s) in; End of Track 60 s after the last.
+        let event = |delta: u32, kind| midly::TrackEvent { delta: u28::new(delta), kind };
+        let note = |key: u8, on: bool| TrackEventKind::Midi {
+            channel: u4::new(1),
+            message: if on {
+                MidiMessage::NoteOn { key: u7::new(key), vel: u7::new(100) }
+            } else {
+                MidiMessage::NoteOff { key: u7::new(key), vel: u7::new(0) }
+            },
+        };
+        let track = vec![
+            event(0, TrackEventKind::Midi { channel: u4::new(1), message: MidiMessage::ProgramChange { program: u7::new(80) } }),
+            event(0, TrackEventKind::Meta(MetaMessage::Tempo(u24::new(5_000_000)))),
+            event(270, note(60, true)),
+            event(60, note(60, false)),
+            event(3600, TrackEventKind::Meta(MetaMessage::EndOfTrack)),
+        ];
+        let mut bytes = Vec::new();
+        Smf { header: Header::new(Format::SingleTrack, Timing::Metrical(midly::num::u15::new(300))), tracks: vec![track] }
+            .write_std(&mut bytes)
+            .unwrap();
+        let trimmed = Smf::parse(Box::leak(trim_silence(&bytes).expect("trimmed").into_boxed_slice())).unwrap();
+        let ticks: Vec<u32> = trimmed.tracks[0].iter().map(|event| event.delta.as_int()).collect();
+        // Setup stays first; the note starts 0.5 s (30 ticks) in; the song
+        // ends 3 s (180 ticks) after the note off.
+        assert_eq!(ticks, vec![0, 0, 30, 60, 180]);
+        assert!(matches!(trimmed.tracks[0][4].kind, TrackEventKind::Meta(MetaMessage::EndOfTrack)));
+    }
 
     /// How long each MIDI synth takes from picking a song to its first
     /// sound, after another song played:
