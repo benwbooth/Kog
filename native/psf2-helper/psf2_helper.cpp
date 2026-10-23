@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -398,6 +399,11 @@ void validateDirectory(const Bytes& reserved, uint32_t offset, unsigned int dept
         const uint32_t size = readU32(entry + 40);
         const uint32_t blockSize = readU32(entry + 44);
         const std::string nodePath = prefix.empty() ? name : prefix + "/" + name;
+        // PSF2 names match case-insensitively, as in Play! and Highly
+        // Experimental: many rips store PSF2.IRX.
+        std::string lowerPath = nodePath;
+        for(char& c : lowerPath) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const bool rootIrx = lowerPath == "psf2.irx";
         if(blockSize == 0)
         {
             validateDirectory(reserved, nodeOffset, depth + 1, activeDirectories, context, path,
@@ -422,7 +428,7 @@ void validateDirectory(const Bytes& reserved, uint32_t offset, unsigned int dept
         uint64_t cursor = static_cast<uint64_t>(nodeOffset) + blockCount * sizeof(uint32_t);
         uint64_t produced = 0;
         Bytes fileData;
-        if(nodePath == "psf2.irx") fileData.reserve(size);
+        if(rootIrx) fileData.reserve(size);
         for(uint64_t block = 0; block < blockCount; ++block)
         {
             const uint32_t compressedSize =
@@ -443,7 +449,7 @@ void validateDirectory(const Bytes& reserved, uint32_t offset, unsigned int dept
                 throw std::runtime_error("invalid PSF2 compressed filesystem block in " +
                                          displayPath(path));
             }
-            if(nodePath == "psf2.irx")
+            if(rootIrx)
             {
                 fileData.insert(fileData.end(), output.begin(), output.end());
             }
@@ -454,7 +460,7 @@ void validateDirectory(const Bytes& reserved, uint32_t offset, unsigned int dept
         {
             throw std::runtime_error("PSF2 filesystem file is truncated in " + displayPath(path));
         }
-        if(nodePath == "psf2.irx")
+        if(rootIrx)
         {
             validateIrx(fileData, path);
             hasRootIrx = true;
