@@ -1579,6 +1579,11 @@ fn build_furnace() {
     let mut config = cmake::Config::new(&source);
     // Furnace requires Cocoa on every Apple target, but only its GUI uses it
     // and iOS has none: satisfy the lookup with Foundation instead.
+    // On Android Furnace builds its SDL app (IS_MOBILE, an SDL config
+    // directory) unless it thinks it is in Termux; Kog wants the plain engine.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        config.define("TERMUX", "ON");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
         config.define("COCOA", "-framework Foundation");
         // iOS makes executables app bundles by default, and Furnace's unused
@@ -1622,14 +1627,13 @@ fn build_furnace() {
     let compiler = cc::Build::new().cpp(true).get_compiler();
     // Prefer the toolchain's own LLVM tools (the Android NDK ships them next
     // to clang); fall back to NM/OBJCOPY or the host's.
+    // The cross toolchain's own LLVM tools first: a host shell's NM/OBJCOPY
+    // (Nix sets them) cannot read Android objects.
     let tool = |name: &str, env: &str, fallback: &str| -> PathBuf {
-        if let Ok(path) = std::env::var(env) {
-            return PathBuf::from(path);
-        }
         let beside = compiler.path().parent().map(|dir| dir.join(name));
         match beside {
             Some(path) if path.is_file() => path,
-            _ => PathBuf::from(fallback),
+            _ => std::env::var(env).map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(fallback)),
         }
     };
     let nm = tool("llvm-nm", "NM", "nm");
