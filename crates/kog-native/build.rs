@@ -330,6 +330,99 @@ fn build_ffmpeg() {
     println!("cargo:rerun-if-changed=../../native/ffmpeg_encoder_bridge.h");
 }
 
+/// Libgme's NSF player has no FDS RAM: an FDS image runs from RAM at $6000-$DFFF,
+/// bank writes copy ROM pages into it, and it may load from $6000. Without it,
+/// FDS rips like Dracula II play silence. (file, exact original, replacement)
+const GME_FDS_PATCHES: &[(&str, &str, &str)] = &[
+    ("Nsf_Emu.h", r#"	byte sram [0x2000];
+"#, r#"	byte sram [0x2000];
+	// FDS: $6000-$DFFF is RAM; bank writes copy ROM pages into it.
+	byte fds_ram [0x8000];
+	bool fds_mode;
+	nes_addr_t fds_load_addr;
+"#),
+    ("Nsf_Emu.cpp", r#"	if ( load_addr < rom_begin || init_addr < rom_begin )
+"#, r#"	// FDS images may load into RAM from $6000.
+	bool const fds_low = (header_.chip_flags & fds_flag) && load_addr >= sram_addr && init_addr >= sram_addr;
+	if ( !fds_low && (load_addr < rom_begin || init_addr < rom_begin) )
+"#),
+    ("Nsf_Emu.cpp", r#"	pal_only = (header_.speed_flags & 3) == 1;"#, r#"	fds_mode = (header_.chip_flags & fds_flag) != 0;
+	fds_load_addr = load_addr;
+	pal_only = (header_.speed_flags & 3) == 1;"#),
+    ("Nsf_Emu.cpp", r#"	cpu::map_code( sram_addr, sizeof sram, sram );
+	for ( int i = 0; i < bank_count; ++i )
+		cpu_write( bank_select_addr + i, initial_banks [i] );"#, r#"	cpu::map_code( sram_addr, sizeof sram, sram );
+	if ( fds_mode )
+	{
+		memset( fds_ram, 0, sizeof fds_ram );
+		cpu::map_code( sram_addr, sizeof fds_ram, fds_ram );
+		bool switched = false;
+		for ( int i = 0; i < bank_count; ++i )
+			switched |= header_.banks [i] != 0;
+		if ( switched )
+		{
+			cpu_write( 0x5FF6, header_.banks [6] );
+			cpu_write( 0x5FF7, header_.banks [7] );
+			for ( int i = 0; i < bank_count; ++i )
+				cpu_write( bank_select_addr + i, initial_banks [i] );
+		}
+		else
+		{
+			// Unswitched: the image sits at its load address, $6000 up.
+			int const total = rom.size() / bank_size;
+			int const first = (int) (fds_load_addr - sram_addr) / bank_size;
+			for ( int slot = 0; slot < 10; ++slot )
+			{
+				int bank = slot - first;
+				if ( bank < 0 || bank >= total )
+				{
+					if ( slot < 8 ) continue;
+					bank = 0;
+				}
+				cpu_write( 0x5FF6 + slot, bank );
+			}
+		}
+	}
+	else
+	for ( int i = 0; i < bank_count; ++i )
+		cpu_write( bank_select_addr + i, initial_banks [i] );"#),
+    ("nes_cpu_io.h", r#"#include "Nsf_Emu.h"
+"#, r#"#include "Nsf_Emu.h"
+#include <string.h>
+"#),
+    ("nes_cpu_io.h", r#"	result = *cpu::get_code( addr );
+	if ( addr > 0x7FFF )
+		goto exit;"#, r#"	result = *cpu::get_code( addr );
+	if ( addr > 0x7FFF || (fds_mode && addr > 0x5FFF) )
+		goto exit;"#),
+    ("nes_cpu_io.h", r#"void Nsf_Emu::cpu_write( nes_addr_t addr, int data )
+{
+"#, r#"void Nsf_Emu::cpu_write( nes_addr_t addr, int data )
+{
+	if ( fds_mode )
+	{
+		unsigned ram = addr - sram_addr;
+		if ( ram < sizeof fds_ram )
+		{
+			fds_ram [ram] = data;
+			return;
+		}
+		unsigned slot = addr - 0x5FF6;
+		if ( slot < 10 )
+		{
+			int32_t offset = rom.mask_addr( data * (int32_t) bank_size );
+			if ( offset >= rom.size() )
+				set_warning( "Invalid bank" );
+			if ( slot < 8 )
+				memcpy( fds_ram + slot * bank_size, rom.at_addr( offset ), bank_size );
+			else
+				cpu::map_code( (slot + 6) * bank_size, bank_size, rom.at_addr( offset ) );
+			return;
+		}
+	}
+"#),
+];
+
 fn build_game_music_emu() {
     let source = Path::new("../../native/game-music-emu");
     if !source.join("CMakeLists.txt").is_file() {
@@ -340,6 +433,17 @@ fn build_game_music_emu() {
 
     let overlay = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("gme-inspection-source");
     native_overlay(source, &overlay, &|path, data| {
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let data = if GME_FDS_PATCHES.iter().any(|(file, _, _)| *file == name) {
+            let mut text = String::from_utf8(data).unwrap();
+            for (_, before, after) in GME_FDS_PATCHES.iter().filter(|(file, _, _)| *file == name) {
+                assert_eq!(text.matches(before).count(), 1, "GME FDS overlay needs updating in {name}");
+                text = text.replacen(before, after, 1);
+            }
+            text.into_bytes()
+        } else {
+            data
+        };
         if path.extension().is_some_and(|ext| ext == "h") {
             let mut text = String::from_utf8(data).unwrap();
             text = text.replace("private:", "private: friend struct KogGmeInspector;")

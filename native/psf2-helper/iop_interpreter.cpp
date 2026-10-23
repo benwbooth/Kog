@@ -37,11 +37,13 @@ void KogIopInterpreter::write(unsigned index, uint32 value)
     m_cpu.m_State.nGPR[index].nD0 = static_cast<int64>(signed32(value));
     m_writtenRegister = index;
 }
+// Loads complete immediately, as in Play!'s recompiler and the other PSF
+// players. Real R3000 load delays break rips whose code was only ever run on
+// such players (Dragon Warrior VII reads a value in its own delay slot).
 void KogIopInterpreter::load(unsigned index, uint32 value)
 {
     if(m_exception) return;
-    m_nextLoadRegister = index;
-    m_nextLoadValue = value;
+    write(index, value);
 }
 void KogIopInterpreter::PrepareInterrupt()
 {
@@ -75,7 +77,9 @@ uint8* KogIopInterpreter::region(Region& cache, const CMemoryMap::MEMORYMAPELEME
 }
 uint32 KogIopInterpreter::read(uint32 value, unsigned width)
 {
-    if(value & (width - 1)) { exception(4, value); return 0; }
+    // Misaligned accesses use the aligned unit, as Play!'s recompiler does,
+    // instead of raising an address error the HLE BIOS has no handler for.
+    value &= ~uint32(width - 1);
     const uint32 physical = address(value);
     auto* map = m_cpu.m_pMemoryMap;
     // Cache-control reads do not touch the host. This is the R3000 BIU register.
@@ -92,7 +96,7 @@ uint32 KogIopInterpreter::read(uint32 value, unsigned width)
 }
 void KogIopInterpreter::store(uint32 value, unsigned width, uint32 data)
 {
-    if(value & (width - 1)) { exception(5, value); return; }
+    value &= ~uint32(width - 1);
     if(value == 0xfffe0130U) return;
     // Isolated cache writes must not corrupt the backing RAM during cache flushes.
     if((m_cpu.m_State.nCOP0[CCOP_SCU::STATUS] & (1U << 16)) && value < 0xa0000000U) return;
@@ -155,7 +159,10 @@ int KogIopInterpreter::Execute(int quota)
 #ifdef DEBUGGER_INCLUDED
     m_break = false;
 #endif
-    while(s.cycleQuota > 0 && !s.nHasException)
+    // Never stop between a branch and its delay slot: interrupts are only taken
+    // outside delay slots, so a `j self; nop` idle loop that always ran out of
+    // quota on the jump would never see one (and the music never starts).
+    while((s.cycleQuota > 0 || s.nDelayedJumpAddr != MIPS_INVALID_PC) && !s.nHasException)
     {
         m_pc = s.nPC;
 #ifdef DEBUGGER_INCLUDED

@@ -51,8 +51,8 @@ static void semanticTests()
     {
         Machine m; m.set(1, 0x8000); m.set(2, 7); m.word(0x8000, 99);
         m.program({I(35,2,1,0),R(0x21,3,2,0),R(0x21,4,2,0)});
-        m.run(1); require(m.reg(2) == 7, "load becomes visible too early");
-        m.run(1); require(m.reg(2) == 99 && m.reg(3) == 7, "load delay across Execute calls");
+        m.run(1); require(m.reg(2) == 99, "loads complete immediately, like Play!'s recompiler");
+        m.run(1); require(m.reg(3) == 99, "the next instruction sees the loaded value");
         m.run(1); require(m.reg(4) == 99, "load never became visible");
     }
     {
@@ -63,11 +63,11 @@ static void semanticTests()
     {
         Machine m; m.set(1,0x8000); m.word(0x8000,99); m.word(0x8004,100); m.set(2,7);
         m.program({I(35,2,1,0),I(35,2,1,4),R(0x21,3,2,0),0}); m.run(3);
-        require(m.reg(3) == 7 && m.reg(2) == 100, "consecutive loads to same register");
+        require(m.reg(3) == 100 && m.reg(2) == 100, "consecutive loads to same register");
     }
     {
         Machine m; m.program({I(4,0,0,2),I(9,2,0,3),I(9,2,0,9),I(9,3,0,5)});
-        m.run(1); require(m.cpu.m_State.nPC == 0x1004 && m.cpu.m_State.nDelayedJumpAddr == 0x100c, "branch delay state");
+        m.run(1); require(m.cpu.m_State.nPC == 0x100c && m.reg(2) == 3, "a quota never ends between a branch and its delay slot");
         m.run(2); require(m.reg(2) == 3 && m.reg(3) == 5, "taken branch/delay slot");
     }
     {
@@ -84,8 +84,8 @@ static void semanticTests()
                 "JR target equal to Play invalid-PC sentinel must still fault after delay slot");
     }
     {
-        Machine m; m.set(1,0x8000);m.word(0x8000,123);m.program({I(35,2,1,0),I(35,2,1,1)});m.run(2);
-        require(m.reg(2)==123 && m.cpu.m_State.nCOP0[8]==0x8001,"faulting load lost previous pending load");
+        Machine m; m.set(1,0x8000);m.word(0x8000,123);m.word(0x8004,5);m.program({I(35,2,1,0),I(35,3,1,5)});m.run(2);
+        require(m.reg(2)==123 && m.reg(3)==5,"misaligned LW reads the aligned word");
     }
     for(unsigned offset=0;offset<4;++offset)
     {
@@ -117,9 +117,8 @@ static void semanticTests()
                 m.cpu.m_State.nCOP0[13]==0x80000030,"overflow exception in branch delay slot");
     }
     {
-        Machine m; m.set(1,0x8001); m.set(2,17); m.program({I(35,2,1,0)}); m.run(1);
-        require(m.reg(2)==17 && m.cpu.m_State.nCOP0[8]==0x8001 &&
-                m.cpu.m_State.nCOP0[13]==16,"misaligned LW exception");
+        Machine m; m.set(1,0x8001); m.set(2,0xabcd); m.program({I(41,2,1,0)}); m.run(1);
+        require(m.ram[0x8000]==0xcd && m.ram[0x8001]==0xab && m.cpu.m_State.nPC==0x1004,"misaligned SH writes the aligned half");
     }
     {
         Machine m; m.set(1,0x3f); m.program({I(16,1,4,12<<11),I(16,2,0,12<<11),0,0x42000010}); m.run(4);
