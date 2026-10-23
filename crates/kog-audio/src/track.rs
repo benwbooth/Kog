@@ -185,6 +185,11 @@ impl Track {
             // "Theme" alone says little; "Theme · Shofixti" says which.
             track.title = format!("{} · {name}", track.title.trim());
         }
+        if track.album.trim().is_empty() {
+            if let Some(album) = album_from_folder(&track.source) {
+                track.album = album;
+            }
+        }
         track.refresh_search_text();
         track
     }
@@ -337,6 +342,51 @@ fn filename_adding_to_short_title(title: &str, source: &PlaybackSource) -> Optio
     (informative && adds && !repeats).then_some(name)
 }
 
+/// An album name from where the song lives: its archive, else its folder,
+/// skipping folders that only sort versions or discs (`GM`, `MT`, `CD1`).
+/// Rip folder names lose their tags: `Doom (1995-09)(iD)[SNES]` is "Doom",
+/// `Street_Fighter_II_(CP_System)` is "Street Fighter II".
+fn album_from_folder(source: &PlaybackSource) -> Option<String> {
+    let start = match &source.archive_origin {
+        Some(origin) => {
+            let inner = Path::new(&origin.entry_name).parent().filter(|parent| !parent.as_os_str().is_empty());
+            match inner {
+                Some(inner) => inner.to_path_buf(),
+                None => return clean_folder_name(origin.archive_path.file_stem()?.to_string_lossy().as_ref()),
+            }
+        }
+        None => source.path.parent()?.to_path_buf(),
+    };
+    const SORTING: &[&str] = &[
+        "gm", "gs", "mt", "mt32", "mt-32", "sc55", "midi", "mid", "music", "bgm", "audio", "sound", "sounds",
+        "songs", "extract", "ver2", "files", "data",
+    ];
+    let mut folder = start.as_path();
+    for _ in 0..3 {
+        let name = folder.file_name()?.to_string_lossy().to_lowercase();
+        let disc = ["cd", "disc", "disk", "side"]
+            .iter()
+            .any(|word| name.strip_prefix(word).is_some_and(|rest| rest.trim().chars().all(|c| c.is_ascii_digit() || c.is_alphabetic() && rest.trim().len() == 1)));
+        if !SORTING.contains(&name.as_str()) && !disc {
+            break;
+        }
+        folder = folder.parent()?;
+    }
+    clean_folder_name(folder.file_name()?.to_string_lossy().as_ref())
+}
+
+fn clean_folder_name(name: &str) -> Option<String> {
+    let name = name.replace('_', " ");
+    // Rip tags start at the first "(" or "[" after the name.
+    let name = match name.find(['(', '[']) {
+        Some(0) | None => name.as_str(),
+        Some(at) => &name[..at],
+    };
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = name.trim_end_matches([' ', '-', ',']).to_owned();
+    (name.chars().filter(|c| c.is_alphanumeric()).count() >= 2).then_some(name)
+}
+
 /// The filename as a title: no extension, separators as spaces, and rip
 /// prefixes such as `PCGame-COMMANDER_KEEN-` dropped. The subsong number
 /// stays for files holding several songs.
@@ -434,6 +484,12 @@ mod tests {
         assert_eq!(filename_adding_to_short_title("Combat", &source("TRACK2.S3M")), None);
         assert_eq!(filename_adding_to_short_title("Shofixti's Theme", &source("Shofixti.mid")), None);
         assert_eq!(title_from_filename(&source("PCGame-COMMANDER_KEEN-fish_polka.mid")).as_deref(), Some("fish polka"));
+        let at = |path: &str| PlaybackSource::from_path(PathBuf::from(path));
+        assert_eq!(album_from_folder(&at("/m/gamemids/King's Quest 4/GM/01 - Introduction.MID")).as_deref(), Some("King's Quest 4"));
+        assert_eq!(album_from_folder(&at("/m/SNES/Doom (1995-09)(iD)(Sculptured)[SNES]/02 At Doom's Gate.spc")).as_deref(), Some("Doom"));
+        assert_eq!(album_from_folder(&at("/m/Arcade/Street_Fighter_II_-_The_World_Warrior_(CP_System)/01 Title.vgz")).as_deref(),
+                   Some("Street Fighter II - The World Warrior"));
+        assert_eq!(album_from_folder(&at("/m/Final Fantasy 10 OST/Disc 1/15.mp3")).as_deref(), Some("Final Fantasy 10 OST"));
         assert_eq!(title_from_filename(&source("02 - Debut Of The Chron-O-John.mid")).as_deref(), Some("02 - Debut Of The Chron-O-John"));
     }
     use super::*;
