@@ -879,6 +879,53 @@ mod tests {
         shutdown_sc55_servers();
     }
 
+    /// Switching songs mid-note must not carry the old song into the next:
+    ///   KOG_SC55_ROMS=<rom dir> KOG_SC55_PROBE_MIDI=<a.mid> KOG_SC55_PROBE_NEXT=<b.mid>
+    ///   cargo test -p kog-audio -- --ignored sc55_switch_starts_clean --nocapture
+    #[test]
+    #[ignore = "needs KOG_SC55_ROMS, KOG_SC55_PROBE_MIDI and KOG_SC55_PROBE_NEXT"]
+    fn sc55_switch_starts_clean() {
+        let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("set {name}"));
+        let roms = PathBuf::from(var("KOG_SC55_ROMS"));
+        let first = std::fs::read(var("KOG_SC55_PROBE_MIDI")).expect("read first MIDI");
+        let next = std::fs::read(var("KOG_SC55_PROBE_NEXT")).expect("read next MIDI");
+        warm_sc55_server(&roms);
+        let opening = |bytes: &[u8], frames: usize| {
+            let started = std::time::Instant::now();
+            let mut source = Sc55::open(bytes, Path::new("probe.mid"), &roms).expect("linked render");
+            let mut first = vec![0.0_f32; 2];
+            let _ = source.render(&mut first);
+            println!("first PCM after {:?}", started.elapsed());
+            let _ = source.seek(Duration::ZERO);
+            let mut pcm = vec![0.0_f32; 2_048];
+            let mut out = Vec::new();
+            while out.len() < frames * 2 {
+                let produced = source.render(&mut pcm).expect("render");
+                if produced == 0 {
+                    break;
+                }
+                out.extend_from_slice(&pcm[..produced * 2]);
+            }
+            out
+        };
+        let rate = 32_000;
+        let clean = opening(&next, rate / 2);
+        // Leave the first song mid-note, the way picking another song does:
+        // the player still holds it while the next one opens.
+        let mut playing = Sc55::open(&first, Path::new("first.mid"), &roms).expect("linked render");
+        let mut pcm = vec![0.0_f32; 2_048];
+        for _ in 0..(rate * 3 / 1_024) {
+            playing.render(&mut pcm).expect("render");
+        }
+        let after = opening(&next, rate / 2);
+        drop(playing);
+        let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+        let difference = clean.iter().zip(&after).fold(0.0_f32, |peak, (a, b)| peak.max((a - b).abs()));
+        println!("next song opening peak {:.4}, after a switch {:.4}, largest difference {difference:.4}",
+                 peak(&clean), peak(&after));
+        assert!(difference < 0.01, "the previous song is still audible at the start of the next");
+    }
+
     #[test]
     fn linked_core_reports_its_pinned_version() {
         let version = unsafe { std::ffi::CStr::from_ptr(kog_sc55_version()) };
