@@ -142,9 +142,13 @@ FocusScope {
         id: rowData
         readonly property int playlist_revision: editor.revision
         readonly property int playlist_count: editor.rows.length
+        // The playing row moves without the queue index changing (a new
+        // playlist start lands at the same index), so also follow the
+        // workspace, whose revision moves whenever its playing row does.
         readonly property int current_index: {
             playlist_revision
             editor.app.current_index
+            editor.app.workspace_revision
             return editor.live ? editor.app.workspace_current_index() : -1
         }
         readonly property string playback_state: editor.app.playback_state
