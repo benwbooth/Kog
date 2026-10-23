@@ -86,6 +86,11 @@ fn main() {
     let mgba_output = build_mgba();
     build_ncsf(&mgba_output);
     build_ffmpeg();
+    // Last: it hides only the symbols that clash with the libraries above.
+    // Desktop only for now (its object merge uses the host nm/objcopy).
+    if !ios && std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
+        build_furnace();
+    }
 
     cc::Build::new()
         .cpp(true)
@@ -1557,6 +1562,122 @@ fn build_ncsf(mgba_output: &Path) {
     println!("cargo:rerun-if-changed=../../native/sdsf_bridge.h");
     println!("cargo:rerun-if-changed=../../native/usf_bridge.cpp");
     println!("cargo:rerun-if-changed=../../native/usf_bridge.h");
+}
+
+/// Furnace's engine (GPL-2.0-or-later) for FamiTracker, Furnace and DefleMask
+/// modules. The pinned checkout is configured headless as its own top-level
+/// project; `native/furnace-kog/kog_furnace.cmake` is injected after its
+/// `project()` and turns the engine sources into the `kog_furnace` library.
+fn build_furnace() {
+    let source = Path::new("../../native/furnace");
+    if !source.join("src/engine/engine.h").is_file() || !source.join("extern/fmt/CMakeLists.txt").is_file() {
+        panic!("Furnace sources are missing; run `git submodule update --init --recursive`");
+    }
+    let source = plain_absolute(source.canonicalize().expect("canonicalize the Furnace source directory"));
+    let bridge = plain_absolute(
+        Path::new("../../native/furnace-kog/kog_furnace.cmake")
+            .canonicalize()
+            .expect("canonicalize the Furnace bridge"),
+    );
+    let output = cmake::Config::new(&source)
+        .out_dir(PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("furnace"))
+        .profile("Release")
+        .define("CMAKE_PROJECT_furnace_INCLUDE", &bridge)
+        .define("BUILD_GUI", "OFF")
+        .define("USE_SDL2", "OFF")
+        .define("USE_SNDFILE", "OFF")
+        .define("USE_RTMIDI", "OFF")
+        .define("USE_BACKWARD", "OFF")
+        .define("USE_FREETYPE", "OFF")
+        .define("WITH_JACK", "OFF")
+        .define("WITH_PORTAUDIO", "OFF")
+        .define("WITH_LOCALE", "OFF")
+        .define("WITH_INSTRUMENTS", "OFF")
+        .define("WITH_WAVETABLES", "OFF")
+        .define("WITH_RENDER_OPENGL", "OFF")
+        .define("WITH_RENDER_OPENGL1", "OFF")
+        .define("WITH_RENDER_SDL", "OFF")
+        // Kog already links the system zlib; a second static copy would clash.
+        .define("SYSTEM_ZLIB", "ON")
+        .build_target("kog_furnace")
+        .build();
+    let build = output.join("build");
+    // Furnace vendors chip cores and helpers (blip_buf, emu2413, Nuked-OPL3,
+    // reSIDfp...) that other decoders link too. Merge it into one object, then
+    // make Furnace's copies of anything clashing private to it.
+    let archives = [
+        build.join("libkog_furnace.a"),
+        build.join("extern/fmt/libfmt.a"),
+        build.join("extern/fftw/libfftw3.a"),
+    ];
+    let merged = build.join("kog_furnace_merged.o");
+    let compiler = cc::Build::new().cpp(true).get_compiler();
+    let mut link = std::process::Command::new(compiler.path());
+    link.args(["-r", "-nostdlib", "-Wl,--whole-archive"]);
+    link.args(&archives);
+    link.args(["-Wl,--no-whole-archive", "-o"]).arg(&merged);
+    let status = link.status().expect("run the linker to merge Furnace");
+    assert!(status.success(), "merging Furnace into one object failed");
+    // Localize Furnace's strong definitions that another native library in
+    // this crate also defines. (Hiding everything would also hide C++
+    // COMDAT template copies, which the final link must still merge.)
+    let nm = std::env::var("NM").unwrap_or_else(|_| "nm".to_owned());
+    let strong = |path: &Path| -> std::collections::BTreeSet<String> {
+        let output = std::process::Command::new(&nm)
+            .args(["-g", "--defined-only"])
+            .arg(path)
+            .output()
+            .expect("run nm");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let (_, kind, name) = (fields.next()?, fields.next()?, fields.next()?);
+                matches!(kind, "T" | "D" | "B" | "R").then(|| name.to_owned())
+            })
+            .collect()
+    };
+    let ours = strong(&merged);
+    let mut theirs = std::collections::BTreeSet::new();
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
+    let mut stack = vec![out_dir.clone()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.starts_with(out_dir.join("furnace")) {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "a") {
+                theirs.extend(strong(&path));
+            }
+        }
+    }
+    let clashes: Vec<_> = ours.intersection(&theirs).filter(|name| !name.starts_with("kog_furnace_")).cloned().collect();
+    if !clashes.is_empty() {
+        let objcopy = std::env::var("OBJCOPY").unwrap_or_else(|_| "objcopy".to_owned());
+        let list = build.join("kog_furnace_localize.txt");
+        fs::write(&list, clashes.join("\n")).expect("write the Furnace symbol list");
+        let status = std::process::Command::new(&objcopy)
+            .arg(format!("--localize-symbols={}", list.display()))
+            .arg(&merged)
+            .status()
+            .expect("run objcopy on Furnace");
+        assert!(status.success(), "hiding Furnace's clashing symbols failed");
+    }
+    let bundle = build.join("libkog_furnace_bundle.a");
+    let _ = std::fs::remove_file(&bundle);
+    let archiver = cc::Build::new().get_archiver();
+    let mut archive = std::process::Command::new(archiver.get_program());
+    archive.args(archiver.get_args()).arg("rcs").arg(&bundle).arg(&merged);
+    assert!(archive.status().expect("archive Furnace").success(), "archiving Furnace failed");
+    println!("cargo:rustc-link-search=native={}", build.display());
+    println!("cargo:rustc-link-lib=static=kog_furnace_bundle");
+    println!("cargo:rustc-link-lib=z");
+    watch_native("../../native/furnace-kog");
+    println!("cargo:rerun-if-changed=../../native/furnace/src");
 }
 
 fn build_psf2_helper() {

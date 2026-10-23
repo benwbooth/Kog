@@ -25,6 +25,10 @@ pub mod export;
 pub mod offline;
 pub mod ffmpeg_encoder;
 pub mod ffmpeg_decoder;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub mod furnace;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub mod furnace_decoder;
 pub mod gme;
 pub mod gme_decoder;
 pub mod gsf;

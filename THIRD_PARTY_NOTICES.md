@@ -234,6 +234,19 @@ MIT license, minimp3 under CC0-1.0, and stb_vorbis under its MIT option. Their
 complete source and license notices remain in `native/openmpt/include`; Kog's
 MIT text is also in `LICENSES/MIT.txt`.
 
+## Furnace
+
+The `native/furnace` Git submodule is the official
+[Furnace](https://github.com/tildearrow/furnace) source at tag `v0.6.8.3`
+(commit `f2619dbd9`). Kog builds its headless engine, with the sound chip
+cores it bundles, into the decoder for FamiTracker (`.ftm`, `.0cc`, `.dnm`),
+Furnace (`.fur`) and DefleMask (`.dmf`) modules, through the bridge in
+`native/furnace-kog`. Furnace is Copyright (c) 2021-2026 tildearrow and
+contributors and distributed under the GNU General Public License, version 2
+or (at your option) any later version; see `native/furnace/LICENSE`. Its
+bundled cores keep their own notices under `native/furnace/extern` and
+`native/furnace/src/engine/platform/sound`.
+
 ## HivelyTracker
 
 The `native/hivelytracker` Git submodule is the official

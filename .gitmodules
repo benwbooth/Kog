@@ -100,3 +100,6 @@
 [submodule "native/bzip2"]
 	path = native/bzip2
 	url = https://github.com/libarchive/bzip2.git
+[submodule "native/furnace"]
+	path = native/furnace
+	url = https://github.com/tildearrow/furnace.git

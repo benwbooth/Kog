@@ -447,7 +447,7 @@ impl Default for DecoderRegistry {
 
 impl DecoderRegistry {
     pub fn new(settings: DecoderSettings) -> Self {
-        Self {
+        let mut registry = Self {
             backends: vec![
                 Box::new(crate::apl_decoder::AplBackend),
                 Box::new(crate::cuesheet_decoder::CueSheetBackend),
@@ -474,7 +474,19 @@ impl DecoderRegistry {
             ],
             archive_workspaces: Arc::new(Mutex::new(Vec::new())),
             archive_tree_cache: Arc::new(Mutex::new(ArchiveTreeCache::new())),
+        };
+        // Ahead of OpenMPT, which shares the .ftm and .dmf extensions with
+        // other formats; Furnace only claims files with its own magic.
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
+            let openmpt = registry
+                .backends
+                .iter()
+                .position(|backend| backend.id() == "libopenmpt")
+                .unwrap_or(registry.backends.len());
+            registry.backends.insert(openmpt, Box::new(crate::furnace_decoder::FurnaceBackend));
         }
+        registry
     }
 
     /// Build an independent decoder set for background metadata work while
