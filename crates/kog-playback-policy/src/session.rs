@@ -33,6 +33,17 @@ fn same_locator(a: &Value, b: &Value) -> bool {
         })
 }
 
+/// Whether a queue entry is `source` itself or one of the songs a playlist row
+/// expanded into: a row without a fragment plays as `#0`, `#1`... (multi-song
+/// files, and single files that report one subsong).
+fn expands_from(source: &Value, expanded: &Value) -> bool {
+    let fragment = source["fragment"].as_str().unwrap_or("");
+    ["kind", "path", "entry"].into_iter().all(|key| {
+        let default = if key == "kind" { "local" } else { "" };
+        source[key].as_str().unwrap_or(default) == expanded[key].as_str().unwrap_or(default)
+    }) && (fragment.is_empty() || fragment == expanded["fragment"].as_str().unwrap_or(""))
+}
+
 /// Common projection for the HTTP, Swift and Kotlin track representations.
 pub fn metadata_from_json(value: &Value) -> SortRow {
     let text = |key: &str| {
@@ -711,16 +722,39 @@ impl<T: Item> Session<T> {
                     .iter()
                     .position(|row| row.id == playback.source_rows[source]);
             }
+            // A later song of a row that expanded into several follows the
+            // nearest mapped row at or before it that it expanded from.
+            if let Some(at) = playback.queue_rows.iter().position(|row| row == queue_row) {
+                let entry = self.queue.get(current)?.entry();
+                let found = playback
+                    .targets
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(source, target)| {
+                        let target = playback.queue_rows.iter().position(|row| Some(row) == target.as_ref())?;
+                        (target <= at).then_some((target, source))
+                    })
+                    .max()
+                    .and_then(|(_, source)| rows.iter().position(|row| row.id == playback.source_rows[source]))
+                    .filter(|&index| expands_from(&rows[index].entry, &entry));
+                if found.is_some() {
+                    return found;
+                }
+            }
         }
         // Playback can also originate in the queue or another tab. A unique
         // locator is safe to project; duplicate rows require their identities.
         let entry = self.queue.get(current)?.entry();
-        let mut matching = rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| same_locator(&row.entry, &entry));
-        let (index, _) = matching.next()?;
-        matching.next().is_none().then_some(index)
+        let unique = |matches: &dyn Fn(&Value) -> bool| {
+            let mut matching = rows.iter().enumerate().filter(|(_, row)| matches(&row.entry));
+            let (index, _) = matching.next()?;
+            matching.next().is_none().then_some(index)
+        };
+        if rows.iter().any(|row| same_locator(&row.entry, &entry)) {
+            unique(&|row| same_locator(row, &entry))
+        } else {
+            unique(&|row| expands_from(row, &entry))
+        }
     }
 
     pub fn snapshot(&self) -> Snapshot<'_, T> {
@@ -1317,7 +1351,7 @@ impl<T: Item> Session<T> {
                 for index in source_range {
                     if let Some(offset) = expanded[next..queue_range.end]
                         .iter()
-                        .position(|entry| same_locator(&source[index].1, entry))
+                        .position(|entry| expands_from(&source[index].1, entry))
                     {
                         next += offset;
                         targets[index] = Some(self.rows[start + next]);

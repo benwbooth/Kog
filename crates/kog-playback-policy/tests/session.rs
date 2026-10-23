@@ -374,6 +374,51 @@ fn tab_start_plays_the_clicked_song_first_and_places_the_rest_around_it() {
 }
 
 #[test]
+fn the_playlist_follows_songs_that_play_as_subsongs_of_its_rows() {
+    // vgmstream reports one subsong for a plain file (`#0`), and multi-song
+    // files expand into several; the tab must still mark the playing row.
+    let subsong = |title: &str, n: u32| {
+        let mut value = row(title);
+        value["fragment"] = json!(n.to_string());
+        value
+    };
+    let mut s = session("tab-subsongs");
+    tab(&mut s, &["first", "multi", "last"]);
+    workspace_action(&mut s, workspace::Command::Select { indices: vec![0] });
+    let effects = workspace_action(
+        &mut s,
+        workspace::Command::Queue {
+            action: workspace::QueueAction::PlayNow,
+        },
+    );
+    for effect in effects.into_iter().rev() {
+        if let Effect::Expand { token, entries, .. } = effect {
+            let tracks = entries
+                .iter()
+                .flat_map(|entry| {
+                    let title = entry["title"].as_str().unwrap().to_owned();
+                    let count = if title == "multi" { 3 } else { 1 };
+                    (0..count).map(move |n| subsong(&title, n))
+                })
+                .collect();
+            s.dispatch(Command::Complete {
+                token,
+                result: IoResult::Expanded { tracks },
+            });
+        }
+    }
+    assert_eq!(s.workspace_current_index(), Some(0));
+    for (song, shown) in [(1, 1), (2, 1), (3, 1), (4, 2)] {
+        s.dispatch(Command::Navigate {
+            event: NavigationEvent::Next,
+        });
+        let current = &s.queue()[s.current().unwrap()];
+        assert_eq!(current["fragment"], if song == 4 { "0".to_string() } else { (song - 1).to_string() });
+        assert_eq!(s.workspace_current_index(), Some(shown), "song {song}");
+    }
+}
+
+#[test]
 fn a_late_play_effect_still_starts_the_clicked_song() {
     // Hosts that run effects after later commands (Qt) must not play the
     // song the earlier part of the playlist shifted into the old index.
