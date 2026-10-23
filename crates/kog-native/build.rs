@@ -1581,6 +1581,9 @@ fn build_furnace() {
     // and iOS has none: satisfy the lookup with Foundation instead.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
         config.define("COCOA", "-framework Foundation");
+        // iOS makes executables app bundles by default, and Furnace's unused
+        // tracker executable has no bundle install rule.
+        config.define("CMAKE_MACOSX_BUNDLE", "OFF");
     }
     let output = config
         .out_dir(PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("furnace"))
