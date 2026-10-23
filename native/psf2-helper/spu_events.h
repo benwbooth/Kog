@@ -12,6 +12,9 @@ inline auto& kog_spu_note_events()
 }
 inline void kog_spu_reset_events(const void* spu) { kog_spu_note_events().erase(spu); }
 inline void kog_spu_note_on(const void* spu, unsigned voice) { ++kog_spu_note_events()[spu][voice]; }
+// The rip's `volume` tag: applied to each voice before it joins the mix, so
+// a hot rip is turned down without first clipping.
+inline float& kog_spu_gain() { static thread_local float gain = 1.0f; return gain; }
 inline uint64_t kog_spu_note_on_count(const void* spu, unsigned voice)
 {
     const auto& events = kog_spu_note_events();

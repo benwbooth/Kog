@@ -876,6 +876,17 @@ int runHelper(const fs::path& path, const char* startText, const char* defaultLe
     }
     Tags tags = ps2 ? context.fallbackTags : ps1.tags;
     for(const auto& tag : root.tags) tags[tag.first] = tag.second;
+    {
+        kog_spu_gain() = 1.0f;
+        const auto volume = tags.find("volume");
+        if(volume != tags.end())
+        {
+            char* end = nullptr;
+            const float gain = std::strtof(volume->second.c_str(), &end);
+            if(end != volume->second.c_str() && std::isfinite(gain) && gain > 0.0f && gain <= 16.0f)
+                kog_spu_gain() = gain;
+        }
+    }
 
     uint32_t lengthMilliseconds = 0;
     uint32_t fadeMilliseconds = 0;

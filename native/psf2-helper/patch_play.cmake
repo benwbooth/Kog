@@ -51,6 +51,8 @@ kog_replace_checked(spu_source "memset(m_channel, 0, sizeof(m_channel));"
     "memset(m_channel, 0, sizeof(m_channel));\n\tkog_spu_reset_events(this);")
 kog_replace_checked(spu_source "channel.status = KEY_ON;"
     "kog_spu_note_on(this, i);\n\t\t\tchannel.status = KEY_ON;")
+kog_replace_checked(spu_source "inputSample = (inputSample * volumeLevel) / 0x7FFF;"
+    "inputSample = (inputSample * volumeLevel) / 0x7FFF;\n\tif(kog_spu_gain() != 1.0f) inputSample = static_cast<int32>(inputSample * kog_spu_gain());")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/Kog_Iop_SpuBase.cpp" "${spu_source}")
 list(REMOVE_ITEM play_sources iop/Iop_SubSystem.cpp iop/IopBios.cpp psx/PsxBios.cpp iop/Iop_SpuBase.cpp)
 set_property(TARGET PlayCore PROPERTY SOURCES "${play_sources}")
