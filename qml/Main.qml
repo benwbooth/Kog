@@ -43,10 +43,8 @@ ApplicationWindow {
     readonly property bool transportReady:
         appController.playlist_count > 0 || appController.radio_active || hasLoadedTrack
     readonly property int activeSourceIndex: appController.current_index
-    onActiveSourceIndexChanged: {
-        if (appController.radio_active)
-            Qt.callLater(root.revealPlayingRadioTrack)
-    }
+    // Keep the playing song in view as playback moves on (shuffle, radio).
+    onActiveSourceIndexChanged: Qt.callLater(root.revealPlayingTrack)
     readonly property int playlistRowCount: appController.playlist_count
     onPlaylistRowCountChanged: {
         if (appController.radio_active)
@@ -913,7 +911,12 @@ ApplicationWindow {
     }
 
     function revealPlayingRadioTrack() {
-        if (!appController.radio_active || activeSourceIndex < 0)
+        if (appController.radio_active)
+            revealPlayingTrack()
+    }
+
+    function revealPlayingTrack() {
+        if (activeSourceIndex < 0 || !playlistView.visible)
             return
         // Radio appends a source track before changing current_index. Locate
         // the new track in visible order, which may be sorted.

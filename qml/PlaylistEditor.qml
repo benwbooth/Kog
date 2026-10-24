@@ -40,6 +40,19 @@ FocusScope {
         // every visible cell for each batch made scrolling stutter.
         function onWorkspace_metadata_revisionChanged() { if (!metadataBump.running) metadataBump.start() }
     }
+    // Keep the playing song in view as playback moves on (shuffle, next).
+    // Switching to the tab keeps where it was scrolled; only a song change
+    // while it is in front moves the view.
+    readonly property int playingRow: rowData.current_index
+    property bool switching: false
+    onPlayingRowChanged: if (!switching) Qt.callLater(revealPlaying)
+    function revealPlaying() {
+        if (!live || playingRow < 0)
+            return
+        const at = rows.indexOf(playingRow)
+        if (at >= 0)
+            list.positionViewAtIndex(at, ListView.Contain)
+    }
     Timer {
         id: metadataBump
         interval: 1000
@@ -49,7 +62,11 @@ FocusScope {
     function bumpIfChanged() {
         if (app.workspace_tab_generation(activeKey) !== seenGeneration) bump()
     }
-    onLiveChanged: if (live) bumpIfChanged()
+    onLiveChanged: {
+        switching = true
+        Qt.callLater(() => editor.switching = false)
+        if (live) bumpIfChanged()
+    }
     onActiveKeyChanged: {
         dropTarget = -1
         scrollSave.stop()
