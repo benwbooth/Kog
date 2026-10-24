@@ -1,7 +1,7 @@
 //! Shared queue, shuffle, and repeat policy for native and browser players.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub mod bridge;
 pub mod ffi;
@@ -19,6 +19,9 @@ pub enum ShuffleMode {
     Off,
     Albums,
     All,
+    /// All songs in random order, never two from one album in a row when
+    /// another album's song is left to put between them.
+    Spread,
 }
 
 impl ShuffleMode {
@@ -27,6 +30,7 @@ impl ShuffleMode {
             Self::Off => "off",
             Self::Albums => "albums",
             Self::All => "all",
+            Self::Spread => "spread",
         }
     }
 
@@ -34,7 +38,8 @@ impl ShuffleMode {
         match self {
             Self::Off => Self::Albums,
             Self::Albums => Self::All,
-            Self::All => Self::Off,
+            Self::All => Self::Spread,
+            Self::Spread => Self::Off,
         }
     }
 
@@ -43,6 +48,7 @@ impl ShuffleMode {
             "off" | "none" | "0" => Some(Self::Off),
             "albums" | "album" | "1" => Some(Self::Albums),
             "all" | "tracks" | "songs" | "2" => Some(Self::All),
+            "spread" | "spread albums" | "3" => Some(Self::Spread),
             _ => None,
         }
     }
@@ -516,7 +522,7 @@ impl PlaybackOrder {
 
         match self.shuffle_mode {
             ShuffleMode::Off => self.next_in_playlist(tracks, current),
-            ShuffleMode::Albums | ShuffleMode::All => self.next_shuffled(tracks, current),
+            ShuffleMode::Albums | ShuffleMode::All | ShuffleMode::Spread => self.next_shuffled(tracks, current),
         }
     }
 
@@ -540,7 +546,7 @@ impl PlaybackOrder {
                     None => sequence.first().copied(),
                 }
             }
-            ShuffleMode::Albums | ShuffleMode::All => self.previous_shuffled(tracks, current),
+            ShuffleMode::Albums | ShuffleMode::All | ShuffleMode::Spread => self.previous_shuffled(tracks, current),
         }
     }
 
@@ -731,6 +737,15 @@ impl PlaybackOrder {
                     self.shuffle_order.swap(0, position);
                 }
             }
+            ShuffleMode::Spread => {
+                // Start from the playing song; spread the rest after it.
+                let rest: Vec<usize> = self.shuffle_order.iter().copied().filter(|index| *index != current).collect();
+                let mut albums: Vec<&str> = vec![tracks[current].album()];
+                albums.extend(rest.iter().map(|index| tracks[*index].album()));
+                let order = spread_after_first(&albums, &mut self.seed);
+                let all: Vec<usize> = std::iter::once(current).chain(rest).collect();
+                self.shuffle_order = order.into_iter().map(|i| all[i]).collect();
+            }
             ShuffleMode::Albums => {
                 let album = tracks[current].album();
                 let (mut current_album, remainder): (Vec<_>, Vec<_>) = self
@@ -751,6 +766,13 @@ impl PlaybackOrder {
                 .into_iter()
                 .map(|i| candidates[i])
                 .collect(),
+            ShuffleMode::Spread => {
+                let albums: Vec<&str> = candidates.iter().map(|i| tracks[*i].album()).collect();
+                spread_album_indices(&albums, &mut self.seed)
+                    .into_iter()
+                    .map(|i| candidates[i])
+                    .collect()
+            }
             ShuffleMode::Albums => {
                 let albums: Vec<_> = candidates.iter().map(|i| OrderTrack {
                     album: tracks[*i].album().to_owned(),
@@ -764,6 +786,82 @@ impl PlaybackOrder {
             }
         }
     }
+}
+
+/// A random order of `albums.len()` songs where neighbours come from
+/// different albums whenever possible. Songs without an album count as
+/// albums of their own. At each step the next album is picked at random,
+/// weighted by how many of its songs remain, from those other than the
+/// last one played; an album holding more than half of what remains goes
+/// next so the rest can still be spread around it.
+fn spread_album_indices(albums: &[&str], seed: &mut u64) -> Vec<usize> {
+    spread_from(albums, None, seed)
+}
+
+/// Like [`spread_album_indices`], with index 0 kept first.
+fn spread_after_first(albums: &[&str], seed: &mut u64) -> Vec<usize> {
+    spread_from(albums, Some(0), seed)
+}
+
+fn spread_from(albums: &[&str], first: Option<usize>, seed: &mut u64) -> Vec<usize> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut by_album: HashMap<&str, usize> = HashMap::new();
+    for (index, album) in albums.iter().enumerate() {
+        if Some(index) == first {
+            continue;
+        }
+        let group = if album.trim().is_empty() {
+            groups.push(Vec::new());
+            groups.len() - 1
+        } else {
+            *by_album.entry(album).or_insert_with(|| {
+                groups.push(Vec::new());
+                groups.len() - 1
+            })
+        };
+        groups[group].push(index);
+    }
+    for group in &mut groups {
+        let order = shuffled_indices(group.len(), seed);
+        *group = order.into_iter().map(|i| group[i]).collect();
+    }
+    let mut remaining = albums.len() - usize::from(first.is_some());
+    let mut order = Vec::with_capacity(albums.len());
+    let mut last: Option<usize> = None;
+    if let Some(first) = first {
+        order.push(first);
+        let album = albums[first];
+        last = (!album.trim().is_empty()).then(|| by_album.get(album).copied()).flatten();
+    }
+    while remaining > 0 {
+        let largest = (0..groups.len()).max_by_key(|g| groups[*g].len()).expect("songs remain");
+        let choice = if groups[largest].len() * 2 > remaining && Some(largest) != last {
+            largest
+        } else {
+            let eligible: Vec<usize> = (0..groups.len()).filter(|g| !groups[*g].is_empty() && Some(*g) != last).collect();
+            if eligible.is_empty() {
+                last.expect("only the last album remains")
+            } else {
+                let total: usize = eligible.iter().map(|g| groups[*g].len()).sum();
+                let mut pick = (next_random(seed) % total as u64) as usize;
+                *eligible
+                    .iter()
+                    .find(|g| {
+                        if pick < groups[**g].len() {
+                            true
+                        } else {
+                            pick -= groups[**g].len();
+                            false
+                        }
+                    })
+                    .expect("pick within the eligible songs")
+            }
+        };
+        order.push(groups[choice].pop().expect("chosen album has songs"));
+        remaining -= 1;
+        last = Some(choice);
+    }
+    order
 }
 
 fn selection_state(indices: &[usize], mut selected: impl FnMut(usize) -> bool) -> SelectionState {
@@ -825,21 +923,48 @@ fn shuffled_indices(length: usize, seed: &mut u64) -> Vec<usize> {
 
 fn shuffle_slice<T>(values: &mut [T], seed: &mut u64) {
     for index in (1..values.len()).rev() {
-        // xorshift64* gives playback order a small dependency-free PRNG.
-        if *seed == 0 {
-            *seed = 0x9e37_79b9_7f4a_7c15;
-        }
-        *seed ^= *seed >> 12;
-        *seed ^= *seed << 25;
-        *seed ^= *seed >> 27;
-        let random = seed.wrapping_mul(0x2545_f491_4f6c_dd1d);
+        let random = next_random(seed);
         values.swap(index, (random as usize) % (index + 1));
     }
+}
+
+/// xorshift64* gives playback order a small dependency-free PRNG.
+fn next_random(seed: &mut u64) -> u64 {
+    if *seed == 0 {
+        *seed = 0x9e37_79b9_7f4a_7c15;
+    }
+    *seed ^= *seed >> 12;
+    *seed ^= *seed << 25;
+    *seed ^= *seed >> 27;
+    seed.wrapping_mul(0x2545_f491_4f6c_dd1d)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spread_shuffle_never_repeats_an_album_when_it_can_help_it() {
+        for seed_start in 1..50_u64 {
+            let mut albums = vec!["A"; 6];
+            albums.extend(["B"; 4]);
+            albums.extend(["C", "D", ""]);
+            let mut seed = seed_start;
+            let order = spread_album_indices(&albums, &mut seed);
+            let mut sorted = order.clone();
+            sorted.sort();
+            assert_eq!(sorted, (0..albums.len()).collect::<Vec<_>>());
+            for pair in order.windows(2) {
+                let (a, b) = (albums[pair[0]], albums[pair[1]]);
+                assert!(a.is_empty() || a != b, "{a} twice in {order:?}");
+            }
+        }
+        // More than half from one album: as spread as it can be.
+        let mut seed = 7;
+        let order = spread_album_indices(&["A", "A", "A", "B"], &mut seed);
+        let repeats = order.windows(2).filter(|p| p[0] < 3 && p[1] < 3).count();
+        assert_eq!(repeats, 1);
+    }
 
     fn track(album: &str, disc: u32, number: u32) -> OrderTrack {
         OrderTrack {

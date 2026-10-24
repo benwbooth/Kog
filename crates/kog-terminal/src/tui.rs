@@ -9361,6 +9361,7 @@ impl Ui {
                         ShuffleMode::Off => MEDIA_SHUFFLE,
                         ShuffleMode::Albums if show_mode => "🔀A",
                         ShuffleMode::All if show_mode => "🔀•",
+                        ShuffleMode::Spread if show_mode => "🔀S",
                         _ => MEDIA_SHUFFLE,
                     },
                     if self.shuffle_mode == ShuffleMode::Off {

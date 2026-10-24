@@ -2192,6 +2192,13 @@ ApplicationWindow {
                     checked: appController.shuffle_mode === "all"
                     onTriggered: appController.select_shuffle_mode("all")
                 }
+                Action {
+                    text: qsTr("All Tracks, Albums Spread Apart")
+                    icon.name: "media-playlist-shuffle"
+                    checkable: true
+                    checked: appController.shuffle_mode === "spread"
+                    onTriggered: appController.select_shuffle_mode("spread")
+                }
             }
             Menu {
                 title: qsTr("Repeat")
@@ -2589,12 +2596,15 @@ ApplicationWindow {
                         iconName: "media-playlist-shuffle"
                         modeActive: appController.shuffle_mode !== "off"
                         badgeText: appController.shuffle_mode === "albums" ? "A"
-                            : (appController.shuffle_mode === "all" ? "•" : "")
+                            : (appController.shuffle_mode === "all" ? "•"
+                                : (appController.shuffle_mode === "spread" ? "S" : ""))
                         toolTip: appController.shuffle_mode === "off"
                             ? qsTr("Shuffle Off — click for Albums")
                             : (appController.shuffle_mode === "albums"
                                 ? qsTr("Shuffle Albums — click for All Tracks")
-                                : qsTr("Shuffle All Tracks — click to turn off"))
+                                : (appController.shuffle_mode === "all"
+                                    ? qsTr("Shuffle All Tracks — click to spread albums apart")
+                                    : qsTr("Shuffle All Tracks, Albums Spread Apart — click to turn off")))
                         enabled: root.playableCount > 1
                         opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
                         onClicked: appController.cycle_shuffle_mode()

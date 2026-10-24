@@ -5843,7 +5843,8 @@ fn App() -> impl IntoView {
     let shuffle_tip = move || match shuffle.get() {
         ShuffleMode::Off => "Shuffle off — click for albums",
         ShuffleMode::Albums => "Shuffle albums — click for all tracks",
-        ShuffleMode::All => "Shuffle all tracks — click to turn off",
+        ShuffleMode::All => "Shuffle all tracks — click to spread albums",
+        ShuffleMode::Spread => "Shuffle, spreading albums apart — click to turn off",
     };
 
     view! {
@@ -8657,6 +8658,10 @@ fn App() -> impl IntoView {
                                 <button class="menu-item" role="menuitemradio" aria-checked=move || (shuffle.get() == ShuffleMode::All).to_string()
                                     on:click=move |_| { select_shuffle(ShuffleMode::All); set_menu_open.set(false); }>
                                     <span class="menu-check" aria-hidden="true">{move || if shuffle.get() == ShuffleMode::All { "●" } else { "" }}</span>"All Tracks"
+                                </button>
+                                <button class="menu-item" role="menuitemradio" aria-checked=move || (shuffle.get() == ShuffleMode::Spread).to_string()
+                                    on:click=move |_| { select_shuffle(ShuffleMode::Spread); set_menu_open.set(false); }>
+                                    <span class="menu-check" aria-hidden="true">{move || if shuffle.get() == ShuffleMode::Spread { "●" } else { "" }}</span>"All Tracks, Albums Spread Apart"
                                 </button>
                             </menu::Submenu>
                             <menu::Submenu label="Repeat" depth=2>
