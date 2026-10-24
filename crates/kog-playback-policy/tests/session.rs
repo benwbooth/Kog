@@ -419,6 +419,41 @@ fn the_playlist_follows_songs_that_play_as_subsongs_of_its_rows() {
 }
 
 #[test]
+fn repeat_and_shuffle_apply_to_a_playing_tab() {
+    let titles = ["one", "two", "three", "four", "five", "six"];
+    let playing = |s: &Session<Value>| s.queue()[s.current().unwrap()]["title"].as_str().unwrap().to_owned();
+    // Repeat all: the tab starts over after its last song.
+    let mut s = session("tab-repeat");
+    append(&mut s, &["outside"]);
+    tab(&mut s, &titles);
+    s.dispatch(Command::Repeat { mode: RepeatMode::All });
+    play_tab(&mut s, vec![4]);
+    let mut heard = vec![playing(&s)];
+    for _ in 0..3 {
+        s.dispatch(Command::Navigate { event: NavigationEvent::Ended });
+        heard.push(playing(&s));
+    }
+    assert_eq!(heard, ["five", "six", "one", "two"]);
+    // Shuffle: every song of the tab once, not in order, and nothing else.
+    let mut s = session("tab-shuffle-all");
+    append(&mut s, &["outside"]);
+    tab(&mut s, &titles);
+    s.dispatch(Command::Shuffle { mode: ShuffleMode::All });
+    play_tab(&mut s, vec![0]);
+    let mut heard = vec![playing(&s)];
+    for _ in 0..5 {
+        s.dispatch(Command::Navigate { event: NavigationEvent::Ended });
+        heard.push(playing(&s));
+    }
+    let mut sorted = heard.clone();
+    sorted.sort();
+    let mut expected: Vec<String> = titles.iter().map(|t| t.to_string()).collect();
+    expected.sort();
+    assert_eq!(sorted, expected, "{heard:?}");
+    assert_ne!(heard, titles, "shuffle played the tab in order");
+}
+
+#[test]
 fn a_late_play_effect_still_starts_the_clicked_song() {
     // Hosts that run effects after later commands (Qt) must not play the
     // song the earlier part of the playlist shifted into the old index.

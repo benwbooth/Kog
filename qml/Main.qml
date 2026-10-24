@@ -61,6 +61,11 @@ ApplicationWindow {
         appController.workspace_revision
         try { return JSON.parse(appController.workspace_json_for_selection(root.selectedRows.length)) } catch (_) { return { active: "queue", tabs: [], entries: [], selected: [] } }
     }
+    // Songs the transport controls can act on: the play queue's, or the
+    // playlist tab's when it is playing (its songs stay out of the queue).
+    readonly property int playableCount: Math.max(appController.playlist_count,
+        (playlistWorkspace.entries || []).length,
+        appController.playback_state !== "stopped" ? 1 : 0)
     property string previousWorkspaceTab: ""
     // The open tabs' keys, changed in place so each tab's editor survives.
     property ListModel editorTabs: ListModel { Component.onCompleted: root.syncEditorTabs() }
@@ -1013,13 +1018,13 @@ ApplicationWindow {
             Platform.MenuItem {
                 text: qsTr("Previous")
                 icon.name: "media-skip-backward"
-                enabled: appController.playlist_count > 0
+                enabled: root.playableCount > 0
                 onTriggered: appController.previous()
             }
             Platform.MenuItem {
                 text: qsTr("Next")
                 icon.name: "media-skip-forward"
-                enabled: appController.playlist_count > 0 || appController.radio_active
+                enabled: root.playableCount > 0 || appController.radio_active
                 onTriggered: appController.next()
             }
             Platform.MenuSeparator {}
@@ -2587,7 +2592,7 @@ ApplicationWindow {
                             : (appController.shuffle_mode === "albums"
                                 ? qsTr("Shuffle Albums — click for All Tracks")
                                 : qsTr("Shuffle All Tracks — click to turn off"))
-                        enabled: appController.playlist_count > 1
+                        enabled: root.playableCount > 1
                         opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
                         onClicked: appController.cycle_shuffle_mode()
                     }
@@ -2598,7 +2603,7 @@ ApplicationWindow {
                         iconName: "media-skip-backward"
                         objectName: "previousTrackButton"
                         toolTip: qsTr("Previous")
-                        enabled: appController.playlist_count > 0
+                        enabled: root.playableCount > 0
                         onClicked: appController.previous()
                     }
                     ToolbarButton {
@@ -2628,7 +2633,7 @@ ApplicationWindow {
                         iconName: "media-skip-forward"
                         objectName: "nextTrackButton"
                         toolTip: qsTr("Next")
-                        enabled: appController.playlist_count > 0 || appController.radio_active
+                        enabled: root.playableCount > 0 || appController.radio_active
                         onClicked: appController.next()
                     }
                     ToolbarButton {
@@ -2647,7 +2652,7 @@ ApplicationWindow {
                                 : (appController.repeat_mode === "album"
                                     ? qsTr("Repeat Album — click for All Tracks")
                                     : qsTr("Repeat All Tracks — click to turn off")))
-                        enabled: appController.playlist_count > 0
+                        enabled: root.playableCount > 0
                         opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
                         onClicked: appController.cycle_repeat_mode()
                     }
