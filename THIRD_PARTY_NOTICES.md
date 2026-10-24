@@ -648,3 +648,14 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## ayumi
+
+Kog plays YM register dumps through ayumi, an AY-3-8910/YM2149 emulator by
+Peter Sovietov (https://github.com/true-grue/ayumi), under the MIT License.
+The source is pinned as the `native/ayumi` submodule with its `LICENSE`.
+
+## delharc
+
+LHA-compressed YM files are unpacked with the delharc crate
+(https://github.com/royaltm/rust-delharc), under the MIT or Apache-2.0 License.
