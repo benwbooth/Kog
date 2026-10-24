@@ -326,6 +326,14 @@ impl Workspace {
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot_for(0, 0)
     }
+    /// Every open tab's key and row entries, so hosts can load their song
+    /// info before the tab is shown.
+    pub fn tab_entries(&self) -> Vec<(String, Vec<Value>)> {
+        self.tabs
+            .iter()
+            .map(|tab| (tab.key.clone(), tab.draft.rows.iter().map(|row| row.entry.clone()).collect()))
+            .collect()
+    }
     pub fn snapshot_for(&self, queue_count: usize, queue_selected: usize) -> Snapshot {
         let active = self.tabs.iter().find(|t| t.key == self.active);
         let actions = active

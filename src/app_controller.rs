@@ -1979,6 +1979,8 @@ pub struct AppControllerRust {
     /// metadata here, so switching back shows them without reloading.
     workspace_tracks_key: String,
     parked_workspace_tracks: HashMap<String, crate::workspace_tracks::WorkspaceTracks>,
+    /// The background tabs (and their sizes) last given to the loaders.
+    tabs_behind_loaded: Vec<(String, usize)>,
     sort_column: PlaylistSortColumn,
     filter: String,
     library_db: kog_core::db::LibraryDb,
@@ -2227,6 +2229,7 @@ impl Default for AppControllerRust {
             workspace_tracks: crate::workspace_tracks::WorkspaceTracks::default(),
             workspace_tracks_key: String::new(),
             parked_workspace_tracks: HashMap::new(),
+            tabs_behind_loaded: Vec::new(),
             sort_column: PlaylistSortColumn::Index,
             filter: String::new(),
             library_db,
@@ -2655,6 +2658,30 @@ impl AppControllerRust {
         self.workspace_tracks.refresh(entries, &self.tracks, || {
             self.decoders.background_worker(self.decoder_settings.clone())
         });
+        // Load the tabs behind it too, so each is ready when first shown.
+        // Only tabs in front are edited, so the others change only when tabs
+        // open, close or load: skip copying their rows otherwise.
+        let behind: Vec<(String, usize)> = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.key != snapshot.active)
+            .map(|tab| (tab.key.clone(), tab.count))
+            .collect();
+        if behind == self.tabs_behind_loaded {
+            return;
+        }
+        self.tabs_behind_loaded = behind;
+        for (key, entries) in self.session.workspace_model().tab_entries() {
+            if key == self.workspace_tracks_key || key == kog_audio::playback_order::workspace::QUEUE_TAB {
+                continue;
+            }
+            let decoders = &self.decoders;
+            let settings = &self.decoder_settings;
+            self.parked_workspace_tracks
+                .entry(key)
+                .or_default()
+                .refresh(entries, &self.tracks, || decoders.background_worker(settings.clone()));
+        }
     }
 
     fn add_path(&mut self, path: PathBuf) -> Result<AddPathResult, String> {
@@ -4126,7 +4153,13 @@ impl qobject::AppController {
     pub fn poll_workspace(mut self: Pin<&mut Self>) {
         self.as_mut().write_pending_session();
         self.as_mut().poll_session_ports();
-        if self.as_mut().rust_mut().workspace_tracks.poll() {
+        let parked_changed = self
+            .as_mut()
+            .rust_mut()
+            .parked_workspace_tracks
+            .values_mut()
+            .fold(false, |changed, tracks| tracks.poll() || changed);
+        if self.as_mut().rust_mut().workspace_tracks.poll() || parked_changed {
             let next = self.as_ref().rust().workspace_metadata_revision.wrapping_add(1);
             self.as_mut().set_workspace_metadata_revision(next);
         }
