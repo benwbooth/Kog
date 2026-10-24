@@ -197,7 +197,7 @@ mod tests {
 
     fn assert_duration_within_one_frame(actual: Option<Duration>, expected: Duration) {
         let actual = actual.expect("GSF duration");
-        let frame = Duration::from_nanos(1_000_000_000 / 32_768 + 1);
+        let frame = Duration::from_nanos(1_000_000_000 / 48_000 + 1);
         assert!(
             actual.abs_diff(expected) <= frame,
             "{actual:?} != {expected:?}"
@@ -215,7 +215,7 @@ mod tests {
         let source = PlaybackSource::from_path(path);
         let properties = registry.probe(&source).expect("probe generated GSF");
         assert_duration_within_one_frame(properties.duration, Duration::from_millis(1_100));
-        assert_eq!(properties.sample_rate, Some(32_768));
+        assert_eq!(properties.sample_rate, Some(48_000));
         assert_eq!(properties.channels, Some(2));
         assert_eq!(properties.title.as_deref(), Some("Kog GSF fixture"));
         assert_eq!(properties.artist.as_deref(), Some("Kog tests"));

@@ -17,6 +17,7 @@
 
 #include <mgba/flags.h>
 #include <mgba-util/audio-buffer.h>
+#include <mgba-util/audio-resampler.h>
 #include <mgba-util/vfs.h>
 #include <mgba/core/config.h>
 #include <mgba/core/core.h>
@@ -32,6 +33,11 @@ constexpr uint8_t gsf_version = 0x22;
 constexpr uint32_t channels = 2;
 constexpr size_t maximum_rom_size = 32u * 1024u * 1024u;
 constexpr size_t audio_buffer_frames = 4096;
+// The GBA's sound rate is the game's choice (32768 Hz up to 262144 Hz, set
+// through SOUNDBIAS) and can change while it plays; read at one fixed rate,
+// it played some games at half speed or slower and clicked when it changed.
+// Resample everything to one output rate instead.
+constexpr uint32_t output_sample_rate = 48000;
 constexpr size_t render_chunk_frames = 2048;
 constexpr size_t maximum_empty_emulator_frames = 600;
 
@@ -255,7 +261,13 @@ struct KogGsf {
     std::vector<uint8_t> rom;
     MetadataState metadata;
     mCore *core = nullptr;
-    mAVStream stream{};
+    struct RateStream {
+        mAVStream base{};
+        KogGsf *owner = nullptr;
+    } stream;
+    mAudioResampler resampler{};
+    mAudioBuffer resampled{};
+    bool resampling = false;
     uint32_t sample_rate = 0;
     uint64_t main_frames = 0;
     uint64_t fade_frames = 0;
@@ -267,6 +279,11 @@ struct KogGsf {
     }
 
     void destroy_core() {
+        if (resampling) {
+            mAudioResamplerDeinit(&resampler);
+            mAudioBufferDeinit(&resampled);
+            resampling = false;
+        }
         if (core != nullptr) {
             mCoreConfigDeinit(&core->config);
             core->deinit(core);
@@ -300,8 +317,16 @@ struct KogGsf {
         }
 
         mCoreInitConfig(core, nullptr);
-        core->setAVStream(core, &stream);
-        core->setAudioBufferSize(core, audio_buffer_frames);
+        stream.owner = this;
+        stream.base.audioRateChanged = [](mAVStream *base, unsigned rate) {
+            auto *owner = reinterpret_cast<RateStream *>(base)->owner;
+            if (owner->resampling && rate != 0) {
+                mAudioResamplerSetSource(&owner->resampler, owner->core->getAudioBuffer(owner->core), rate, true);
+            }
+        };
+        core->setAVStream(core, &stream.base);
+        // A frame at the GBA's highest sound rate is ~4400 samples.
+        core->setAudioBufferSize(core, audio_buffer_frames * 4);
         mCoreOptions options{};
         options.useBios = false;
         options.skipBios = true;
@@ -314,11 +339,17 @@ struct KogGsf {
             throw std::runtime_error("mGBA rejected the assembled GSF ROM");
         }
         core->reset(core);
-        sample_rate = core->audioSampleRate(core);
-        if (sample_rate == 0 || sample_rate > 384000) {
+        const uint32_t native_rate = core->audioSampleRate(core);
+        if (native_rate == 0 || native_rate > 384000) {
             destroy_core();
             throw std::runtime_error("mGBA reported an invalid GSF sample rate");
         }
+        mAudioBufferInit(&resampled, audio_buffer_frames, channels);
+        mAudioResamplerInit(&resampler, mINTERPOLATOR_SINC);
+        mAudioResamplerSetSource(&resampler, core->getAudioBuffer(core), native_rate, true);
+        mAudioResamplerSetDestination(&resampler, &resampled, output_sample_rate);
+        resampling = true;
+        sample_rate = output_sample_rate;
         rendered_frames = 0;
     }
 
@@ -326,8 +357,12 @@ struct KogGsf {
         size_t rendered = 0;
         size_t empty_frames = 0;
         while (rendered < frames) {
-            mAudioBuffer *buffer = core->getAudioBuffer(core);
+            mAudioBuffer *buffer = &resampled;
             size_t available = mAudioBufferAvailable(buffer);
+            if (available == 0) {
+                mAudioResamplerProcess(&resampler);
+                available = mAudioBufferAvailable(buffer);
+            }
             if (available == 0) {
                 if (++empty_frames > maximum_empty_emulator_frames) {
                     throw std::runtime_error("mGBA produced no GSF audio frames");

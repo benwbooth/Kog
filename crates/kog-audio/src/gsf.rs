@@ -295,3 +295,36 @@ fn crc32(bytes: &[u8]) -> u32 {
     }
     !crc
 }
+
+#[cfg(test)]
+mod render_probe {
+    use super::*;
+
+    /// Renders the first 20 s of each GSF to 16-bit stereo PCM for listening
+    /// or comparison:
+    ///   KOG_GSF_PROBE="<a.minigsf>|<b.gsf>" KOG_GSF_OUT=<dir>
+    ///   cargo test -p kog-audio --lib -- --ignored gsf_render_probe --nocapture
+    #[test]
+    #[ignore = "needs KOG_GSF_PROBE and KOG_GSF_OUT"]
+    fn gsf_render_probe() {
+        let out = std::path::PathBuf::from(std::env::var("KOG_GSF_OUT").expect("set KOG_GSF_OUT"));
+        for (index, path) in std::env::var("KOG_GSF_PROBE").expect("set KOG_GSF_PROBE").split('|').enumerate() {
+            let mut gsf = Gsf::open(Path::new(path), Duration::from_secs(150), Duration::from_secs(10)).expect("open");
+            let rate = gsf.sample_rate();
+            let mut pcm = vec![0.0_f32; 4_096];
+            let mut bytes = Vec::new();
+            while bytes.len() < rate as usize * 20 * 4 {
+                let frames = gsf.render(&mut pcm).expect("render");
+                if frames == 0 {
+                    break;
+                }
+                for sample in &pcm[..frames * 2] {
+                    bytes.extend_from_slice(&((sample.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+                }
+            }
+            let file = out.join(format!("{index}-{rate}.s16"));
+            std::fs::write(&file, bytes).expect("write");
+            println!("{path} -> {} at {rate} Hz", file.display());
+        }
+    }
+}
