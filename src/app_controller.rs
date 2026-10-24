@@ -1732,6 +1732,8 @@ fn playlist_entry_from_stored(
 
 /// Name of the pane/tree snapshot kept beside the other Kog settings.
 const SESSION_FILE: &str = "session.json";
+/// Where playback was, for resuming on the next start.
+const RESUME_SETTING_FILE: &str = "resume-playback.json";
 
 /// One session.json entry, shaped like a stored database row. Anything
 /// malformed is dropped so a corrupt file can never panic the startup path.
@@ -1891,6 +1893,9 @@ pub struct AppControllerRust {
     /// The latest session checkpoint not yet written. Writing it (megabytes
     /// of JSON for a big queue) waits for the next poll so clicks don't.
     pending_session_save: Option<serde_json::Value>,
+    /// The playing song and position last written for the next start.
+    resume_written: String,
+    resume_written_at: std::time::Instant,
     current_index: i32,
     playback_state: QString,
     mpris_raise_serial: i32,
@@ -2131,6 +2136,8 @@ impl Default for AppControllerRust {
             session_expanded_json: QString::default(),
             session_last_written: String::new(),
             pending_session_save: None,
+            resume_written: String::new(),
+            resume_written_at: std::time::Instant::now(),
             current_index: -1,
             playback_state: qstring(PlaybackState::Stopped.as_str()),
             mpris_raise_serial: 0,
@@ -2275,6 +2282,20 @@ impl Default for AppControllerRust {
                             .ok_or_else(|| "Unavailable queue entry".to_owned())
                     })
             }));
+        // Carry on with the song that was playing, from where it was.
+        if matches!(restore, Some(Ok(_))) && std::env::var_os("KOG_OPEN_FILES").is_none() {
+            if let Some(resume) = kog_audio::settings::load_text(RESUME_SETTING_FILE)
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                && let (Some(row), Some(seconds)) = (resume["row"].as_u64(), resume["seconds"].as_f64())
+            {
+                controller.resume_written = resume.to_string();
+                controller.queue_session(SessionCommand::ResumeAt {
+                    row,
+                    seconds,
+                    playing: resume["playing"].as_bool().unwrap_or(true),
+                });
+            }
+        }
         let restored = match restore {
             Some(Ok(_)) => true,
             Some(Err(error)) => { controller.session_store.reject(error); true }
@@ -4608,6 +4629,33 @@ impl qobject::AppController {
     /// Snapshot the pane, current row, tree root, and the expanded folders
     /// QML collected, then save its separate UI state in SQLite when changed.
     /// The queue and drafts are persisted by the shared session effects.
+    /// Remember the playing song and position (every few seconds, and on
+    /// every start, pause or stop) so the next run resumes it.
+    fn save_resume_point(mut self: Pin<&mut Self>, force: bool) {
+        let value = {
+            let r = self.as_ref();
+            let view = r.rust().session.snapshot();
+            match (view.current, view.transport) {
+                (Some(index), Transport::Playing | Transport::Paused) => view.row_ids.get(index).map(|row| {
+                    serde_json::json!({"row": row, "seconds": view.position, "playing": view.transport == Transport::Playing})
+                }),
+                _ => None,
+            }
+        };
+        let text = value.as_ref().map(ToString::to_string).unwrap_or_default();
+        let previous = self.as_ref().rust().resume_written.clone();
+        let same_song = value.as_ref().map(|v| (&v["row"], &v["playing"]))
+            == serde_json::from_str::<serde_json::Value>(&previous).ok().as_ref().map(|v| (&v["row"], &v["playing"]));
+        let due = self.as_ref().rust().resume_written_at.elapsed() >= std::time::Duration::from_secs(3);
+        if text == previous || (!force && same_song && !due) {
+            return;
+        }
+        if kog_audio::settings::save_text(RESUME_SETTING_FILE, &text).is_ok() {
+            self.as_mut().rust_mut().resume_written = text;
+            self.as_mut().rust_mut().resume_written_at = std::time::Instant::now();
+        }
+    }
+
     fn write_pending_session(mut self: Pin<&mut Self>) {
         let Some(value) = self.as_mut().rust_mut().pending_session_save.take() else {
             return;
@@ -4624,6 +4672,7 @@ impl qobject::AppController {
 
     pub fn flush_session(mut self: Pin<&mut Self>, expanded: QString) {
         self.as_mut().write_pending_session();
+        self.as_mut().save_resume_point(true);
         let expanded = parse_session_expanded(&expanded.to_string());
         let snapshot = self.as_ref().rust().session_snapshot(&expanded);
         if self.as_ref().rust().session_last_written == snapshot {
@@ -5481,6 +5530,7 @@ impl qobject::AppController {
 
     pub fn poll_playback(mut self: Pin<&mut Self>) {
         self.as_mut().poll_session_ports();
+        self.as_mut().save_resume_point(false);
         let mut handled_mpris_command = false;
         while let Some(command) = self.as_ref().rust().mpris.try_command() {
             self.as_mut().handle_mpris_command(command);

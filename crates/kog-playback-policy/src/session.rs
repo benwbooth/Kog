@@ -154,6 +154,13 @@ pub enum Command<T> {
         tracks: Vec<T>,
     },
     ReloadOutput,
+    /// Pick up where the last run stopped: play (or hold paused) the row
+    /// with this id from `seconds` in. Ignored when the row is gone.
+    ResumeAt {
+        row: u64,
+        seconds: f64,
+        playing: bool,
+    },
     Remove {
         indices: Vec<usize>,
     },
@@ -1879,6 +1886,22 @@ impl<T: Item> Session<T> {
             }
             Command::ReplaceRange { start, end, tracks } => {
                 self.replace_range(start, end, tracks, &mut effects)
+            }
+            Command::ResumeAt { row, seconds, playing } => {
+                if let Some(index) = self.rows.iter().position(|id| *id == row) {
+                    self.current = Some(index);
+                    self.position = seconds.max(0.0);
+                    let token = self.token();
+                    self.output = Some(OutputRequest {
+                        token: token.clone(),
+                        row,
+                        previous: Some(row),
+                        automatic: false,
+                        started: false,
+                    });
+                    self.transport = if playing { Transport::Starting } else { Transport::Paused };
+                    effects.push(Effect::Play { token, index, seconds: self.position, playing });
+                }
             }
             Command::ReloadOutput => {
                 if let Some(index) = self.current {

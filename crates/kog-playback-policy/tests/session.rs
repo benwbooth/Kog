@@ -454,6 +454,24 @@ fn repeat_and_shuffle_apply_to_a_playing_tab() {
 }
 
 #[test]
+fn a_restart_resumes_the_song_and_position_it_left() {
+    let mut s = session("resume");
+    append(&mut s, &["one", "two", "three"]);
+    let row = s.snapshot().row_ids[1];
+    let effects = s.dispatch(Command::ResumeAt { row, seconds: 42.5, playing: true });
+    let play = effects.iter().find_map(|e| match e {
+        Effect::Play { index, seconds, playing, .. } => Some((*index, *seconds, *playing)),
+        _ => None,
+    });
+    assert_eq!(play, Some((1, 42.5, true)));
+    assert_eq!(s.current(), Some(1));
+    // A row that is gone is ignored.
+    assert!(s.dispatch(Command::ResumeAt { row: 9_999, seconds: 1.0, playing: true })
+        .iter()
+        .all(|e| !matches!(e, Effect::Play { .. })));
+}
+
+#[test]
 fn a_late_play_effect_still_starts_the_clicked_song() {
     // Hosts that run effects after later commands (Qt) must not play the
     // song the earlier part of the playlist shifted into the old index.
