@@ -64,12 +64,12 @@ impl DecoderBackend for UsfBackend {
         let mut audio = UsfSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "registers", "Live Nintendo 64 stereo Audio Interface DMA output. Software voice and note layouts depend on game-specific RSP microcode; no universal piano notes can be recovered.");
         audio.inspection = Some(monitor.producer(audio.sample_rate));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(UsfSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, UsfSource::new(Self::open(source)?));
         Ok(())
     }
 }

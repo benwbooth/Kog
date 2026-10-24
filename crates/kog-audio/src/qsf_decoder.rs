@@ -64,12 +64,12 @@ impl DecoderBackend for QsfBackend {
         let mut audio = QsfSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "registers", "Live QSound PCM and ADPCM voices with pitch rates, loops, levels, panning and echo. Sample root notes are not encoded.");
         audio.inspection = Some(monitor.producer(audio.sample_rate));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(QsfSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, QsfSource::new(Self::open(source)?));
         Ok(())
     }
 }

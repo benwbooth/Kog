@@ -137,7 +137,7 @@ impl DecoderBackend for GmeBackend {
         let mut audio = GmeSource::new(emu, sample_rate, plan)?;
         monitor.describe(self.display_name(), "registers", "Live chip voices, pitch, envelopes and registers. Sample voices show playback rate and identity when available; an unknown sample tuning has no piano key. Internal audio buffering is included in snapshot timing.");
         audio.inspection = Some(monitor.producer(sample_rate));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
@@ -149,7 +149,7 @@ impl DecoderBackend for GmeBackend {
         )?;
         let (track, _, plan) = Self::track_and_plan(&emu, source)?;
         emu.start_track(track, plan)?;
-        player.append(GmeSource::new(emu, sample_rate, plan)?);
+        crate::silence::append_trimmed(player, GmeSource::new(emu, sample_rate, plan)?);
         Ok(())
     }
 }

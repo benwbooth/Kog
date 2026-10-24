@@ -1528,19 +1528,19 @@ impl DecoderBackend for MidiBackend {
             MidiEngine::RustySynth => {
                 let soundfont = self.load_soundfont()?;
                 let (midi_file, duration) = load_midi_file(&source.path, &midi.bytes)?;
-                player.append(MidiSource::new(soundfont, midi_file, duration)?);
+                crate::silence::append_trimmed(player, MidiSource::new(soundfont, midi_file, duration)?);
             }
             MidiEngine::Opl3Windows => {
                 let timeline = Arc::new(OplMidiTimeline::parse(&midi.bytes)?);
-                player.append(OplMidiSource::new(timeline)?);
+                crate::silence::append_trimmed(player, OplMidiSource::new(timeline)?);
             }
             MidiEngine::Sc55 => {
-                player.append(Sc55MidiSource::new(
+                crate::silence::append_trimmed(player, Sc55MidiSource::new(
                     self.open_sc55(&source.path, &midi.bytes)?,
                 ));
             }
             MidiEngine::Mt32 => {
-                player.append(self.open_mt32(&midi.bytes)?);
+                crate::silence::append_trimmed(player, self.open_mt32(&midi.bytes)?);
             }
         }
         Ok(())

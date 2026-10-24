@@ -90,12 +90,12 @@ impl DecoderBackend for OpenMptBackend {
         let mut audio = OpenMptSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "patterns", "Original pattern notes, instruments, volume and effect commands. Keyboards follow the mixer's sample pitch, including slides, vibrato and background voices.");
         audio.inspection = Some(monitor.producer(OPENMPT_SAMPLE_RATE));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(OpenMptSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, OpenMptSource::new(Self::open(source)?));
         Ok(())
     }
 }

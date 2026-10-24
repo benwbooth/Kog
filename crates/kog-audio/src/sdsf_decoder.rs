@@ -64,12 +64,12 @@ impl DecoderBackend for SdsfBackend {
         let mut audio = SdsfSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "registers", "Live Saturn SCSP and Dreamcast AICA voices with pitch rates, envelopes, loops, LFO and DSP data. Sample root notes are not encoded.");
         audio.inspection = Some(monitor.producer(audio.sample_rate));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(SdsfSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, SdsfSource::new(Self::open(source)?));
         Ok(())
     }
 }

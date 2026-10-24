@@ -64,12 +64,12 @@ impl DecoderBackend for GsfBackend {
         let mut audio = GsfSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "registers", "Live GBA pulse, wave, noise and Direct Sound channels. Direct Sound contains software-mixed voices without universal note metadata.");
         audio.inspection = Some(monitor.producer(audio.sample_rate));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(GsfSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, GsfSource::new(Self::open(source)?));
         Ok(())
     }
 }

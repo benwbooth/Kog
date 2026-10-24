@@ -85,7 +85,7 @@ impl DecoderBackend for VgmstreamBackend {
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(VgmstreamSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, VgmstreamSource::new(Self::open(source)?));
         Ok(())
     }
 }

@@ -86,12 +86,12 @@ impl DecoderBackend for AdPlugBackend {
         let mut audio = AdPlugSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "registers", "OPL key gates, pitch, operator parameters and rhythm voices, with player position where the format provides it. Levels show programmed carrier attenuation; release envelopes are not inferred.");
         audio.inspection = Some(monitor.producer(ADPLUG_SAMPLE_RATE));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(AdPlugSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, AdPlugSource::new(Self::open(source)?));
         Ok(())
     }
 }

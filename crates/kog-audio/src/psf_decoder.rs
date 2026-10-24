@@ -76,12 +76,12 @@ impl DecoderBackend for PsfBackend {
         };
         monitor.describe("Psf", "registers", detail);
         decoder.inspect(monitor.clone());
-        player.append(PsfSource::new(decoder));
+        crate::silence::append_trimmed(player, PsfSource::new(decoder));
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(PsfSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, PsfSource::new(Self::open(source)?));
         Ok(())
     }
 }

@@ -75,7 +75,7 @@ impl DecoderBackend for AdlMidiBackend {
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(AdlMidiSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, AdlMidiSource::new(Self::open(source)?));
         Ok(())
     }
 
@@ -85,7 +85,7 @@ impl DecoderBackend for AdlMidiBackend {
         let mut audio=AdlMidiSource::new(decoder);
         audio.inspection=Some(monitor.producer(audio.decoder.sample_rate()));
         monitor.describe(self.display_name(),"events","Live legacy MIDI sequencer notes, controllers and original events. Keyboards follow commanded pitch and sustain; OPL envelopes and instrument tuning are not inferred.");
-        player.append(audio);Ok(())
+        crate::silence::append_trimmed(player, audio);Ok(())
     }
 }
 

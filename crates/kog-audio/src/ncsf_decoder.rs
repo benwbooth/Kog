@@ -64,12 +64,12 @@ impl DecoderBackend for NcsfBackend {
         let mut audio = NcsfSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "events", "SSEQ hardware voices with sequenced notes, actual timers, instruments, envelopes, pitch bends, modulation and sequence offsets.");
         audio.inspection = Some(monitor.producer(audio.sample_rate));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(NcsfSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, NcsfSource::new(Self::open(source)?));
         Ok(())
     }
 }

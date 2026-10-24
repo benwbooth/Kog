@@ -82,12 +82,12 @@ impl DecoderBackend for HivelyBackend {
         let mut audio = HivelySource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "patterns", "Original AHX/HVL notes, instruments and both effect columns, with live oscillator pitch, envelopes, filters, performance-list position and ring modulation.");
         audio.inspection = Some(monitor.producer(HIVELY_SAMPLE_RATE));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(HivelySource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, HivelySource::new(Self::open(source)?));
         Ok(())
     }
 }

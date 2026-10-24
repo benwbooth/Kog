@@ -89,12 +89,12 @@ impl DecoderBackend for SidBackend {
         let mut audio = SidSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "registers", "SID oscillator pitch, gate, waveform, pulse width, ADSR and filter registers. Level shows master volume while gated; analog envelopes and digi sample voices are not inferred.");
         audio.inspection = Some(monitor.producer(audio.sample_rate));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(SidSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, SidSource::new(Self::open(source)?));
         Ok(())
     }
 }

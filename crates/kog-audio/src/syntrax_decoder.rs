@@ -64,12 +64,12 @@ impl DecoderBackend for SyntraxBackend {
         let mut decoder = Self::open(source)?;
         monitor.describe("Syntrax", "patterns", "Live Syntrax voices, instruments, pitch, wave effects and sequence data.");
         decoder.inspect(monitor.clone());
-        player.append(SyntraxSource::new(decoder));
+        crate::silence::append_trimmed(player, SyntraxSource::new(decoder));
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(SyntraxSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, SyntraxSource::new(Self::open(source)?));
         Ok(())
     }
 }

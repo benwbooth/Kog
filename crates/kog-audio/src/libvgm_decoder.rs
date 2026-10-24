@@ -75,12 +75,12 @@ impl DecoderBackend for LibVgmBackend {
         let mut audio = LibVgmSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "registers", "Writes to the sound cores producing this audio: tone frequencies, key gates, instruments and effects. Levels are programmed controls; sample rates do not establish a sample's musical pitch. Unmapped DSP devices expose their register writes.");
         audio.inspection = Some(monitor.producer(LIBVGM_SAMPLE_RATE));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(LibVgmSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, LibVgmSource::new(Self::open(source)?));
         Ok(())
     }
 }

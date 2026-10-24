@@ -66,12 +66,12 @@ impl DecoderBackend for OrganyaBackend {
         let mut audio = OrganyaSource::new(Self::open(source)?);
         monitor.describe(self.display_name(), "patterns", "Original Organya note, length, volume and panning events; keyboards follow the actual wavetable phase rate. Drum rate is shown without assuming a tuned sample.");
         audio.inspection = Some(monitor.producer(ORGANYA_SAMPLE_RATE));
-        player.append(audio);
+        crate::silence::append_trimmed(player, audio);
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(OrganyaSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, OrganyaSource::new(Self::open(source)?));
         Ok(())
     }
 }

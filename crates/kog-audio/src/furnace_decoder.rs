@@ -79,7 +79,7 @@ impl DecoderBackend for FurnaceBackend {
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(FurnaceSource::new(Self::open(source)?));
+        crate::silence::append_trimmed(player, FurnaceSource::new(Self::open(source)?));
         Ok(())
     }
 }

@@ -59,6 +59,7 @@ pub mod sc55;
 pub mod sdsf;
 pub mod sdsf_decoder;
 pub mod settings;
+pub mod silence;
 pub mod sfm;
 pub mod sfm_decoder;
 pub mod sid;

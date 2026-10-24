@@ -55,12 +55,12 @@ impl DecoderBackend for SfmBackend {
         let mut decoder = Sfm::open(&source.path)?;
         monitor.describe("Sfm", "registers", "Live SNES DSP voices, pitch rates, envelopes and effects. Sample tuning is not encoded by SFM.");
         decoder.inspect(monitor.clone());
-        player.append(SfmSource::new(decoder));
+        crate::silence::append_trimmed(player, SfmSource::new(decoder));
         Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(SfmSource::new(Sfm::open(&source.path)?));
+        crate::silence::append_trimmed(player, SfmSource::new(Sfm::open(&source.path)?));
         Ok(())
     }
 }
