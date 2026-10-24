@@ -477,6 +477,7 @@ impl DecoderRegistry {
                 Box::new(crate::qsf_decoder::QsfBackend),
                 Box::new(crate::sid_decoder::SidBackend),
                 Box::new(crate::ym_decoder::YmBackend),
+                Box::new(crate::sndh_decoder::SndhBackend),
                 Box::new(crate::adplug_decoder::AdPlugBackend),
                 Box::new(crate::vgmstream_decoder::VgmstreamBackend),
             ],

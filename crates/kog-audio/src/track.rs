@@ -376,7 +376,19 @@ fn album_from_folder(source: &PlaybackSource) -> Option<String> {
 }
 
 fn clean_folder_name(name: &str) -> Option<String> {
-    let name = name.replace('_', " ");
+    let mut name = name.replace('_', " ");
+    // Zophar-style slugs: "kid-icarus-uprising" is "Kid Icarus Uprising".
+    if !name.contains(' ') && name.contains('-') && name.chars().all(|c| !c.is_uppercase()) {
+        name = name
+            .split('-')
+            .filter(|word| !word.is_empty())
+            .map(|word| {
+                let mut letters = word.chars();
+                letters.next().map_or_else(String::new, |first| first.to_uppercase().chain(letters).collect())
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
     // Rip tags start at the first "(" or "[" after the name.
     let name = match name.find(['(', '[']) {
         Some(0) | None => name.as_str(),
@@ -490,6 +502,7 @@ mod tests {
         assert_eq!(album_from_folder(&at("/m/Arcade/Street_Fighter_II_-_The_World_Warrior_(CP_System)/01 Title.vgz")).as_deref(),
                    Some("Street Fighter II - The World Warrior"));
         assert_eq!(album_from_folder(&at("/m/Final Fantasy 10 OST/Disc 1/15.mp3")).as_deref(), Some("Final Fantasy 10 OST"));
+        assert_eq!(album_from_folder(&at("/m/3DS-3SF/kid-icarus-uprising/A010.bcstm")).as_deref(), Some("Kid Icarus Uprising"));
         assert_eq!(title_from_filename(&source("02 - Debut Of The Chron-O-John.mid")).as_deref(), Some("02 - Debut Of The Chron-O-John"));
     }
     use super::*;

@@ -659,3 +659,12 @@ The source is pinned as the `native/ayumi` submodule with its `LICENSE`.
 
 LHA-compressed YM files are unpacked with the delharc crate
 (https://github.com/royaltm/rust-delharc), under the MIT or Apache-2.0 License.
+
+## sc68
+
+Atari ST SNDH and sc68 music plays through sc68 by Benjamin Gerard
+(https://sc68.atari.org, https://sourceforge.net/p/sc68), under the GNU
+General Public License version 3 or later. Its file68, libsc68 (emu68, io68,
+dial68) and unice68 sources are vendored in `native/sc68` with `COPYING`.
+`libsc68/sc68/trap68.h` was assembled from sc68's `asm/trapfunc.s` with its
+own as68 assembler.

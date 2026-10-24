@@ -81,6 +81,7 @@ fn main() {
     build_openmpt();
     build_hivelytracker();
     build_ayumi();
+    build_sc68();
     build_vgmstream();
     build_adplug();
     build_libsidplayfp();
@@ -765,6 +766,50 @@ fn build_ayumi() {
         .compile("kog_ayumi");
     watch_native("../../native/ayumi");
     println!("cargo:rerun-if-changed=../../native/ym_bridge.c");
+}
+
+fn build_sc68() {
+    let root = Path::new("../../native/sc68");
+    if !root.join("libsc68/sc68/sc68.h").is_file() {
+        panic!("vendored sc68 sources are missing from native/sc68");
+    }
+    let mut files = Vec::new();
+    let file68 = [
+        "error68", "file68", "gzip68", "ice68", "init68", "vfs68", "vfs68_ao", "vfs68_curl", "vfs68_fd",
+        "vfs68_file", "vfs68_mem", "vfs68_null", "vfs68_z", "msg68", "option68", "registry68", "rsc68",
+        "string68", "timedb68", "uri68", "replay68", "endian68",
+    ];
+    files.extend(file68.iter().map(|name| root.join(format!("file68/src/{name}.c"))));
+    files.extend(["api68", "conf68", "libsc68", "mixer68"].iter().map(|name| root.join(format!("libsc68/src/{name}.c"))));
+    let io68 = [
+        "io68", "mfp_io", "mfpemul", "mw_io", "mwemul", "paula_io", "paulaemul", "shifter_io", "ym_envel",
+        "ym_blep", "ym_dump", "ym_io", "ym_puls", "ymemul",
+    ];
+    files.extend(io68.iter().map(|name| root.join(format!("libsc68/io68/{name}.c"))));
+    files.extend(["dial68", "dial_conf", "dial_tsel", "dial_finf"].iter().map(|name| root.join(format!("libsc68/dial68/{name}.c"))));
+    files.extend(["unice68_unpack", "unice68_pack", "unice68_version"].iter().map(|name| root.join(format!("unice68/{name}.c"))));
+    let emu68 = ["emu68", "error68", "getea68", "inst68", "ioplug68", "mem68", "table68"];
+    files.extend(emu68.iter().map(|name| root.join(format!("libsc68/emu68/{name}.c"))));
+    files.extend("0123456789ABCDEF".chars().map(|line| root.join(format!("libsc68/emu68/line{line}_68.c"))));
+    files.push(PathBuf::from("../../native/sc68-kog/sc68_bridge.c"));
+    cc::Build::new()
+        .std("gnu99")
+        .define("HAVE_CONFIG_H", None)
+        .include("../../native/sc68-kog")
+        .include(root)
+        .include(root.join("file68"))
+        .include(root.join("file68/sc68"))
+        .include(root.join("libsc68"))
+        .include(root.join("libsc68/sc68"))
+        .include(root.join("libsc68/emu68"))
+        .include(root.join("libsc68/io68"))
+        .include(root.join("unice68"))
+        .include(root.join("libc68"))
+        .files(files)
+        .warnings(false)
+        .compile("kog_sc68");
+    watch_native("../../native/sc68");
+    watch_native("../../native/sc68-kog");
 }
 
 fn build_hivelytracker() {

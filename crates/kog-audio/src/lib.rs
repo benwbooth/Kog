@@ -70,6 +70,8 @@ pub mod syntrax;
 pub mod syntrax_decoder;
 pub mod track;
 pub mod usf;
+pub mod sndh;
+pub mod sndh_decoder;
 pub mod ym;
 pub mod ym_decoder;
 pub mod usf_decoder;
