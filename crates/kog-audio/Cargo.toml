@@ -40,6 +40,7 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 tempfile = "3.27.0"
 url = "2.5.8"
 zip = { version = "=8.6.0", default-features = false }
+delharc = { version = "0.8.0", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"

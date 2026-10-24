@@ -103,3 +103,6 @@
 [submodule "native/furnace"]
 	path = native/furnace
 	url = https://github.com/tildearrow/furnace.git
+[submodule "native/ayumi"]
+	path = native/ayumi
+	url = https://github.com/true-grue/ayumi.git

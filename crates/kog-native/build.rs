@@ -80,6 +80,7 @@ fn main() {
     build_adlmidi();
     build_openmpt();
     build_hivelytracker();
+    build_ayumi();
     build_vgmstream();
     build_adplug();
     build_libsidplayfp();
@@ -749,6 +750,21 @@ fn cpp_files(directory: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "cpp"))
         .collect()
+}
+
+fn build_ayumi() {
+    let source = Path::new("../../native/ayumi");
+    if !source.join("ayumi.c").is_file() {
+        panic!("ayumi submodule is missing; run `git submodule update --init --recursive`");
+    }
+    cc::Build::new()
+        .std("c11")
+        .include("../../native")
+        .files([source.join("ayumi.c"), PathBuf::from("../../native/ym_bridge.c")])
+        .warnings(false)
+        .compile("kog_ayumi");
+    watch_native("../../native/ayumi");
+    println!("cargo:rerun-if-changed=../../native/ym_bridge.c");
 }
 
 fn build_hivelytracker() {
