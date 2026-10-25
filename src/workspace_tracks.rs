@@ -116,6 +116,29 @@ impl WorkspaceTracks {
         std::thread::spawn(move || {
             let mut cache: HashMap<String, Track> = HashMap::new();
             let mut missing: std::collections::BTreeMap<usize, StoredEntry> = missing.into_iter().collect();
+            // Songs read on an earlier launch come straight from the saved
+            // cache; only new or changed files are opened.
+            let mut saved = crate::metadata_cache::MetadataCache::open();
+            if let Some(saved) = &saved {
+                let mut gone = false;
+                missing.retain(|index, entry| {
+                    if gone || cancel.load(Ordering::Relaxed) {
+                        gone = true;
+                        return true;
+                    }
+                    match saved.get(entry) {
+                        Some(track) => {
+                            gone = sender.send((*index, Ok(track))).is_err();
+                            false
+                        }
+                        None => true,
+                    }
+                });
+                if gone {
+                    return;
+                }
+            }
+            let mut unsaved: Vec<(StoredEntry, Track)> = Vec::new();
             loop {
                 let from = priority.load(Ordering::Relaxed);
                 let Some(index) = missing
@@ -142,10 +165,19 @@ impl WorkspaceTracks {
                 };
                 if let Ok(track) = &result {
                     cache.insert(entry_key(&entry), track.clone());
+                    unsaved.push((entry, track.clone()));
+                    if unsaved.len() >= 64
+                        && let Some(saved) = &mut saved
+                    {
+                        saved.put_all(&std::mem::take(&mut unsaved));
+                    }
                 }
                 if cancel.load(Ordering::Relaxed) || sender.send((index, result)).is_err() {
                     break;
                 }
+            }
+            if let Some(saved) = &mut saved {
+                saved.put_all(&unsaved);
             }
         });
     }
@@ -157,7 +189,8 @@ impl WorkspaceTracks {
 
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
-        for _ in 0..64 {
+        // Saved song info arrives all at once; take plenty per poll.
+        for _ in 0..4096 {
             let Some(receiver) = &self.receiver else {
                 break;
             };

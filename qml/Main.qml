@@ -2457,26 +2457,6 @@ ApplicationWindow {
         color: root.toolbarSurface
         border.width: 0
 
-        // Which build is running, tucked into the lower-right corner beneath
-        // the transport controls.
-        Label {
-            objectName: "buildStampFooter"
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.rightMargin: 30
-            anchors.bottomMargin: 4
-            visible: !root.compactToolbar && root.buildStamp.length > 0
-            text: qsTr("v%1 · %2").arg(Qt.application.version).arg(root.buildStamp)
-            font.pixelSize: 10
-            color: Qt.darker(root.palette.placeholderText, 1.2)
-            Accessible.name: text
-            ToolTip.visible: buildStampCornerHover.hovered
-            ToolTip.text: qsTr("Version %1, build %2")
-                .arg(Qt.application.version).arg(root.buildStamp)
-
-            HoverHandler { id: buildStampCornerHover }
-        }
-
         Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
@@ -2718,21 +2698,43 @@ ApplicationWindow {
                 Layout.alignment: Qt.AlignVCenter
                 spacing: 4
 
-                // Songs in the play queue or the playlist tab in front.
-                Label {
-                    objectName: "songCountLabel"
+                // Which build is running, beside the songs in the play queue
+                // or the playlist tab in front. On its own line it collided
+                // with the status line below the volume.
+                RowLayout {
                     Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignRight
-                    text: {
-                        const workspace = root.playlistWorkspace
-                        const count = workspace.active === "queue"
-                            ? appController.playlist_count
-                            : (workspace.entries || []).length
-                        return count === 1 ? qsTr("1 song") : qsTr("%1 songs").arg(count.toLocaleString(Qt.locale(), "f", 0))
+                    spacing: 8
+                    Label {
+                        id: buildStampLabel
+                        objectName: "buildStampFooter"
+                        Layout.fillWidth: true
+                        visible: !root.compactToolbar && root.buildStamp.length > 0
+                        text: qsTr("v%1 · %2").arg(Qt.application.version).arg(root.buildStamp)
+                        font.pixelSize: 10
+                        color: Qt.darker(root.palette.placeholderText, 1.2)
+                        elide: Text.ElideRight
+                        Accessible.name: text
+                        ToolTip.visible: buildStampCornerHover.hovered
+                        ToolTip.text: qsTr("Version %1, build %2")
+                            .arg(Qt.application.version).arg(root.buildStamp)
+
+                        HoverHandler { id: buildStampCornerHover }
                     }
-                    font.pixelSize: 10
-                    color: root.palette.placeholderText
-                    elide: Text.ElideRight
+                    Label {
+                        objectName: "songCountLabel"
+                        Layout.fillWidth: !buildStampLabel.visible
+                        horizontalAlignment: Text.AlignRight
+                        text: {
+                            const workspace = root.playlistWorkspace
+                            const count = workspace.active === "queue"
+                                ? appController.playlist_count
+                                : (workspace.entries || []).length
+                            return count === 1 ? qsTr("1 song") : qsTr("%1 songs").arg(count.toLocaleString(Qt.locale(), "f", 0))
+                        }
+                        font.pixelSize: 10
+                        color: root.palette.placeholderText
+                        elide: Text.ElideRight
+                    }
                 }
 
                 RowLayout {

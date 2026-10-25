@@ -96,6 +96,9 @@ impl PlaybackState {
 
 pub struct PlaybackEngine {
     output: Option<MixerDeviceSink>,
+    /// The mixed, equalized output, kept while the device is closed during
+    /// a pause or stop so the song resumes where it was.
+    bus: Option<Bus>,
     processing_mixer: Option<mixer::Mixer>,
     player: Option<Arc<Player>>,
     seek_worker: AsyncSeekWorker,
@@ -185,6 +188,66 @@ impl<S: Source<Item = f32>> Source for HeartbeatSource<S> {
     }
 }
 
+/// The processed mix, shared so a reopened device picks up where the closed
+/// one left off.
+#[derive(Clone)]
+struct Bus {
+    source: Arc<Mutex<Box<dyn Source<Item = f32> + Send>>>,
+    channels: ChannelCount,
+    sample_rate: SampleRate,
+}
+
+/// The device's end of the bus, taking samples a block at a time so the
+/// lock is not taken per sample.
+struct BusTap {
+    bus: Bus,
+    block: Vec<f32>,
+    at: usize,
+}
+
+impl BusTap {
+    fn new(bus: Bus) -> Self {
+        Self { bus, block: Vec::with_capacity(BUS_BLOCK), at: 0 }
+    }
+}
+
+/// Whole frames for any channel count up to 8.
+const BUS_BLOCK: usize = 840;
+
+impl Iterator for BusTap {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.at == self.block.len() {
+            let mut source = self.bus.source.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.block.clear();
+            self.block.extend((&mut **source).take(BUS_BLOCK));
+            self.at = 0;
+        }
+        let sample = *self.block.get(self.at)?;
+        self.at += 1;
+        Some(sample)
+    }
+}
+
+impl Source for BusTap {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.bus.channels
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.bus.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+}
+
 /// How long the device may go without taking audio before it counts as stuck.
 const STALLED_OUTPUT: Duration = Duration::from_secs(2);
 
@@ -235,6 +298,7 @@ impl PlaybackEngine {
     ) -> Self {
         Self {
             output: None,
+            bus: None,
             processing_mixer: None,
             player: None,
             seek_worker: AsyncSeekWorker::new(),
@@ -292,8 +356,13 @@ impl PlaybackEngine {
             PlaybackState::Playing => {
                 player.pause();
                 self.state = PlaybackState::Paused;
+                self.release_output();
             }
             PlaybackState::Paused => {
+                let player = player.clone();
+                if let Err(error) = self.ensure_output() {
+                    eprintln!("kog: {error}");
+                }
                 player.play();
                 self.state = PlaybackState::Playing;
             }
@@ -310,6 +379,16 @@ impl PlaybackEngine {
             self.meter.reset();
         }
         self.state = PlaybackState::Stopped;
+        self.release_output();
+    }
+
+    /// Close the audio device while nothing plays, so the desktop stops
+    /// showing Kog as playing sound (KDE's task manager badge, for one).
+    fn release_output(&mut self) {
+        if let Some(output) = self.output.take() {
+            // Closing can block on the device's thread; do it off this one.
+            let _ = std::thread::Builder::new().name("kog-close-output".to_owned()).spawn(move || drop(output));
+        }
     }
 
     pub fn seek(&self, position: Duration) -> Result<(), String> {
@@ -349,13 +428,14 @@ impl PlaybackEngine {
             return Ok(());
         }
         if self.output.is_some() {
-            let (output, processing_mixer) = self.create_output(output_device_id.as_deref())?;
+            let (output, processing_mixer, bus) = self.create_output(output_device_id.as_deref())?;
             self.seek_worker.cancel();
             if let Some(player) = self.player.take() {
                 player.stop();
             }
             self.output = Some(output);
             self.processing_mixer = Some(processing_mixer);
+            self.bus = Some(bus);
             self.state = PlaybackState::Stopped;
             self.meter.reset();
         }
@@ -410,6 +490,7 @@ impl PlaybackEngine {
                 player.stop();
             }
             self.processing_mixer = None;
+            self.bus = None;
             // Closing a wedged stream can block on its audio thread, so it
             // is closed off the caller's thread.
             if let Some(stuck) = self.output.take() {
@@ -419,17 +500,36 @@ impl PlaybackEngine {
         if self.output.is_some() {
             return Ok(());
         }
+        // Reopened after a pause or stop: carry on with the same mix.
+        if let Some(bus) = &self.bus {
+            let output = open_output(self.output_device_id.as_deref())?;
+            if output.config().channel_count() == bus.channels && output.config().sample_rate() == bus.sample_rate {
+                output.mixer().add(BusTap::new(bus.clone()));
+                self.heartbeat.beat();
+                self.output = Some(output);
+                return Ok(());
+            }
+            // The device now runs at another format: start a new mix.
+            drop(output);
+            self.seek_worker.cancel();
+            if let Some(player) = self.player.take() {
+                player.stop();
+            }
+            self.processing_mixer = None;
+            self.bus = None;
+        }
 
-        let (output, processing_mixer) = self.create_output(self.output_device_id.as_deref())?;
+        let (output, processing_mixer, bus) = self.create_output(self.output_device_id.as_deref())?;
         self.output = Some(output);
         self.processing_mixer = Some(processing_mixer);
+        self.bus = Some(bus);
         Ok(())
     }
 
     fn create_output(
         &self,
         output_device_id: Option<&str>,
-    ) -> Result<(MixerDeviceSink, mixer::Mixer), String> {
+    ) -> Result<(MixerDeviceSink, mixer::Mixer, Bus), String> {
         let output = open_output(output_device_id)?;
         let channels = output.config().channel_count();
         let sample_rate = output.config().sample_rate();
@@ -437,20 +537,25 @@ impl PlaybackEngine {
         // Rodio removes an empty mixer from its parent. Permanent silence keeps
         // this DSP bus alive between tracks without changing Player::empty().
         processing_mixer.add(Zero::new(channels, sample_rate));
-        output.mixer().add(HeartbeatSource {
-            input: AudioMeterSource::new(
-                EffectsSource::new(
-                    EqualizerSource::new(processing_source, self.equalizer.clone()),
-                    self.effects.clone(),
+        let bus = Bus {
+            source: Arc::new(Mutex::new(Box::new(HeartbeatSource {
+                input: AudioMeterSource::new(
+                    EffectsSource::new(
+                        EqualizerSource::new(processing_source, self.equalizer.clone()),
+                        self.effects.clone(),
+                    ),
+                    self.meter.clone(),
                 ),
-                self.meter.clone(),
-            ),
-            heartbeat: self.heartbeat.clone(),
-            count: 0,
-        });
+                heartbeat: self.heartbeat.clone(),
+                count: 0,
+            }))),
+            channels,
+            sample_rate,
+        };
+        output.mixer().add(BusTap::new(bus.clone()));
         // A new stream counts as live until it has had time to start.
         self.heartbeat.beat();
-        Ok((output, processing_mixer))
+        Ok((output, processing_mixer, bus))
     }
 }
 

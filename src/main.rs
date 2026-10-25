@@ -5,6 +5,7 @@ mod mml_view;
 mod rom_import;
 mod skin_library;
 mod tag_editor;
+mod metadata_cache;
 mod workspace_tracks;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
