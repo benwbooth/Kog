@@ -29,6 +29,7 @@ pub mod furnace;
 pub mod furnace_decoder;
 pub mod gme;
 pub mod gme_decoder;
+pub mod kss_decoder;
 pub mod gsf;
 pub mod gsf_decoder;
 pub mod hively;

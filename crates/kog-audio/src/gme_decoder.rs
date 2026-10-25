@@ -54,6 +54,14 @@ impl GmeBackend {
         }
     }
 
+    /// The track (a playlist position when a companion .m3u is present) and
+    /// its play length, for libkss, which plays KSS audio.
+    pub(crate) fn kss_track_and_plan(source: &PlaybackSource) -> Result<(u32, GmePlaybackPlan), String> {
+        let emu = GameMusicEmu::open(&source.path, -1)?;
+        let (track, _, plan) = Self::track_and_plan(&emu, source)?;
+        Ok((track, plan))
+    }
+
     fn track_and_plan(
         emu: &GameMusicEmu,
         source: &PlaybackSource,

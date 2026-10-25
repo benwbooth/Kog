@@ -668,3 +668,12 @@ General Public License version 3 or later. Its file68, libsc68 (emu68, io68,
 dial68) and unice68 sources are vendored in `native/sc68` with `COPYING`.
 `libsc68/sc68/trap68.h` was assembled from sc68's `asm/trapfunc.s` with its
 own as68 assembler.
+
+## libkss
+
+KSS files (MSX and Sega 8-bit game music) play through libkss by Mitsutaka
+Okazaki (https://github.com/digital-sound-antiques/libkss), under an ISC-style
+licence, with his emu2149, emu2212, emu2413, emu76489 and emu8950 sound-chip
+emulators (MIT License) and the KMZ80 Z80 emulator by Mamiya (public domain).
+The sources are vendored in `native/libkss` with their licences; libkss's
+separately licensed MML driver binaries are not included.

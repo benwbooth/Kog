@@ -82,6 +82,7 @@ fn main() {
     build_hivelytracker();
     build_ayumi();
     build_sc68();
+    build_libkss();
     build_vgmstream();
     build_adplug();
     build_libsidplayfp();
@@ -766,6 +767,44 @@ fn build_ayumi() {
         .compile("kog_ayumi");
     watch_native("../../native/ayumi");
     println!("cargo:rerun-if-changed=../../native/ym_bridge.c");
+}
+
+fn build_libkss() {
+    let root = Path::new("../../native/libkss");
+    if !root.join("src/kssplay.c").is_file() {
+        panic!("vendored libkss sources are missing from native/libkss");
+    }
+    let modules = ["emu2149", "emu2212", "emu2413", "emu76489", "emu8950", "kmz80"];
+    let mut build = cc::Build::new();
+    // The sources rely on unprototyped `void (*)()` callbacks, which C23
+    // (newer compilers' default) rejects.
+    build.std("gnu11").define("EXCLUDE_DRIVER_ALL", None).include(root.join("src")).include(root.join("modules"));
+    // Other vendored libraries link their own emu2413 and friends; rename
+    // every libkss symbol so the copies cannot collide.
+    let prefix = Path::new(&std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"))
+        .join("../../native/libkss_prefix.h");
+    build.flag("-include").flag(prefix.to_str().expect("UTF-8 source path"));
+    for directory in ["src", "src/kss", "src/vm", "src/filters", "src/rconv"] {
+        for entry in std::fs::read_dir(root.join(directory)).expect("reading libkss sources") {
+            let path = entry.expect("libkss source entry").path();
+            if path.extension().is_some_and(|extension| extension == "c") {
+                build.file(path);
+            }
+        }
+    }
+    for module in modules {
+        build.include(root.join("modules").join(module));
+        for entry in std::fs::read_dir(root.join("modules").join(module)).expect("reading libkss modules") {
+            let path = entry.expect("libkss module entry").path();
+            if path.extension().is_some_and(|extension| extension == "c") {
+                build.file(path);
+            }
+        }
+    }
+    build.file("../../native/libkss_bridge.c").warnings(false).compile("kog_libkss");
+    watch_native("../../native/libkss");
+    println!("cargo:rerun-if-changed=../../native/libkss_bridge.c");
+    println!("cargo:rerun-if-changed=../../native/libkss_prefix.h");
 }
 
 fn build_sc68() {
