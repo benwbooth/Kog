@@ -100,9 +100,18 @@ FocusScope {
     // Replaced only when the shown rows really change: every row and cell
     // binds to it.
     property var rows: []
+    // A tab not yet shown still lays out its rows (their song info loads in
+    // the background), so switching to it shows them at once.
+    readonly property int parkedCount: {
+        if (tabKey.length === 0 || live || shownState.entries) return 0
+        const parked = (workspaceState.tabs || []).find(item => item.key === tabKey)
+        return parked ? parked.count : 0
+    }
+    onParkedCountChanged: updateRows()
     function updateRows() {
         const words = searchQuery.toLowerCase().trim().split(/\s+/).filter(word => word.length > 0)
-        const next = (shownState.entries || []).map((entry, index) => index).filter(index => {
+        const entries = shownState.entries || Array.from({ length: parkedCount })
+        const next = entries.map((entry, index) => index).filter(index => {
             if (words.length === 0) return true
             const text = ["title", "artist", "albumartist", "album", "genre", "composer", "filename"]
                 .map(column => String(app.workspace_tab_value_at(activeKey, index, column))).join("\n").toLowerCase()
