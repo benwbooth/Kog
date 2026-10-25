@@ -92,7 +92,8 @@ libmt32emu library using a user-supplied MT-32 or CM-32L ROM directory.
 `adlmidi` links the maintained libADLMIDI revision `d114c31` for HMI, HMP/HMQ,
 DMX MUS, and Miles XMI playback through its Nuked OPL3 implementation.
 `game-music-emu` wraps the pinned upstream libGME 0.6.5 C API for AY, GBS, HES,
-KSS, NSF/NSFE, SAP, and SPC. These backends provide real playback, pause, stop,
+NSF/NSFE, SAP, and SPC. `libkss` plays KSS (MSX PSG/SCC/FM/MSX-AUDIO and Sega
+8-bit), reading song lists from NEZplug-style companion M3U files. These backends provide real playback, pause, stop,
 seek, position, volume, and automatic next-track behavior. Specialist backends
 remain separate so a broad fallback cannot erase behavior such as PSF
 dependency resolution, VGMStream subsongs, AdPlug subsongs, or

@@ -50,7 +50,8 @@ terminal updates both layouts; **1** or **2** gives that view the full height.
 | Organya | Wavetable pitches, original note lengths, volume/pan events, and drum activity. |
 | Syntrax | Live voice pitch, instruments, sequence rows, arpeggio and modulation state. |
 | AdPlug | OPL2/3 FM and rhythm key gates, frequencies, operator parameters, and player position. Levels represent programmed attenuation. |
-| GME: NSF/NSFE, GBS, AY, HES, KSS, SAP, SPC | Live hardware voices and registers, including supported NSF expansion chips. Tonal oscillators have frequency-derived keys. Sample voices retain their playback rates and identities. |
+| GME: NSF/NSFE, GBS, AY, HES, SAP, SPC | Live hardware voices and registers, including supported NSF expansion chips. Tonal oscillators have frequency-derived keys. Sample voices retain their playback rates and identities. |
+| libkss: KSS | Writes to the MSX PSG, SCC/SCC-I, MSX-MUSIC (with its five rhythm voices), MSX-AUDIO (with rhythm and ADPCM) and the Sega PSG with Game Gear panning. Tonal voices have frequency-derived keys; levels are programmed volumes. |
 | VGM/VGZ, S98, DRO, GYM | Writes sent to the sound cores producing the audio. Mapped chips expose tone or sample voices, key gates, frequencies, and controls. Other programmable DSP devices expose a labelled register view; their individual voices are not reconstructed. |
 | SID/RSID | Three voices per SID, waveform, frequency, pulse width, gate, ADSR, and filter controls. Release envelopes and software digi voices are not reconstructed. |
 | NCSF | Sixteen DS voices with source notes, pitch changes, instruments, envelopes, and sequence state. |

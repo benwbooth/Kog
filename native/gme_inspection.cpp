@@ -12,7 +12,6 @@
 #include "Spc_Emu.h"
 #include "Ay_Emu.h"
 #include "Hes_Emu.h"
-#include "Kss_Emu.h"
 #include "Sap_Emu.h"
 
 // The build overlay grants this reader friendship; all state belongs to the
@@ -175,28 +174,6 @@ struct KogGmeInspector {
         auto &v = voices.add("PCE ADPCM", 2, ad.playflag, 0, ad.volume / 255.0f);
         std::snprintf(v.details, sizeof(v.details), "Rate=%d | Address=%04X | Remaining=%d | Repeat=%d", ad.freq, ad.playptr, ad.playlength, ad.repeatflag);
     }
-    void kss(Kss_Emu &emu) {
-        classic(emu);
-        if (emu.sn) {
-            for (int i = 0; i < 3; ++i) {
-                auto &osc = emu.sn->squares[i];
-                char name[64]; std::snprintf(name, sizeof(name), "SN76489 Tone %d", i + 1);
-                auto &v = voices.add(name, 0, osc.volume > 0 && osc.period > 128, osc.period > 0 ? 3579545.0 / (2 * osc.period) : 0, osc.volume / 64.0f);
-                std::snprintf(v.details, sizeof(v.details), "Period=%d | Volume=%d | Routing=%d", osc.period, osc.volume, osc.output_select);
-            }
-            auto &v = voices.add("SN76489 Noise", 1, emu.sn->noise.volume > 0, 0, emu.sn->noise.volume / 64.0f);
-            std::snprintf(v.details, sizeof(v.details), "Period=%d | Feedback=%X", *emu.sn->noise.period, emu.sn->noise.feedback);
-        } else {
-            ay_regs(emu.ay.regs, 3579545.0, "MSX PSG", &emu.ay);
-            const auto *r = emu.scc.regs;
-            for (int i = 0; i < 5; ++i) {
-                const int period = r[0x80 + i * 2] | (r[0x81 + i * 2] & 15) << 8;
-                char name[64]; std::snprintf(name, sizeof(name), "SCC Wave %d", i + 1);
-                auto &v = voices.add(name, 0, (r[0x8f] & (1 << i)) && (r[0x8a + i] & 15), 3579545.0 / (32.0 * (period + 1)), (r[0x8a + i] & 15) / 15.0f);
-                std::snprintf(v.details, sizeof(v.details), "Period=%03X | Volume=%X | Enable=%02X", period, r[0x8a + i], r[0x8f]);
-            }
-        }
-    }
     void sap(Sap_Emu &emu) {
         classic(emu);
         for (int chip = 0; chip < (emu.info.stereo ? 2 : 1); ++chip) {
@@ -222,7 +199,6 @@ struct KogGmeInspector {
         else if (type == gme_spc_type) spc(static_cast<Spc_Emu &>(emu));
         else if (type == gme_ay_type) ay(static_cast<Ay_Emu &>(emu));
         else if (type == gme_hes_type) hes(static_cast<Hes_Emu &>(emu));
-        else if (type == gme_kss_type) kss(static_cast<Kss_Emu &>(emu));
         else if (type == gme_sap_type) sap(static_cast<Sap_Emu &>(emu));
     }
 };

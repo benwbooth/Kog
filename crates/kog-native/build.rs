@@ -477,7 +477,7 @@ fn build_game_music_emu() {
         .define("USE_GME_GBS", "ON")
         .define("USE_GME_GYM", "OFF")
         .define("USE_GME_HES", "ON")
-        .define("USE_GME_KSS", "ON")
+        .define("USE_GME_KSS", "OFF")
         .define("USE_GME_NSF", "ON")
         .define("USE_GME_NSFE", "ON")
         .define("USE_GME_SAP", "ON")
@@ -778,7 +778,7 @@ fn build_libkss() {
     let mut build = cc::Build::new();
     // The sources rely on unprototyped `void (*)()` callbacks, which C23
     // (newer compilers' default) rejects.
-    build.std("gnu11").define("EXCLUDE_DRIVER_ALL", None).include(root.join("src")).include(root.join("modules"));
+    build.std("gnu11").define("EXCLUDE_DRIVER_ALL", None).include("../../native").include(root.join("src")).include(root.join("modules"));
     // Other vendored libraries link their own emu2413 and friends; rename
     // every libkss symbol so the copies cannot collide.
     let prefix = Path::new(&std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"))

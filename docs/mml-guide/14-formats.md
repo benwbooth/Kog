@@ -47,7 +47,7 @@ FM synthesis. Key gates and frequencies give notes; operator settings appear
 as parameters. Levels are the programmed attenuation, not the sound's actual
 loudness. Rhythm-mode drums are hits.
 
-## Game Music Emu: NSF, NSFE, GBS, AY, HES, KSS, SAP, SPC
+## Game Music Emu: NSF, NSFE, GBS, AY, HES, SAP, SPC
 
 Live hardware voices and registers, including NES expansion chips. Tonal
 voices get keys from their frequency, which is where `#TUNE` tables come from:
