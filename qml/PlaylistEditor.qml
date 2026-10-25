@@ -46,13 +46,24 @@ FocusScope {
     readonly property int playingRow: rowData.current_index
     property bool switching: false
     onPlayingRowChanged: if (!switching) Qt.callLater(revealPlaying)
+    // Set while the playing song could not be shown yet (its row not laid
+    // out, as at startup when playback resumes); retried as rows arrive.
+    property bool revealPending: false
     function revealPlaying() {
         if (!live || playingRow < 0)
             return
         const at = rows.indexOf(playingRow)
-        if (at >= 0)
-            list.positionViewAtIndex(at, ListView.Contain)
+        revealPending = at < 0 || list.height <= 0
+        if (revealPending)
+            return
+        // Leave a row already in full view alone; otherwise bring it to the
+        // middle, clear of the horizontal scroll bar along the bottom edge.
+        const row = list.itemAtIndex(at)
+        const top = list.contentY, bottom = list.contentY + list.height - list.horizontalScrollGutter
+        if (!row || row.y < top || row.y + row.height > bottom)
+            list.positionViewAtIndex(at, ListView.Center)
     }
+    onRowsChanged: if (revealPending) Qt.callLater(revealPlaying)
     Timer {
         id: metadataBump
         interval: 1000
@@ -91,6 +102,9 @@ FocusScope {
         list.contentX = saved ? saved.x : 0
         list.contentY = saved ? saved.y : list.originY
         scrollSave.stop()
+        // A tab seen for the first time opens at its playing song.
+        if (!saved && live && playingRow >= 0)
+            revealPlaying()
     }
     onVisibleChanged: if (!visible) dropTarget = -1
     signal openVisualizer()
@@ -238,6 +252,7 @@ FocusScope {
         ListView {
             id: list
             objectName: "workspacePlaylistView"
+            onHeightChanged: if (editor.revealPending) Qt.callLater(editor.revealPlaying)
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
