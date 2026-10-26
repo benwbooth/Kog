@@ -115,6 +115,120 @@ pub fn import_playlist_file(db: &kog_core::db::LibraryDb, path: &Path) -> Result
     Ok((name, entries.len()))
 }
 
+/// Where each watched playlist file's last synced modification stamp is kept.
+const SYNCED_PLAYLIST_FILES: &str = "playlist-files";
+
+/// The folders whose playlist files Kog keeps in the library: a `Playlists`
+/// folder at the top of the music folder or one folder down
+/// (`Music/Playlists`, `Music/Chiptune/Playlists`).
+pub fn watched_playlist_folders(music: &Path) -> Vec<PathBuf> {
+    let mut parents = vec![music.to_path_buf()];
+    if let Ok(children) = std::fs::read_dir(music) {
+        let mut children: Vec<PathBuf> = children
+            .flatten()
+            .filter(|child| child.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|child| child.path())
+            .collect();
+        children.sort();
+        parents.extend(children);
+    }
+    parents
+        .into_iter()
+        .filter_map(|parent| {
+            ["Playlists", "playlists"].into_iter().map(|name| parent.join(name)).find(|folder| folder.is_dir())
+        })
+        .collect()
+}
+
+/// What changed when the library caught up with its playlist folders.
+#[derive(Debug, Default)]
+pub struct PlaylistFolderSync {
+    pub imported: Vec<String>,
+    pub updated: Vec<String>,
+    pub failed: Vec<String>,
+}
+
+/// Bring the library's playlists up to date with the playlist files in
+/// `folders`, each playlist named after its file. A new file is imported and
+/// a changed file replaces its playlist's songs. A file first seen when its
+/// playlist already exists is only noted, so edits made in Kog last until the
+/// file itself changes; a playlist deleted in Kog likewise stays deleted.
+/// Removing a file leaves its playlist alone.
+pub fn sync_playlist_folders(db: &kog_core::db::LibraryDb, folders: &[PathBuf]) -> PlaylistFolderSync {
+    let mut sync = PlaylistFolderSync::default();
+    let mut playlists = None;
+    for folder in folders {
+        let Ok(files) = std::fs::read_dir(folder) else { continue };
+        let mut files: Vec<PathBuf> = files
+            .flatten()
+            .map(|file| file.path())
+            .filter(|path| Playlist::is_path(path) && path.is_file())
+            .filter(|path| !path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')))
+            .collect();
+        files.sort();
+        for path in files {
+            let Ok(metadata) = std::fs::metadata(&path) else { continue };
+            let Ok(modified) = metadata.modified() else { continue };
+            // A file written moments ago may still be half written.
+            if modified.elapsed().is_ok_and(|age| age < std::time::Duration::from_secs(2)) {
+                continue;
+            }
+            let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let stamp = format!("{}:{}", since_epoch.as_nanos(), metadata.len());
+            let key = path.to_string_lossy();
+            let synced = db.load_state(SYNCED_PLAYLIST_FILES, &key).ok().flatten().map(|state| state.value);
+            if synced.as_deref() == Some(stamp.as_str()) {
+                continue;
+            }
+            let Some(name) = path.file_stem().map(|stem| stem.to_string_lossy().trim().to_owned()) else { continue };
+            if playlists.is_none() {
+                match db.list_playlists() {
+                    Ok(list) => playlists = Some(list),
+                    Err(error) => {
+                        sync.failed.push(error);
+                        return sync;
+                    }
+                }
+            }
+            let existing = playlists.as_ref().and_then(|list| list.iter().find(|playlist| playlist.name == name)).map(|playlist| playlist.id);
+            if synced.is_some() || existing.is_none() {
+                let result = Playlist::open(&path).and_then(|playlist| {
+                    let entries: Vec<StoredEntry> = playlist.entries().iter().map(StoredEntry::from).collect();
+                    if entries.is_empty() {
+                        return Err(format!("{} has no tracks", path.display()));
+                    }
+                    match existing {
+                        Some(id) => db.replace_entries(id, &entries).map(|()| false),
+                        None => {
+                            let id = db.create_playlist_with_entries(&name, &entries)?;
+                            // Among playlists kept in name order, the new one takes its place.
+                            let names: Vec<&str> = playlists.iter().flatten().map(|playlist| playlist.name.as_str()).collect();
+                            if names.windows(2).all(|pair| pair[0] <= pair[1]) {
+                                let to = names.iter().take_while(|other| **other < name.as_str()).count();
+                                db.move_playlist(id, to)?;
+                            }
+                            Ok(true)
+                        }
+                    }
+                });
+                match result {
+                    Ok(true) => {
+                        sync.imported.push(name);
+                        playlists = None;
+                    }
+                    Ok(false) => sync.updated.push(name),
+                    // Retried once the file changes again.
+                    Err(error) => sync.failed.push(error),
+                }
+            }
+            if let Err(error) = db.put_state(SYNCED_PLAYLIST_FILES, &key, &stamp) {
+                sync.failed.push(error);
+            }
+        }
+    }
+    sync
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Playlist {
     entries: Vec<PlaylistEntry>,

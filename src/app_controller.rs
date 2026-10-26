@@ -4205,15 +4205,35 @@ impl qobject::AppController {
     }
 
     /// Reload the playlists when the library changed outside this window:
-    /// the server, the terminal player or a script saving playlists.
+    /// the server, the terminal player or a script saving playlists. Playlist
+    /// files in the music folder's Playlists folders are imported here too.
     pub fn poll_library_changes(mut self: Pin<&mut Self>) {
+        let folders = kog_audio::playlist::watched_playlist_folders(&self.as_ref().rust().directory);
+        let sync = kog_audio::playlist::sync_playlist_folders(&self.as_ref().rust().library_db, &folders);
         let version = self.as_ref().rust().library_db.data_version();
+        let mut changed = !sync.imported.is_empty() || !sync.updated.is_empty();
         if version != self.as_ref().rust().library_version {
             let first = self.as_ref().rust().library_version == 0;
             self.as_mut().rust_mut().library_version = version;
-            if !first {
-                self.as_mut().bump_playlists_revision();
+            changed |= !first;
+        }
+        if changed {
+            self.as_mut().bump_playlists_revision();
+        }
+        let mut status = match (sync.imported.as_slice(), sync.updated.as_slice()) {
+            ([], []) => String::new(),
+            ([name], []) => format!("Added playlist {name}"),
+            ([], [name]) => format!("Updated playlist {name}"),
+            (imported, updated) => format!("Added {} and updated {} playlists", imported.len(), updated.len()),
+        };
+        if let Some(error) = sync.failed.first() {
+            if !status.is_empty() {
+                status.push_str("; ");
             }
+            status.push_str(error);
+        }
+        if !status.is_empty() {
+            self.as_mut().set_status(qstring(status));
         }
     }
 
