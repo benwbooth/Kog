@@ -4149,7 +4149,11 @@ fn App() -> impl IntoView {
     // while the transport still says playing: the pane highlights the next
     // row and nothing sounds until the visitor pokes it again. Watch the
     // element so playback self-heals: re-issue play after a spurious pause,
-    // and force a fresh load when the source itself failed.
+    // and force a fresh load when the source itself failed. A stream that
+    // stops delivering (a stalled request, or a server restarted mid-load)
+    // leaves the element waiting at the same spot with no error at all, so a
+    // position that has not moved for 30 seconds reloads the stream
+    // from where it stands.
     {
         let window = web_sys::window().expect("window for the playback watchdog");
         let playing = playing.clone();
@@ -4157,14 +4161,39 @@ fn App() -> impl IntoView {
         let current = current.clone();
         let queue = queue.clone();
         let source_changing = source_changing.clone();
+        // The position at the last tick and how many ticks it has held still.
+        let stall = std::cell::Cell::new((f64::NAN, 0_u32));
         let watchdog = Closure::<dyn FnMut()>::new(move || {
             let Some(audio) = audio_ref.get() else {
                 return;
             };
             if !playing.get_untracked() || current.get_untracked() >= queue.get_untracked().len() {
+                stall.set((f64::NAN, 0));
                 return;
             }
-            if audio.error().is_some() || source_changing.get_untracked() {
+            if audio.error().is_some() {
+                return;
+            }
+            let position = audio.current_time();
+            let (last, ticks) = stall.get();
+            let ticks = if audio.ended() || (position - last).abs() > 0.01 { 0 } else { ticks + 1 };
+            if ticks >= 15 {
+                stall.set((f64::NAN, 0));
+                if let Some(token) = output_token.get_untracked() {
+                    source_changing.set(false);
+                    backend.send(SessionCommand::Output {
+                        token,
+                        event: OutputEvent::Progress {
+                            seconds: position,
+                            duration: duration.get_untracked(),
+                        },
+                    });
+                    backend.send(SessionCommand::ReloadOutput);
+                }
+                return;
+            }
+            stall.set((position, ticks));
+            if source_changing.get_untracked() {
                 return;
             }
             if audio.paused() && !audio.ended() {
