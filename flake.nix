@@ -174,6 +174,8 @@
                 ./Cargo.lock
                 ./crates/kog-native
                 ./native
+                # Targets of the root manifest's [patch.crates-io].
+                ./vendor
               ] ++ map (member: ./. + "/${member}/Cargo.toml") (builtins.filter (member: member != "crates/kog-native")
                 (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.members));
             });
@@ -215,7 +217,17 @@
               pname = "kog-native";
               src = craneLib.mkDummySrc {
                 src = nativeTree;
+                # nativeTree leaves out the Rust sources, so mkDummySrc cannot
+                # detect the auto-discovered targets and Cargo would reject
+                # the manifests; stub them here.
                 extraDummyScript = ''
+                  mkdir -p $out/src
+                  [ -e $out/src/main.rs ] || echo 'fn main() {}' > $out/src/main.rs
+                  for member in $out/crates/*/; do
+                    [ -e $member/Cargo.toml ] || continue
+                    mkdir -p $member/src
+                    [ -e $member/src/lib.rs ] || touch $member/src/lib.rs
+                  done
                   rm -rf $out/crates/kog-native $out/native
                   cp -r ${nativeTree}/crates/kog-native $out/crates/kog-native
                   cp -r ${nativeTree}/native $out/native
