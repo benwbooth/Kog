@@ -2116,6 +2116,15 @@ fn App() -> impl IntoView {
             .unwrap_or(260.0),
     );
     let (resizing_sidebar, set_resizing_sidebar) = signal(false);
+    // Draggable Playlists section height (the splitter between Files and
+    // Playlists), like the desktop's; Files takes the rest of the sidebar.
+    let (playlists_height, set_playlists_height) = signal(
+        load("kog.playlists-height")
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .map(|value| value.max(60.0))
+            .unwrap_or(260.0),
+    );
+    let (resizing_playlists, set_resizing_playlists) = signal(false);
     let (sidebar_visible, set_sidebar_visible) = signal(
         load("kog.sidebar")
             .map(|value| value != "0")
@@ -5992,7 +6001,10 @@ fn App() -> impl IntoView {
                         on:pointercancel=move |_| set_resizing_sidebar.set(false)
                     ></div>
 
-                    <aside class="sidebar">
+                    <aside
+                        class="sidebar"
+                        style=move || format!("--playlists-height: {:.0}px", playlists_height.get())
+                    >
                         <section class="section files">
                             <div
                                 class="section-header"
@@ -6413,7 +6425,52 @@ fn App() -> impl IntoView {
                             </Show>
                         </section>
 
-                        <section class="section playlists">
+                        <Show
+                            when=move || files_expanded.get() && playlists_expanded.get()
+                            fallback=|| ()
+                        >
+                            <div
+                                class="section-resizer"
+                                class:resizing=move || resizing_playlists.get()
+                                title="Drag to resize the playlists"
+                                on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                    ev.target().and_then(|target| {
+                                        target.dyn_into::<web_sys::Element>().ok()
+                                    })
+                                    .and_then(|element| element.set_pointer_capture(ev.pointer_id()).ok());
+                                    set_resizing_playlists.set(true);
+                                }
+                                on:pointermove=move |ev: web_sys::PointerEvent| {
+                                    if !resizing_playlists.get_untracked() {
+                                        return;
+                                    }
+                                    let Some(sidebar) = ev.target()
+                                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                                        .and_then(|element| element.parent_element())
+                                    else {
+                                        return;
+                                    };
+                                    let bounds = sidebar.get_bounding_client_rect();
+                                    // Files keeps its header and a few rows.
+                                    let most = (bounds.height() - 90.0).max(60.0);
+                                    let height = (bounds.bottom() - ev.client_y() as f64).clamp(60.0, most);
+                                    set_playlists_height.set(height);
+                                }
+                                on:pointerup=move |_| {
+                                    set_resizing_playlists.set(false);
+                                    store(
+                                        "kog.playlists-height",
+                                        &format!("{:.0}", playlists_height.get_untracked()),
+                                    );
+                                }
+                                on:pointercancel=move |_| set_resizing_playlists.set(false)
+                            ></div>
+                        </Show>
+
+                        <section
+                            class="section playlists"
+                            class:sized=move || files_expanded.get() && playlists_expanded.get()
+                        >
                             <div
                                 class="section-header"
                                 role="button"

@@ -438,6 +438,46 @@ button:focus-visible {
   flex: 1;
 }
 
+/* With both sections open, Playlists keeps the height its splitter sets
+ * (the desktop's 260px by default) and Files takes the rest, instead of a
+ * long playlist list pushing Files out of the sidebar. */
+.section.playlists.sized {
+  flex: none;
+  height: var(--playlists-height, 260px);
+  max-height: calc(100% - 90px);
+}
+
+.section.playlists.sized .section-body {
+  flex: 1;
+}
+
+.section-resizer + .section {
+  border-top: 0;
+}
+
+/* The splitter between Files and Playlists. */
+.section-resizer {
+  position: relative;
+  height: 1px;
+  flex: none;
+  background: var(--border);
+  cursor: row-resize;
+  touch-action: none;
+}
+
+/* A wider invisible grab zone around the thin line. */
+.section-resizer::before {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+  z-index: 1;
+}
+
+.section-resizer:hover,
+.section-resizer.resizing {
+  background: color-mix(in srgb, var(--highlight) 55%, transparent);
+}
+
 /* The music-folder affordance: icon buttons plus the elided root path. */
 .tree-root {
   display: flex;
@@ -2356,12 +2396,16 @@ body.touch .track .index-cell {
   .mobile-playlists .playlist,
   .mobile-library .section.playlists,
   .mobile-playlists .section.files,
+  .mobile-library .section-resizer,
+  .mobile-playlists .section-resizer,
   .drawer-scrim {
     display: none !important;
   }
 
   .mobile-playlists .section.playlists {
     flex: 1;
+    height: auto;
+    max-height: none;
     border-top: 0;
   }
 
