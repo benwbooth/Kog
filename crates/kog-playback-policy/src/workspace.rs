@@ -439,6 +439,36 @@ impl Workspace {
         }
         Ok(workspace)
     }
+    /// Load a tab again when it holds no songs because its load failed or
+    /// was cut off (a page reload mid-load restores it empty), so opening or
+    /// focusing it shows the playlist instead of an empty tab. Unsaved edits
+    /// and operations in flight are left alone.
+    fn reload_unloaded(&mut self, key: &str) -> Effect {
+        let stale = self.tabs.iter().any(|t| {
+            t.key == key
+                && t.loading.is_none()
+                && t.saving.is_none()
+                && !t.dirty()
+                && t.draft.rows.is_empty()
+                && t.error.is_some()
+        });
+        if !stale {
+            return Effect::None;
+        }
+        self.serial += 1;
+        let generation = self.serial;
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.key == key) else {
+            return Effect::None;
+        };
+        tab.loading = Some(generation);
+        tab.error = None;
+        Effect::Load {
+            key: tab.key.clone(),
+            scope: tab.scope.clone(),
+            playlist_id: tab.playlist_id,
+            generation,
+        }
+    }
     fn active_mut(&mut self) -> Result<&mut Tab, String> {
         self.tabs
             .iter_mut()
@@ -532,7 +562,7 @@ impl Workspace {
                 }
                 self.active = key.clone();
                 if self.tabs.iter().any(|t| t.key == key) {
-                    return Ok(Effect::None);
+                    return Ok(self.reload_unloaded(&key));
                 }
                 self.serial += 1;
                 let generation = self.serial;
@@ -600,7 +630,8 @@ impl Workspace {
                 if key != QUEUE_TAB && !self.tabs.iter().any(|t| t.key == key) {
                     return Err("Playlist tab no longer exists".into());
                 }
-                self.active = key;
+                self.active = key.clone();
+                return Ok(self.reload_unloaded(&key));
             }
             MoveTab { key, before } => {
                 if self.pending_close.is_some() {
