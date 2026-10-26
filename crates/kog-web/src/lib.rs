@@ -2489,11 +2489,9 @@ fn App() -> impl IntoView {
     });
     let all_rows = Memo::new(move |_| {
         let entries = pane_entries.read();
-        let cache = metadata.read();
-        let failed = metadata_failed.read();
+        // Rows show at once; their tags fill in as each batch arrives.
         pane_visible.read().iter().copied().filter_map(|index| {
-            entries.get(index).filter(|entry| metadata_ready(&cache, &failed, entry))
-                .map(|entry| (index, entry.clone()))
+            entries.get(index).map(|entry| (index, entry.clone()))
         }).collect::<Vec<_>>()
     });
     let view_rows = move || all_rows.get();
@@ -4372,31 +4370,47 @@ fn App() -> impl IntoView {
         levels_poll.forget();
     }
 
-    // One batched tag lookup for the queue and displayed playlist. The cache
-    // is read untracked so a successful fetch does not immediately schedule the
-    // same request again; a re-render of the rows is the only effect.
+    // Tag lookups for the queue and the displayed playlist, in small batches
+    // so rows fill in as their tags arrive: the rows in view first, then the
+    // queue, then the rest of the pane. Only a few batches run at once, so a
+    // scroll reorders what is fetched next. The cache is read untracked so a
+    // finished batch does not refetch itself; `metadata_round` asks for the
+    // next batches instead.
+    const METADATA_BATCH: usize = 25;
+    const METADATA_BATCHES_IN_FLIGHT: usize = 4;
+    let (metadata_round, set_metadata_round) = signal(0_u64);
+    let metadata_in_flight = StoredValue::new(HashSet::<String>::new());
+    let metadata_batches = StoredValue::new(0_usize);
     Effect::new(move |_| {
+        metadata_round.track();
         if !connected.get() {
             return;
         }
-        let mut entries = queue.get();
+        let visible: Vec<Entry> = {
+            let range = row_range.get();
+            all_rows.with(|rows| rows.get(range).map(|rows| rows.iter().map(|(_, entry)| entry.clone()).collect()).unwrap_or_default())
+        };
+        let mut entries = visible;
+        entries.extend(queue.get());
         entries.extend(pane_entries.get());
-        let mut seen = HashSet::new();
-        entries.retain(|entry| seen.insert(meta_key(entry)));
-        if entries.is_empty() {
-            return;
-        }
         let known = metadata.get_untracked();
-        let missing: Vec<Entry> = entries
+        // A failed batch is not retried in a loop.
+        let failed = metadata_failed.get_untracked();
+        let mut seen = HashSet::new();
+        let mut missing: Vec<Entry> = entries
             .into_iter()
-            .filter(|entry| !known.contains_key(&meta_key(entry)))
+            .filter(|entry| {
+                let key = meta_key(entry);
+                !known.contains_key(&key)
+                    && !failed.contains(&key)
+                    && !metadata_in_flight.with_value(|in_flight| in_flight.contains(&key))
+                    && seen.insert(key)
+            })
             .collect();
-        if missing.is_empty() {
-            return;
-        }
         let url = format!("{}/api/metadata", base());
         let header = auth().header();
-        for chunk in missing.chunks(1000) {
+        while metadata_batches.get_value() < METADATA_BATCHES_IN_FLIGHT && !missing.is_empty() {
+            let chunk: Vec<Entry> = missing.drain(..missing.len().min(METADATA_BATCH)).collect();
             let body = serde_json::Value::Array(
                 chunk
                     .iter()
@@ -4411,6 +4425,8 @@ fn App() -> impl IntoView {
                     .collect(),
             );
             let keys: Vec<String> = chunk.iter().map(meta_key).collect();
+            metadata_in_flight.update_value(|in_flight| in_flight.extend(keys.iter().cloned()));
+            metadata_batches.update_value(|batches| *batches += 1);
             let url = url.clone();
             let header = header.clone();
             leptos::task::spawn_local(async move {
@@ -4418,29 +4434,37 @@ fn App() -> impl IntoView {
                     .await
                     .ok()
                     .and_then(|value| serde_json::from_value::<Vec<Option<MetaRow>>>(value).ok());
-                let Some(rows) = rows else {
-                    set_metadata_failed.update(|failed| {
+                metadata_batches.update_value(|batches| *batches = batches.saturating_sub(1));
+                metadata_in_flight.update_value(|in_flight| {
+                    for key in &keys {
+                        in_flight.remove(key);
+                    }
+                });
+                match rows {
+                    None => set_metadata_failed.update(|failed| {
                         Rc::make_mut(failed).extend(keys);
-                    });
-                    return;
-                };
-                let updates: Vec<(String, Option<MetaRow>)> = keys
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, key)| (key, rows.get(index).cloned().flatten()))
-                    .collect();
-                set_metadata.update(|map| {
-                    let map = Rc::make_mut(map);
-                    for (key, row) in &updates {
-                        map.insert(key.clone(), row.clone());
+                    }),
+                    Some(rows) => {
+                        let updates: Vec<(String, Option<MetaRow>)> = keys
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, key)| (key, rows.get(index).cloned().flatten()))
+                            .collect();
+                        set_metadata.update(|map| {
+                            let map = Rc::make_mut(map);
+                            for (key, row) in &updates {
+                                map.insert(key.clone(), row.clone());
+                            }
+                        });
+                        set_metadata_failed.update(|failed| {
+                            let failed = Rc::make_mut(failed);
+                            for (key, _) in updates {
+                                failed.remove(&key);
+                            }
+                        });
                     }
-                });
-                set_metadata_failed.update(|failed| {
-                    let failed = Rc::make_mut(failed);
-                    for (key, _) in updates {
-                        failed.remove(&key);
-                    }
-                });
+                }
+                set_metadata_round.update(|round| *round += 1);
             });
         }
     });
@@ -4727,12 +4751,7 @@ fn App() -> impl IntoView {
     // their total probed duration, in the desktop's footer spirit.
     let status_line = move || -> String {
         let cache = metadata.read();
-        let failed = metadata_failed.read();
-        let total = pane_entries
-            .read()
-            .iter()
-            .filter(|entry| metadata_ready(&cache, &failed, entry))
-            .count();
+        let total = pane_entries.read().len();
         let rows = view_rows();
         let shown = rows.len();
         let mut text = if shown == total {
@@ -7064,8 +7083,9 @@ fn App() -> impl IntoView {
                                                                 return format!("{status}{queued}{stop}");
                                                             }
                                                             if id == ColumnId::Title {
+                                                                // The file name stands in until the tags arrive.
                                                                 display_title(&cache, &metadata_failed.read(), &entry)
-                                                                    .unwrap_or_default()
+                                                                    .unwrap_or_else(|| entry.name.clone())
                                                             } else {
                                                                 column_text(
                                                                     id,
