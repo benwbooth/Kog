@@ -4411,43 +4411,87 @@ fn App() -> impl IntoView {
         levels_poll.forget();
     }
 
-    // Tag lookups for the queue and the displayed playlist, in small batches
-    // so rows fill in as their tags arrive: the rows in view first, then the
-    // queue, then the rest of the pane. Only a few batches run at once, so a
-    // scroll reorders what is fetched next. The cache is read untracked so a
-    // finished batch does not refetch itself; `metadata_round` asks for the
-    // next batches instead.
-    const METADATA_BATCH: usize = 25;
-    const METADATA_BATCHES_IN_FLIGHT: usize = 4;
+    // Tag lookups for the queue and the displayed playlist, in batches so
+    // rows fill in as their tags arrive: the rows in view first, then the
+    // queue, then the rest of the pane. Only two batches run at once, so a
+    // scroll reorders what is fetched next. Finished batches are applied
+    // together at most four times a second: every change to the tag cache
+    // re-derives the queue's sort rows and the pane, which is costly with
+    // big playlists. The cache is read untracked so applying tags does not
+    // refetch; `metadata_round` asks for the next batches instead.
+    const METADATA_BATCH: usize = 100;
+    const METADATA_BATCHES_IN_FLIGHT: usize = 2;
     let (metadata_round, set_metadata_round) = signal(0_u64);
+    // Keys being fetched or waiting to be applied.
     let metadata_in_flight = StoredValue::new(HashSet::<String>::new());
     let metadata_batches = StoredValue::new(0_usize);
+    let metadata_arrived = StoredValue::new(Vec::<(String, Option<MetaRow>)>::new());
+    let metadata_missed = StoredValue::new(Vec::<String>::new());
+    let metadata_flush_pending = StoredValue::new(false);
+    let flush_metadata = move || {
+        if metadata_flush_pending.get_value() {
+            return;
+        }
+        metadata_flush_pending.set_value(true);
+        leptos::task::spawn_local(async move {
+            let _ = sleep_ms(250).await;
+            metadata_flush_pending.set_value(false);
+            let arrived = metadata_arrived.try_update_value(std::mem::take).unwrap_or_default();
+            let missed = metadata_missed.try_update_value(std::mem::take).unwrap_or_default();
+            metadata_in_flight.update_value(|in_flight| {
+                for (key, _) in &arrived {
+                    in_flight.remove(key);
+                }
+                for key in &missed {
+                    in_flight.remove(key);
+                }
+            });
+            if !arrived.is_empty() {
+                set_metadata.update(|map| {
+                    let map = Rc::make_mut(map);
+                    for (key, row) in &arrived {
+                        map.insert(key.clone(), row.clone());
+                    }
+                });
+            }
+            if !arrived.is_empty() || !missed.is_empty() {
+                set_metadata_failed.update(|failed| {
+                    let failed = Rc::make_mut(failed);
+                    for (key, _) in &arrived {
+                        failed.remove(key);
+                    }
+                    failed.extend(missed);
+                });
+            }
+        });
+    };
     Effect::new(move |_| {
         metadata_round.track();
         if !connected.get() {
             return;
         }
-        let visible: Vec<Entry> = {
-            let range = row_range.get();
-            all_rows.with(|rows| rows.get(range).map(|rows| rows.iter().map(|(_, entry)| entry.clone()).collect()).unwrap_or_default())
-        };
-        let mut entries = visible;
-        entries.extend(queue.get());
-        entries.extend(pane_entries.get());
+        if metadata_batches.get_value() >= METADATA_BATCHES_IN_FLIGHT {
+            return;
+        }
         let known = metadata.get_untracked();
         // A failed batch is not retried in a loop.
         let failed = metadata_failed.get_untracked();
         let mut seen = HashSet::new();
-        let mut missing: Vec<Entry> = entries
-            .into_iter()
-            .filter(|entry| {
-                let key = meta_key(entry);
-                !known.contains_key(&key)
-                    && !failed.contains(&key)
-                    && !metadata_in_flight.with_value(|in_flight| in_flight.contains(&key))
-                    && seen.insert(key)
-            })
-            .collect();
+        let mut missing = Vec::new();
+        let mut consider = |entry: &Entry| {
+            let key = meta_key(entry);
+            if !known.contains_key(&key)
+                && !failed.contains(&key)
+                && !metadata_in_flight.with_value(|in_flight| in_flight.contains(&key))
+                && seen.insert(key)
+            {
+                missing.push(entry.clone());
+            }
+        };
+        let range = row_range.get();
+        all_rows.with(|rows| rows.get(range).into_iter().flatten().for_each(|(_, entry)| consider(entry)));
+        queue.with(|entries| entries.iter().for_each(&mut consider));
+        pane_entries.with(|entries| entries.iter().for_each(&mut consider));
         let url = format!("{}/api/metadata", base());
         let header = auth().header();
         while metadata_batches.get_value() < METADATA_BATCHES_IN_FLIGHT && !missing.is_empty() {
@@ -4476,35 +4520,17 @@ fn App() -> impl IntoView {
                     .ok()
                     .and_then(|value| serde_json::from_value::<Vec<Option<MetaRow>>>(value).ok());
                 metadata_batches.update_value(|batches| *batches = batches.saturating_sub(1));
-                metadata_in_flight.update_value(|in_flight| {
-                    for key in &keys {
-                        in_flight.remove(key);
-                    }
-                });
                 match rows {
-                    None => set_metadata_failed.update(|failed| {
-                        Rc::make_mut(failed).extend(keys);
+                    None => metadata_missed.update_value(|missed| missed.extend(keys)),
+                    Some(rows) => metadata_arrived.update_value(|arrived| {
+                        arrived.extend(
+                            keys.into_iter()
+                                .enumerate()
+                                .map(|(index, key)| (key, rows.get(index).cloned().flatten())),
+                        )
                     }),
-                    Some(rows) => {
-                        let updates: Vec<(String, Option<MetaRow>)> = keys
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, key)| (key, rows.get(index).cloned().flatten()))
-                            .collect();
-                        set_metadata.update(|map| {
-                            let map = Rc::make_mut(map);
-                            for (key, row) in &updates {
-                                map.insert(key.clone(), row.clone());
-                            }
-                        });
-                        set_metadata_failed.update(|failed| {
-                            let failed = Rc::make_mut(failed);
-                            for (key, _) in updates {
-                                failed.remove(&key);
-                            }
-                        });
-                    }
                 }
+                flush_metadata();
                 set_metadata_round.update(|round| *round += 1);
             });
         }
@@ -4793,7 +4819,7 @@ fn App() -> impl IntoView {
     let status_line = move || -> String {
         let cache = metadata.read();
         let total = pane_entries.read().len();
-        let rows = view_rows();
+        let rows = all_rows.read();
         let shown = rows.len();
         let mut text = if shown == total {
             if total == 1 {
