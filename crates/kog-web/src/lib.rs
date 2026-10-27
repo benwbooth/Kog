@@ -4221,7 +4221,9 @@ fn App() -> impl IntoView {
     {
         let audio_ref = audio_ref.clone();
         let playing = playing.clone();
-        let graph: Rc<RefCell<Option<(web_sys::AudioContext, web_sys::AnalyserNode)>>> =
+        // The tap, and the audio element it listens to: each song gets a new
+        // element, so a tap on the previous one only hears silence.
+        let graph: Rc<RefCell<Option<(web_sys::AudioContext, web_sys::AnalyserNode, web_sys::HtmlAudioElement)>>> =
             Rc::new(RefCell::new(None));
         // Warmed context, ready before the tap exists.
         let context_slot: Rc<RefCell<Option<web_sys::AudioContext>>> = Rc::new(RefCell::new(None));
@@ -4285,18 +4287,20 @@ fn App() -> impl IntoView {
                 if context.state() != web_sys::AudioContextState::Running {
                     return;
                 }
-                if audio_ref.get().is_none() {
+                let Some(audio) = audio_ref.get() else {
                     return;
-                }
+                };
                 let Ok(analyser) = context.create_analyser() else {
                     return;
                 };
                 analyser.set_fft_size(2048);
                 // Tap the element's output without diverting it. web-sys
-                // has no captureStream binding, so call it on the element
-                // itself (the page's only audio element, class-marked).
-                let Ok(stream_value) =
-                    js_sys::eval("document.querySelector('audio.audio').captureStream()")
+                // has no captureStream binding, so call it on the current
+                // element itself; the outgoing song's element may still be
+                // in the page while the next one mounts.
+                let Ok(stream_value) = js_sys::Reflect::get(&audio, &"captureStream".into())
+                    .and_then(|capture| capture.dyn_into::<js_sys::Function>())
+                    .and_then(|capture| capture.call0(&audio))
                 else {
                     return;
                 };
@@ -4320,7 +4324,7 @@ fn App() -> impl IntoView {
                 {
                     return;
                 }
-                *graph.borrow_mut() = Some((context, analyser));
+                *graph.borrow_mut() = Some((context, analyser, audio));
             })
         };
 
@@ -4344,6 +4348,14 @@ fn App() -> impl IntoView {
                 }
                 return;
             }
+            // A new song's element is tapped at once, not after the old
+            // tap has read silence long enough to be dropped.
+            let stale = graph.borrow().as_ref().is_some_and(|(_, _, tapped)| *tapped != audio);
+            if stale {
+                if let Some((_, analyser, _)) = graph.borrow_mut().take() {
+                    let _ = analyser.disconnect();
+                }
+            }
             if graph.borrow().is_none() {
                 build_tap();
                 if graph.borrow().is_none() {
@@ -4351,7 +4363,7 @@ fn App() -> impl IntoView {
                 }
             }
             // Cloned handles: no borrow is held across the stale-tap drop.
-            let Some((context, analyser)) = graph.borrow().clone() else {
+            let Some((context, analyser, _)) = graph.borrow().clone() else {
                 return;
             };
             let _ = context.resume();
