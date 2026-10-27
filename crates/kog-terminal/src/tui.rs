@@ -79,6 +79,7 @@ fn export_with_effects() -> bool {
     kog_audio::settings::load_text(EXPORT_EFFECTS_SETTING).as_deref() == Some("true")
 }
 const SIDEBAR_WIDTH_FILE: &str = "tui-sidebar-width";
+const PLAYLISTS_HEIGHT_FILE: &str = "tui-playlists-height";
 const TREE_STATE_FILE: &str = "tui-tree-state.json";
 const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SESSION_MAX_TRACKS: usize = 100_000;
@@ -108,6 +109,14 @@ fn load_sidebar_width() -> Option<usize> {
 
 fn save_sidebar_width(width: usize) -> Result<(), String> {
     kog_audio::settings::save_text(SIDEBAR_WIDTH_FILE, &width.to_string())
+}
+
+fn load_playlists_height() -> Option<usize> {
+    kog_audio::settings::load_text(PLAYLISTS_HEIGHT_FILE)?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|rows| *rows >= 1)
 }
 
 struct SavedTreeState {
@@ -1112,6 +1121,13 @@ struct Ui {
     files_expanded: bool,
     playlists_expanded: bool,
     sidebar_width: Option<usize>,
+    /// Rows of the sidebar's Playlists pane, set by dragging its header or
+    /// Ctrl+Up/Down; None keeps the default of up to six.
+    playlists_height: Option<usize>,
+    /// A press on the Playlists header: Some(false) until it moves, then
+    /// Some(true) while it resizes the pane. A press that never moves
+    /// collapses the pane as a click.
+    playlists_drag: Option<bool>,
     split_drag: bool,
     column_drag: Option<usize>,
     column_scroll_drag: Option<usize>,
@@ -1518,6 +1534,8 @@ impl Ui {
             files_expanded: true,
             playlists_expanded: true,
             sidebar_width: load_sidebar_width(),
+            playlists_height: load_playlists_height(),
+            playlists_drag: None,
             split_drag: false,
             column_drag: None,
             column_scroll_drag: None,
@@ -2114,6 +2132,9 @@ impl Ui {
             if let Some(width) = self.sidebar_width {
                 layout.first = width.clamp(18, size.0.saturating_sub(30).max(18));
             }
+            if let Some(rows) = self.playlists_height {
+                layout.set_list_page(rows);
+            }
         }
         layout.track_page = layout
             .footer_top
@@ -2380,6 +2401,21 @@ impl Ui {
     fn persist_columns(&mut self) {
         if let Err(error) = self.columns.save() {
             self.status = format!("Saving column layout: {error}");
+        }
+    }
+
+    fn toggle_playlists_pane(&mut self) {
+        self.playlists_expanded = !self.playlists_expanded;
+        if self.playlists_expanded {
+            self.focus = Focus::Playlists;
+        }
+    }
+
+    fn persist_playlists_height(&mut self) {
+        if let Some(rows) = self.playlists_height
+            && let Err(error) = kog_audio::settings::save_text(PLAYLISTS_HEIGHT_FILE, &rows.to_string())
+        {
+            self.status = format!("Saving the Playlists pane height: {error}");
         }
     }
 
@@ -6209,6 +6245,7 @@ impl Ui {
                 row("[ / ]", "Reorder focused column"),
                 row("a / v", "Fit / hide focused column"),
                 row("{ / }", "Resize sidebar"),
+                row("Ctrl+Up / Down", "Resize Playlists pane (or drag its header)"),
                 row("z", "Collapse Files or Playlists"),
                 row("C", "Toggle compact player"),
                 String::new(),
@@ -6893,6 +6930,20 @@ impl Ui {
                 self.status = format!("Sidebar width: {width} cells");
                 self.persist_sidebar_width();
             }
+            Key::CtrlUp | Key::CtrlDown
+                if matches!(self.focus, Focus::Library | Focus::Playlists)
+                    && layout.show_sidebar
+                    && self.files_expanded
+                    && self.playlists_expanded =>
+            {
+                let rows = layout
+                    .list_page
+                    .saturating_add_signed(if key == Key::CtrlUp { 1 } else { -1 })
+                    .clamp(1, layout.max_list_page());
+                self.playlists_height = Some(rows);
+                self.status = format!("Playlists pane: {rows} rows");
+                self.persist_playlists_height();
+            }
             Key::Char('z') if self.focus == Focus::Library => {
                 self.files_expanded = !self.files_expanded
             }
@@ -7134,6 +7185,11 @@ impl Ui {
                 self.persist_sidebar_width();
             }
             self.split_drag = false;
+            match self.playlists_drag.take() {
+                Some(true) => self.persist_playlists_height(),
+                Some(false) => self.toggle_playlists_pane(),
+                None => {}
+            }
             self.column_drag = None;
             self.column_scroll_drag = None;
             self.vertical_scroll_drag = None;
@@ -7235,6 +7291,13 @@ impl Ui {
         }
         if self.split_drag && button & 32 != 0 {
             self.sidebar_width = Some(x.clamp(18, size.0.saturating_sub(30).max(18)));
+            return;
+        }
+        if self.playlists_drag.is_some() && button & 32 != 0 {
+            // The header row follows the pointer; the pane fills below it.
+            let rows = layout.footer_top.saturating_sub(y + 1);
+            self.playlists_height = Some(rows.clamp(1, layout.max_list_page()));
+            self.playlists_drag = Some(true);
             return;
         }
         if let Some(grip) = self.column_scroll_drag
@@ -7812,11 +7875,12 @@ impl Ui {
             if y == layout.lists_header {
                 if x >= layout.first.saturating_sub(4) {
                     self.begin_prompt(PromptKind::NewPlaylist, String::new());
+                } else if self.files_expanded && self.playlists_expanded {
+                    // Dragging the header resizes the pane; a click
+                    // collapses it on release.
+                    self.playlists_drag = Some(false);
                 } else {
-                    self.playlists_expanded = !self.playlists_expanded;
-                    if self.playlists_expanded {
-                        self.focus = Focus::Playlists;
-                    }
+                    self.toggle_playlists_pane();
                 }
                 return;
             }
@@ -11040,6 +11104,23 @@ struct Layout {
     track_page: usize,
 }
 impl Layout {
+    /// The most rows the Playlists pane may take, leaving Files three.
+    fn max_list_page(&self) -> usize {
+        self.footer_top.saturating_sub(self.tree_top + 4).max(1)
+    }
+
+    /// Give the Playlists pane `rows` rows when both sidebar panes are open,
+    /// moving the line between them.
+    fn set_list_page(&mut self, rows: usize) {
+        if self.list_page == 0 || self.tree_bottom < self.tree_top {
+            return;
+        }
+        self.list_page = rows.clamp(1, self.max_list_page());
+        self.lists_header = self.footer_top.saturating_sub(self.list_page + 1);
+        self.list_top = self.lists_header + 1;
+        self.tree_bottom = self.lists_header.saturating_sub(1);
+    }
+
     fn playlist_left(&self) -> usize {
         if self.show_sidebar { self.first + 1 } else { 0 }
     }
