@@ -7906,7 +7906,9 @@ impl Ui {
                     } else {
                         Some((now, 0, index))
                     };
-                    if !modified {
+                    // As on the desktop: a click selects, a double click
+                    // opens the playlist in a tab.
+                    if double {
                         self.open_playlist_tab(index);
                     }
                 }
@@ -8061,7 +8063,9 @@ impl Ui {
                     } else {
                         Some((now, 0, index))
                     };
-                    if !modified {
+                    // As on the desktop: a click selects, a double click
+                    // opens the playlist in a tab.
+                    if double {
                         self.open_playlist_tab(index);
                     }
                 }
