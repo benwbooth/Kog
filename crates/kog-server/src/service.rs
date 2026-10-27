@@ -190,6 +190,13 @@ impl StreamService {
                 }
             }
         }
+        // As on the desktop, a song without an album takes its folder's or
+        // archive's name.
+        if properties.album.as_deref().is_none_or(|album| album.trim().is_empty()) {
+            if let Some(album) = kog_audio::track::album_from_folder(&source) {
+                properties.album = Some(album);
+            }
+        }
         Ok((properties, file_size_bytes))
     }
 

@@ -346,7 +346,7 @@ fn filename_adding_to_short_title(title: &str, source: &PlaybackSource) -> Optio
 /// skipping folders that only sort versions or discs (`GM`, `MT`, `CD1`).
 /// Rip folder names lose their tags: `Doom (1995-09)(iD)[SNES]` is "Doom",
 /// `Street_Fighter_II_(CP_System)` is "Street Fighter II".
-fn album_from_folder(source: &PlaybackSource) -> Option<String> {
+pub fn album_from_folder(source: &PlaybackSource) -> Option<String> {
     let start = match &source.archive_origin {
         Some(origin) => {
             let inner = Path::new(&origin.entry_name).parent().filter(|parent| !parent.as_os_str().is_empty());
