@@ -517,8 +517,12 @@ impl Ui {
         let layout = self.layout(size);
         let left = layout.playlist_left();
         let state = self.session.workspace_model().snapshot();
+        // Moving over the tabs with no button down is a hover, which
+        // shows a cut-off tab's full name, not a drag.
+        let hover = button & 32 != 0 && button & 3 == 3;
         if self.tab_drag.is_none()
-            && (self.compact_mode
+            && (hover
+                || self.compact_mode
                 || self.modal.is_some()
                 || self.menu_open
                 || self.prompt.is_some()
