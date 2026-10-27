@@ -555,6 +555,143 @@ fn menu_shortcuts(page: MenuPage) -> Vec<Option<char>> {
     shortcuts
 }
 
+/// Keys that run a menu item directly, for items no other key reached.
+/// The menu shows each beside its item, and the keyboard help lists them.
+const DIRECT_MENU_KEYS: [(Key, MenuPage, usize); 14] = [
+    (Key::CtrlO, MenuPage::Main, 0),
+    (Key::Char('U'), MenuPage::Main, 1),
+    (Key::CtrlS, MenuPage::Main, 4),
+    (Key::CtrlZ, MenuPage::Edit, 0),
+    (Key::CtrlY, MenuPage::Edit, 1),
+    (Key::Char('i'), MenuPage::View, 1),
+    (Key::Char('L'), MenuPage::View, 2),
+    (Key::Char('E'), MenuPage::View, 3),
+    (Key::Char('B'), MenuPage::View, 7),
+    (Key::Char('N'), MenuPage::View, 8),
+    (Key::Char('Z'), MenuPage::Playback, 6),
+    (Key::Char('0'), MenuPage::Playback, 7),
+    (Key::Char('w'), MenuPage::Playback, 8),
+    (Key::Char('W'), MenuPage::Playback, 9),
+];
+
+/// The key that runs a menu item outside the menu, shown at the right of
+/// its row: the keys of `DIRECT_MENU_KEYS` and the player's other keys.
+fn menu_item_key(page: MenuPage, index: usize) -> Option<&'static str> {
+    use MenuPage::*;
+    Some(match (page, index) {
+        (Main, 0) => "Ctrl+O",
+        (Main, 1) => "U",
+        (Main, 2) | (Preferences, 0) => "o",
+        (Main, 4) => "Ctrl+S",
+        (Main, 14) => "q",
+        (Edit, 0) => "Ctrl+Z",
+        (Edit, 1) => "Ctrl+Y",
+        (Edit, 3) | (Tracks, 8) | (Playlist, 3) => "Ctrl+A",
+        (Edit, 5) | (Tracks, 1) | (Tree, 7) => "Del",
+        (Edit, 6) | (Tracks, 5) | (Playlist, 4) => "D",
+        (Edit, 7) => "Ctrl+↑",
+        (Edit, 8) => "Ctrl+↓",
+        (Edit, 10) => "Ctrl+S",
+        (Edit, 12) => "A",
+        (Edit, 13) => "C",
+        (Edit, 15) | (Tracks, 13) => "e",
+        (View, 0) => "t",
+        (View, 1) | (Tracks, 4) => "i",
+        (View, 2) => "L",
+        (View, 3) => "E",
+        (View, 4) => "V",
+        (View, 6) => "C",
+        (View, 7) => "B",
+        (View, 8) => "N",
+        (Playback, 0) => "Space",
+        (Playback, 1) => "s",
+        (Playback, 2) => "<",
+        (Playback, 3) => ">",
+        (Playback, 4) => "S",
+        (Playback, 5) | (Preferences, 2) => "R",
+        (Playback, 6) => "Z",
+        (Playback, 7) => "0",
+        (Playback, 8) => "w",
+        (Playback, 9) => "W",
+        (Playback, 10) | (Tracks, 9) => "Q",
+        (Playback, 11) | (Tracks, 10) => "X",
+        (Playback, 13) => "G",
+        (Tree, 0) => "a",
+        (Tree, 1) | (Tracks, 0) | (Saved, 2) => "Enter",
+        (Tree, 3) | (Tracks, 3) => "f",
+        (Saved, 3) => "r",
+        (Saved, 5) => "Del",
+        _ => return None,
+    })
+}
+
+/// Every menu item with the keys that reach it: the menu key and each
+/// menu's underlined letters (m e u is Edit → Undo), then its direct key.
+fn menu_key_help() -> Vec<String> {
+    // A submenu's keys: its parent's, then the letter of the item opening it.
+    let child = |parent: &str, page: MenuPage, index: usize| match menu_shortcuts(page).get(index).copied().flatten() {
+        Some(letter) => format!("{parent} {}", menu_letter_key(letter)),
+        None => parent.to_owned(),
+    };
+    let edit = child("m", MenuPage::Main, 7);
+    let view = child("m", MenuPage::Main, 8);
+    let playback = child("m", MenuPage::Main, 9);
+    let preferences = child("m", MenuPage::Main, 10);
+    let synthesis = child(&preferences, MenuPage::Preferences, 12);
+    let backend = child(&synthesis, MenuPage::Synthesis, 0);
+    let server = child(&preferences, MenuPage::Preferences, 15);
+    let remote = child("m", MenuPage::Main, 12);
+    let menus: Vec<(String, MenuPage, &str)> = vec![
+        ("m".to_owned(), MenuPage::Main, "MENU (m or F10)"),
+        (edit, MenuPage::Edit, "EDIT MENU"),
+        (view, MenuPage::View, "VIEW MENU"),
+        (playback, MenuPage::Playback, "PLAYBACK MENU"),
+        (preferences, MenuPage::Preferences, "PREFERENCES MENU"),
+        (synthesis, MenuPage::Synthesis, "MIDI SYNTHESIS MENU"),
+        (backend, MenuPage::MidiBackend, "MIDI BACKEND MENU"),
+        (server, MenuPage::Server, "API SERVER MENU"),
+        (remote, MenuPage::Remote, "REMOTE SERVER MENU"),
+        ("M".to_owned(), MenuPage::Tree, "FILE MENU (M on Files)"),
+        ("M".to_owned(), MenuPage::Saved, "SAVED PLAYLIST MENU (M on Playlists)"),
+        ("M".to_owned(), MenuPage::Tracks, "PLAYLIST ROW MENU (M on songs)"),
+        ("H M".to_owned(), MenuPage::ColumnContext, "COLUMNS MENU (M on a column)"),
+        ("e".to_owned(), MenuPage::TagEditor, "EDIT TAGS (e on a song)"),
+    ];
+    let mut lines = Vec::new();
+    for (path, page, title) in menus {
+        lines.push(String::new());
+        lines.push(title.to_owned());
+        let shortcuts = menu_shortcuts(page);
+        for (index, label) in page.labels().iter().enumerate() {
+            if label.is_empty() {
+                continue;
+            }
+            let name = menu_row(label, 60);
+            let name = name.trim_start_matches("│ ").trim().trim_end_matches('›').trim();
+            let keys = match shortcuts.get(index).copied().flatten() {
+                Some(letter) => format!("{path} {}", menu_letter_key(letter)),
+                None => path.clone(),
+            };
+            let keys = match menu_item_key(page, index) {
+                Some(direct) => format!("{keys} · {direct}"),
+                None => keys,
+            };
+            lines.push(format!("  {keys}{} {name}", " ".repeat(18_usize.saturating_sub(cell_width(&keys)))));
+        }
+    }
+    lines
+}
+
+/// How to type a menu item's letter inside its menu.
+fn menu_letter_key(letter: char) -> String {
+    let letter = letter.to_ascii_lowercase();
+    if matches!(letter, 'j' | 'k' | 'm') {
+        format!("Alt+{letter}")
+    } else {
+        letter.to_string()
+    }
+}
+
 fn menu_shortcut_index(page: MenuPage, key: char) -> Option<usize> {
     menu_shortcuts(page)
         .iter()
@@ -3216,6 +3353,21 @@ impl Ui {
         self.menu_x = layer.x;
         self.menu_y = layer.y;
         self.menu_open = true;
+    }
+
+    /// Run a menu item from its direct key, as if chosen in the menu.
+    fn run_menu_item(&mut self, page: MenuPage, index: usize, size: (usize, usize)) {
+        if !self.menu_item_enabled(page, index) {
+            self.status = format!("{} is not available here", menu_row(page.labels()[index], 60)
+                .trim_start_matches("│ ").trim());
+            return;
+        }
+        self.menu_parents.clear();
+        self.menu_page = page;
+        self.activate_menu(index, size);
+        if !self.menu_open {
+            self.menu_parents.clear();
+        }
     }
 
     fn open_child_menu(&mut self, page: MenuPage, size: (usize, usize)) {
@@ -6253,6 +6405,7 @@ impl Ui {
                 row("m", "Application menu"),
                 row("M / Shift+F10", "Selected item menu"),
                 row("Alt+underlined key", "Menu shortcut"),
+                row("Underlined letter", "Choose a menu item (Alt for j, k, m)"),
                 row("Arrows / Enter", "Navigate / activate menu"),
                 row("Ctrl+A", "Select all prompt text"),
                 row("Ctrl+W", "Erase previous word"),
@@ -6260,6 +6413,9 @@ impl Ui {
                 row("Esc", "Close dialog or confirm exit"),
                 row("q", "Confirm exit from main view"),
             ]
+            .into_iter()
+            .chain(menu_key_help())
+            .collect::<Vec<_>>()
             .join("\n"),
         );
     }
@@ -6796,6 +6952,11 @@ impl Ui {
                     self.menu_offset = self.menu_selected.saturating_sub(size.1.saturating_sub(5));
                 }
                 Key::Enter | Key::Right => self.activate_menu(self.menu_selected, size),
+                // An item's underlined letter chooses it without Alt; j, k
+                // and m move and close the menu, so theirs still need Alt.
+                Key::Char(character) => {
+                    self.activate_menu_shortcut(character, size);
+                }
                 _ => {}
             }
             return true;
@@ -6882,6 +7043,10 @@ impl Ui {
             Focus::Tracks => layout.track_page,
         }
         .max(1);
+        if let Some(&(_, page, index)) = DIRECT_MENU_KEYS.iter().find(|(direct, _, _)| *direct == key) {
+            self.run_menu_item(page, index, size);
+            return true;
+        }
         match key {
             Key::Esc | Key::Char('q') => self.request_exit(),
             Key::CtrlC => return false,
@@ -9682,10 +9847,11 @@ impl Ui {
                     } else {
                         Surface::MenuBody
                     };
+                    let key = menu_item_key(layer.page, index);
                     let shown = if let Some(checked) = self.menu_item_checked(layer.page, index) {
-                        menu_row_checked(label, panel_width, checked)
+                        menu_row_checked(label, panel_width, checked, key)
                     } else {
-                        menu_row(label, panel_width)
+                        menu_row_keyed(label, panel_width, key)
                     };
                     paint(
                         &mut screen,
@@ -11321,11 +11487,18 @@ fn menu_width(terminal_width: usize) -> usize {
     if terminal_width < 66 {
         terminal_width.div_ceil(2).max(18).min(terminal_width)
     } else {
-        33
+        // Room for the longest label and its key.
+        41
     }
 }
 
 fn menu_row(label: &str, width: usize) -> String {
+    menu_row_keyed(label, width, None)
+}
+
+/// A menu row with its direct key, if any, right-aligned like a desktop
+/// menu's shortcut. A submenu's arrow takes that place.
+fn menu_row_keyed(label: &str, width: usize, key: Option<&str>) -> String {
     if label.is_empty() {
         return format!("│{}", "─".repeat(width.saturating_sub(2)));
     }
@@ -11338,7 +11511,7 @@ fn menu_row(label: &str, width: usize) -> String {
     } else {
         (normalized.as_str(), "")
     };
-    let right = arrow.trim();
+    let right = if arrow.is_empty() { key.unwrap_or_default() } else { arrow.trim() };
     let label_width = width
         .saturating_sub(3)
         .saturating_sub(cell_width(right) + usize::from(!right.is_empty()));
@@ -11349,8 +11522,8 @@ fn menu_row(label: &str, width: usize) -> String {
     format!("│ {shown}{}{right}", " ".repeat(spaces))
 }
 
-fn menu_row_checked(label: &str, width: usize, checked: bool) -> String {
-    let row = menu_row(label, width.saturating_sub(2));
+fn menu_row_checked(label: &str, width: usize, checked: bool, key: Option<&str>) -> String {
+    let row = menu_row_keyed(label, width.saturating_sub(2), key);
     let content = row.strip_prefix("│ ").unwrap_or(&row);
     format!("│ {} {content}", if checked { '✓' } else { ' ' })
 }
@@ -13133,7 +13306,7 @@ mod tests {
                 assert_eq!(menu_shortcut_index(page, shortcut), Some(index));
                 for width in [18, 33] {
                     let row = if page == MenuPage::MidiBackend {
-                        menu_row_checked(label, width, false)
+                        menu_row_checked(label, width, false, None)
                     } else {
                         menu_row(label, width)
                     };
@@ -13152,18 +13325,18 @@ mod tests {
         assert_eq!(MenuPage::Columns.labels().len(), 12);
         assert_eq!(MenuPage::ColumnContext.labels()[12], "Hide This Column");
         assert_eq!(
-            menu_row_checked("Artist", 18, true).chars().nth(2),
+            menu_row_checked("Artist", 18, true, None).chars().nth(2),
             Some('✓')
         );
         assert_eq!(
-            menu_row_checked("Artist", 18, false).chars().nth(2),
+            menu_row_checked("Artist", 18, false, None).chars().nth(2),
             Some(' ')
         );
         let visibility_shortcuts = menu_shortcuts(MenuPage::ColumnVisibility);
         for (index, &label) in COLUMN_VISIBILITY_MENU.iter().enumerate() {
             assert!(Columns::default_id(index).is_some());
             let shortcut = visibility_shortcuts[index].unwrap();
-            assert!(menu_mnemonic(&menu_row_checked(label, 18, false), shortcut).is_some());
+            assert!(menu_mnemonic(&menu_row_checked(label, 18, false, None), shortcut).is_some());
         }
     }
     #[test]
