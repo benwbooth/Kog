@@ -6378,6 +6378,7 @@ impl Ui {
                 String::new(),
                 "PLAYLIST EDITOR TABS".to_owned(),
                 row("Alt+[ / Alt+]", "Previous / next tab"),
+                row("‹ › / wheel on tabs", "Scroll tabs cut off at the right"),
                 row("Alt+1 / Ctrl+W", "Play Queue / close tab"),
                 row("Enter / double click", "Play the cursor row"),
                 row("p / n / a", "Play Now / Play Next / Add to Queue"),

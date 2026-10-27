@@ -6,6 +6,9 @@ use kog_audio::playback_order::workspace::{CloseChoice, Command, QueueAction};
 /// The most of a playlist's name a tab shows.
 const TAB_NAME_CHARS: usize = 19;
 
+/// Cells at the right of the tab row for its ‹ › scroll arrows.
+const TAB_ARROWS_WIDTH: usize = 4;
+
 const CLOSE_CHOICES: [(CloseChoice, &str); 3] = [
     (CloseChoice::Save, "[Save]"),
     (CloseChoice::Discard, "[Discard]"),
@@ -365,7 +368,27 @@ impl Ui {
         }
         true
     }
+    /// The tabs that fit `width` cells, leaving room for the ‹ › scroll
+    /// arrows when some tabs are cut off or scrolled out of view.
     fn workspace_tab_cells(&self, width: usize) -> Vec<(usize, usize, String, String, bool)> {
+        match self.tab_cells_within(width) {
+            (_, Some(_)) => self.tab_cells_within(width.saturating_sub(TAB_ARROWS_WIDTH)).0,
+            (cells, None) => cells,
+        }
+    }
+
+    /// Whether the tab row can scroll left and right, when it overflows.
+    fn workspace_tab_arrows(&self, width: usize) -> Option<(bool, bool)> {
+        self.tab_cells_within(width).1?;
+        self.tab_cells_within(width.saturating_sub(TAB_ARROWS_WIDTH)).1
+    }
+
+    /// The tabs laid out in `width`, and, when they do not all fit whole,
+    /// whether tabs are hidden to the left and to the right.
+    fn tab_cells_within(
+        &self,
+        width: usize,
+    ) -> (Vec<(usize, usize, String, String, bool)>, Option<(bool, bool)>) {
         let state = self
             .session
             .workspace_model()
@@ -382,6 +405,7 @@ impl Ui {
             .tab_start
             .unwrap_or_else(|| active.saturating_sub(max_tabs - 1))
             .min(state.tabs.len().saturating_sub(1));
+        let total = state.tabs.len();
         for tab in state.tabs.into_iter().skip(start) {
             let name: String = tab.name.chars().take(TAB_NAME_CHARS).collect();
             let label = format!(
@@ -397,7 +421,21 @@ impl Ui {
             cells.push((x, len, tab.key.clone(), label, tab.key == state.active));
             x += len;
         }
-        cells
+        let shown_whole = cells.iter().filter(|cell| cell.1 == cell_width(&cell.3)).count();
+        let left = start > 0;
+        let right = start + shown_whole < total;
+        (cells, (left || right).then_some((left, right)))
+    }
+
+    /// Scroll the tab row one tab left or right.
+    fn scroll_tabs(&mut self, delta: isize, width: usize) {
+        let state = self.session.workspace_model().snapshot();
+        let start = self
+            .workspace_tab_cells(width)
+            .first()
+            .and_then(|cell| state.tabs.iter().position(|t| t.key == cell.2))
+            .unwrap_or(0);
+        self.tab_start = Some(start.saturating_add_signed(delta).min(state.tabs.len().saturating_sub(1)));
     }
     fn workspace_controls(&self) -> Vec<(&'static str, Key, bool)> {
         let state = self.session.workspace_model().snapshot();
@@ -565,6 +603,20 @@ impl Ui {
                         .saturating_add_signed(if button & 1 == 0 { -1 } else { 1 })
                         .min(state.tabs.len() - 1),
                 );
+            } else if !release
+                && button & (32 | 128 | 3) == 0
+                && let Some((can_left, can_right)) = self.workspace_tab_arrows(size.0.saturating_sub(left))
+                && x >= size.0.saturating_sub(TAB_ARROWS_WIDTH)
+            {
+                // The ‹ › arrows at the right end scroll the row one tab.
+                let width = size.0.saturating_sub(left);
+                if x < size.0.saturating_sub(2) {
+                    if can_left {
+                        self.scroll_tabs(-1, width);
+                    }
+                } else if can_right {
+                    self.scroll_tabs(1, width);
+                }
             } else if !release && button & (32 | 128 | 3) == 0 {
                 if let Some((start, len, key, label, _)) = cells
                     .into_iter()
@@ -826,6 +878,15 @@ impl Ui {
                 },
                 active,
             );
+        }
+        if let Some((can_left, can_right)) = self.workspace_tab_arrows(width) {
+            let arrows_left = left + width.saturating_sub(TAB_ARROWS_WIDTH);
+            paint(screen, layout.tab_row + 1, arrows_left, " ", 1, Surface::Header, false);
+            paint(screen, layout.tab_row + 1, arrows_left + 1, "‹", 1,
+                if can_left { Surface::Header } else { Surface::Muted }, can_left);
+            paint(screen, layout.tab_row + 1, arrows_left + 2, " ", 1, Surface::Header, false);
+            paint(screen, layout.tab_row + 1, arrows_left + 3, "›", 1,
+                if can_right { Surface::Header } else { Surface::Muted }, can_right);
         }
         if let Some(marker) = self
             .tab_drag
