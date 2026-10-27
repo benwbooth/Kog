@@ -386,6 +386,7 @@ enum MenuPage {
     Preferences,
     Tree,
     Tracks,
+    Draft,
     Saved,
     Playlist,
     Columns,
@@ -417,6 +418,7 @@ impl MenuPage {
             Self::Preferences => "Preferences",
             Self::Tree => "File",
             Self::Tracks => "Playlist Row",
+            Self::Draft => "Saved Playlist Row",
             Self::Saved => "Saved Playlist",
             Self::Playlist => "Playlist",
             Self::Columns | Self::ColumnContext => "Columns",
@@ -437,6 +439,7 @@ impl MenuPage {
             Self::Preferences => &PREFERENCES_MENU,
             Self::Tree => &TREE_MENU,
             Self::Tracks => &TRACKS_MENU,
+            Self::Draft => &DRAFT_MENU,
             Self::Saved => &SAVED_MENU,
             Self::Playlist => &PLAYLIST_MENU,
             Self::Columns => &COLUMNS_MENU[..12],
@@ -621,6 +624,19 @@ fn menu_item_key(page: MenuPage, index: usize) -> Option<&'static str> {
         (Tree, 3) | (Tracks, 3) => "f",
         (Saved, 3) => "r",
         (Saved, 5) => "Del",
+        (Draft, 0) => "p",
+        (Draft, 1) => "n",
+        (Draft, 2) => "a",
+        (Draft, 4) => "A",
+        (Draft, 5) => "C",
+        (Draft, 6) => "Del",
+        (Draft, 7) => "K",
+        (Draft, 8) => "J",
+        (Draft, 10) => "Ctrl+Z",
+        (Draft, 11) => "Ctrl+Y",
+        (Draft, 12) => "Ctrl+A",
+        (Draft, 15) => "Ctrl+S",
+        (Draft, 16) => "R",
         _ => return None,
     })
 }
@@ -653,7 +669,8 @@ fn menu_key_help() -> Vec<String> {
         (remote, MenuPage::Remote, "REMOTE SERVER MENU"),
         ("M".to_owned(), MenuPage::Tree, "FILE MENU (M on Files)"),
         ("M".to_owned(), MenuPage::Saved, "SAVED PLAYLIST MENU (M on Playlists)"),
-        ("M".to_owned(), MenuPage::Tracks, "PLAYLIST ROW MENU (M on songs)"),
+        ("M".to_owned(), MenuPage::Tracks, "PLAYLIST ROW MENU (M or right click on a queue song)"),
+        ("M".to_owned(), MenuPage::Draft, "SAVED PLAYLIST ROW MENU (M or right click on a song in a playlist tab)"),
         ("H M".to_owned(), MenuPage::ColumnContext, "COLUMNS MENU (M on a column)"),
         ("e".to_owned(), MenuPage::TagEditor, "EDIT TAGS (e on a song)"),
     ];
@@ -2588,6 +2605,10 @@ impl Ui {
             self.activate_edit_menu(index);
             return;
         }
+        if page == MenuPage::Draft {
+            self.activate_draft_menu(index);
+            return;
+        }
         if page == MenuPage::ColumnContext && index == 12 {
             if let Some(column) = self.context_column
                 && self
@@ -3456,7 +3477,7 @@ impl Ui {
 
     fn open_context(&mut self, page: MenuPage, x: usize, y: usize, size: (usize, usize)) {
         self.open_submenu(page);
-        self.menu_x = x.min(size.0.saturating_sub(34)).max(1);
+        self.menu_x = x.min(size.0.saturating_sub(menu_width(size.0) + 1)).max(1);
         self.menu_y = y.min(
             size.1
                 .saturating_sub(page.labels().len().min(size.1.saturating_sub(4)) + 3),
@@ -6499,6 +6520,11 @@ impl Ui {
                 MenuPage::Saved,
                 1,
                 layout.list_top + self.selected[0].saturating_sub(self.offsets[0]),
+            ),
+            Focus::Tracks if self.is_draft() => (
+                MenuPage::Draft,
+                layout.playlist_left() + 1,
+                layout.track_top,
             ),
             Focus::Tracks if !self.tracks.is_empty() => (
                 MenuPage::Tracks,
@@ -11091,6 +11117,31 @@ const TAG_EDITOR_MENU: [&str; 17] = [
     "Save Changes",
     "Cancel",
 ];
+/// Right click on a song in a saved playlist's tab, as in the desktop's
+/// playlist editor.
+const DRAFT_MENU: [&str; 17] = [
+    "Play Now",
+    "Play Next",
+    "Add to Queue",
+    "",
+    "Add Play Queue",
+    "Add Queue Selection",
+    "Remove Selected",
+    "Move Up",
+    "Move Down",
+    "",
+    "Undo",
+    "Redo",
+    "Select All",
+    "Clear Selection",
+    "",
+    "Save",
+    "Reload",
+];
+
+/// The Edit menu item each draft row menu item runs, past its queue actions.
+const DRAFT_MENU_EDIT: [usize; 17] = [0, 0, 0, 0, 12, 13, 5, 7, 8, 0, 0, 1, 3, 4, 0, 10, 11];
+
 const SAVED_MENU: [&str; 8] = [
     "Add to Current Playlist",
     "Play",

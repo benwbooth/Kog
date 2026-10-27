@@ -84,8 +84,20 @@ impl Ui {
             (MenuPage::Edit, 12) => actions.add_play_queue,
             (MenuPage::Edit, 13) => actions.add_queue_selection,
             (MenuPage::Edit, 15) => !self.is_draft() && !self.selected_tracks.is_empty(),
+            (MenuPage::Draft, 0..=2) => actions.queue,
+            (MenuPage::Draft, index) => self.menu_item_enabled(MenuPage::Edit, DRAFT_MENU_EDIT[index]),
             _ => true,
         }
+    }
+    pub(super) fn activate_draft_menu(&mut self, index: usize) {
+        self.focus = Focus::Tracks;
+        let action = match index {
+            0 => QueueAction::PlayNow,
+            1 => QueueAction::PlayNext,
+            2 => QueueAction::AddToQueue,
+            _ => return self.activate_edit_menu(DRAFT_MENU_EDIT[index]),
+        };
+        self.workspace_command(Command::Queue { action });
     }
     pub(super) fn activate_edit_menu(&mut self, index: usize) {
         self.focus = Focus::Tracks;
@@ -703,6 +715,18 @@ impl Ui {
                     .saturating_add_signed(if button & 1 == 0 { -3 } else { 3 })
                     .min(maximum),
             );
+            return true;
+        }
+        if button & 3 == 2 && button & 32 == 0 {
+            // Right click: the row joins the selection unless it is in it.
+            let visible = self.table_visible_tracks();
+            if let Some(&index) = visible.get(self.workspace_offset + y - layout.track_top) {
+                self.workspace_cursor = index;
+                if !state.selected.contains(&index) {
+                    self.workspace_select(Select::Choose { index, gesture: Gesture::Replace });
+                }
+                self.open_context(MenuPage::Draft, x, y, size);
+            }
             return true;
         }
         if button & 3 == 0 && button & 32 == 0 {
