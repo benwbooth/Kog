@@ -1225,6 +1225,14 @@ fn play_audio(audio: &web_sys::HtmlAudioElement) {
     }
 }
 
+/// Whether `seconds` falls inside one of the element's time ranges.
+fn time_in_ranges(ranges: &web_sys::TimeRanges, seconds: f64) -> bool {
+    (0..ranges.length()).any(|index| {
+        ranges.start(index).is_ok_and(|start| start <= seconds)
+            && ranges.end(index).is_ok_and(|end| seconds <= end)
+    })
+}
+
 /// A usable media duration. ADTS and FLAC report `Infinity` (or `NaN`) until
 /// the browser has buffered enough, so those must never reach the transport.
 fn finite_duration(value: f64) -> Option<f64> {
@@ -4013,44 +4021,52 @@ fn App() -> impl IntoView {
     };
 
     let current_entry = move || queue.get().get(current.get()).cloned();
+    // Where in the song the current stream begins. A song still being
+    // encoded has no byte ranges, so the browser can only seek within what
+    // has arrived; seeking past it asks the server for a stream that starts
+    // at the new position instead, as the desktop player seeks anywhere.
+    let stream_offset = RwSignal::new(0.0_f64);
     let audio_src = move || {
         current_entry()
-            .map(|entry| stream_url(&entry))
+            .map(|entry| {
+                let url = stream_url(&entry);
+                let offset = stream_offset.get();
+                if offset > 0.0 {
+                    format!("{url}&start_ms={}", (offset * 1000.0).round() as u64)
+                } else {
+                    url
+                }
+            })
             .unwrap_or_default()
     };
 
-    // The transport's duration: the element's value when it is finite, else the
-    // current track's tag duration from the metadata cache. Reactive, so the
-    // bar and the total label are right before the media has been measured.
+    // The transport's duration: the current track's tag duration from the
+    // metadata cache, else the element's value when it is finite. The tags
+    // come first: a browser estimates an AAC file's length from its size and
+    // bitrate, which can be off by half, and that would cap seeking short of
+    // the end. Reactive, so the bar and the total label are right before the
+    // media has been measured.
     let duration = {
         let current_entry = current_entry.clone();
         Memo::new(move |_| {
-            if let Some(value) = media_duration.get() {
-                return value;
-            }
             current_entry()
                 .as_ref()
                 .and_then(|entry| meta_for(&metadata.get(), entry))
                 .and_then(|meta| meta.duration)
                 .and_then(finite_duration)
+                .or_else(|| media_duration.get())
                 .unwrap_or(0.0)
         })
     };
 
-    // Measure the element once it is real. Progressive streams (ADTS, FLAC)
-    // can report `Infinity` for `duration` while their `seekable` range already
-    // knows the end, so fall back to that before letting the tag guess win.
+    // Measure the element once it is real.
     let refresh_media_duration = move |_event: web_sys::Event| {
         if let Some(audio) = audio_ref.get() {
-            let measured = finite_duration(audio.duration()).or_else(|| {
-                let seekable = audio.seekable();
-                if seekable.length() > 0 {
-                    seekable.end(0).ok().and_then(finite_duration)
-                } else {
-                    None
-                }
-            });
-            set_media_duration.set(measured);
+            // Only a finished stream knows its length. A stream still being
+            // encoded can only seek within what has arrived, which is not
+            // the song's end: the tags' duration stands in until then.
+            let measured = finite_duration(audio.duration());
+            set_media_duration.set(measured.map(|seconds| seconds + stream_offset.get_untracked()));
         }
     };
 
@@ -4082,7 +4098,7 @@ fn App() -> impl IntoView {
                     backend.send(SessionCommand::Output {
                         token: output.clone(),
                         event: OutputEvent::Progress {
-                            seconds: audio.current_time(),
+                            seconds: audio.current_time() + stream_offset.get_untracked(),
                             duration: duration.get_untracked(),
                         },
                     });
@@ -4129,7 +4145,9 @@ fn App() -> impl IntoView {
         .output
         .set_value(Some(Callback::new(move |effect| match effect {
             SessionEffect::Play { token, seconds, .. } => {
-                output_start.set_value(seconds);
+                // A song resumed partway streams from that point.
+                stream_offset.set(if seconds > 0.5 { seconds } else { 0.0 });
+                output_start.set_value(0.0);
                 set_media_duration.set(None);
                 output_token.set(Some(token));
             }
@@ -4153,7 +4171,28 @@ fn App() -> impl IntoView {
             }
             SessionEffect::Seek { seconds } => {
                 if let Some(audio) = audio_ref.get() {
-                    audio.set_current_time(seconds);
+                    let relative = seconds - stream_offset.get_untracked();
+                    // A finished encode is served with byte ranges and a
+                    // length, so the browser seeks anywhere in it. A stream
+                    // still encoding has no length (an infinite duration) and
+                    // reports a seekable range it cannot actually reach: only
+                    // what has arrived can be seeked to.
+                    let ranged = finite_duration(audio.duration()).is_some();
+                    if relative >= 0.0
+                        && (time_in_ranges(&audio.buffered(), relative)
+                            || ranged && time_in_ranges(&audio.seekable(), relative))
+                    {
+                        audio.set_current_time(relative);
+                    } else {
+                        // Mark the new source as applied before the src
+                        // effect sees it, so it is a seek, not a reload
+                        // from the old position.
+                        stream_offset.set(seconds);
+                        let desired = untrack(audio_src);
+                        source_changing.set(true);
+                        let _ = audio.set_attribute("data-loaded-source", &desired);
+                        audio.set_src(&desired);
+                    }
                 }
             }
             SessionEffect::Volume { value } => {
@@ -4204,7 +4243,7 @@ fn App() -> impl IntoView {
                     backend.send(SessionCommand::Output {
                         token,
                         event: OutputEvent::Progress {
-                            seconds: position,
+                            seconds: position + stream_offset.get_untracked(),
                             duration: duration.get_untracked(),
                         },
                     });
@@ -4751,15 +4790,8 @@ fn App() -> impl IntoView {
             else {
                 return;
             };
-            if let Some(audio) = audio_ref.get() {
-                let end = finite_duration(audio.duration())
-                    .or_else(|| {
-                        let seekable = audio.seekable();
-                        (seekable.length() > 0)
-                            .then(|| seekable.end(0).ok().and_then(finite_duration))
-                            .flatten()
-                    })
-                    .unwrap_or_else(|| duration.get_untracked());
+            if audio_ref.get().is_some() {
+                let end = duration.get_untracked();
                 let target = if end.is_finite() && end > 0.0 {
                     requested.clamp(0.0, end)
                 } else {
@@ -7655,24 +7687,11 @@ fn App() -> impl IntoView {
                                 on:input=move |event| {
                                     let requested: f64 =
                                         event_target_value(&event).parse().unwrap_or(0.0);
-                                    // The element's own end beats the tag fallback:
-                                    // a wrong tag must never send a seek past the
-                                    // real audio.
-                                    let mut end = duration.get_untracked();
-                                    if let Some(audio) = audio_ref.get() {
-                                        if let Some(real) = finite_duration(audio.duration()) {
-                                            end = real;
-                                        } else {
-                                            let seekable = audio.seekable();
-                                            if seekable.length() > 0 {
-                                                if let Some(real) =
-                                                    seekable.end(0).ok().and_then(finite_duration)
-                                                {
-                                                    end = real;
-                                                }
-                                            }
-                                        }
-                                    }
+                                    // The song's end: the finished stream's own
+                                    // length when known, else its tags'. What has
+                                    // arrived so far is not a limit; a seek past it
+                                    // streams from the new position.
+                                    let end = duration.get_untracked();
                                     let target = if end.is_finite() && end > 0.0 {
                                         requested.clamp(0.0, end)
                                     } else {
@@ -7792,7 +7811,7 @@ fn App() -> impl IntoView {
                                         backend.send(SessionCommand::Output {token:playing_token.clone(),event:OutputEvent::Started});
                                     }
                                 }
-                                on:timeupdate=move |_| {if let Some(audio)=audio_ref.get(){backend.send(SessionCommand::Output {token:progress_token.clone(),event:OutputEvent::Progress {seconds:audio.current_time(),duration:duration.get_untracked()}});}}
+                                on:timeupdate=move |_| {if let Some(audio)=audio_ref.get(){backend.send(SessionCommand::Output {token:progress_token.clone(),event:OutputEvent::Progress {seconds:audio.current_time()+stream_offset.get_untracked(),duration:duration.get_untracked()}});}}
                                 on:loadedmetadata=move |event|{if session_model.with_value(|s|s.snapshot().output_token==Some(&ready_token)){ready(event);}}
                                 on:durationchange=refresh_media_duration
                                 on:canplay=move |event|{if session_model.with_value(|s|s.snapshot().output_token==Some(&canplay_token)){canplay(event);}}
