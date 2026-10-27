@@ -2557,6 +2557,8 @@ impl Ui {
                     .map(|(width, _)| *width)
                     .unwrap_or(0)
                     .max(cell_width(column.label))
+                    // A playing row shows ▶ beside its six-bar meter.
+                    .max(if column.id == "status" { 1 + STATUS_WAVEFORM_WIDTH } else { 0 })
                     .saturating_add(1)
                     .max(3);
             }
