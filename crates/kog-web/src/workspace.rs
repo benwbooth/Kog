@@ -11,7 +11,7 @@ impl Controller {
         // Every row/menu/tab reads this view. Build it once per revision;
         // cloning the active playlist at each read makes rendering quadratic.
         let snapshot = Memo::new(move |_| {
-            backend.revision.track();
+            backend.workspace_revision.track();
             std::sync::Arc::new(backend.model.with_value(|model| model.workspace()))
         });
         Self { backend, snapshot }

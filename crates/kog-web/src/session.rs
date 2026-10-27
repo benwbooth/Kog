@@ -14,6 +14,10 @@ impl Item for Entry {
 pub struct Controller {
     pub model: StoredValue<Session<Entry>>,
     pub revision: RwSignal<u64>,
+    /// Like `revision`, but not bumped by queue tag updates, which cannot
+    /// change the playlist workspace. Rebuilding the workspace view copies
+    /// the whole open tab, so a big tab must not pay for every tag batch.
+    pub workspace_revision: RwSignal<u64>,
     pub changed: Callback<(bool, bool)>,
     pub output: StoredValue<Option<Callback<SessionEffect>>>,
     pub base: Callback<(), String>,
@@ -47,6 +51,7 @@ impl Controller {
         self.loaded_scope.set_value(Some(base));
         self.changed.run((true, false));
         self.revision.update(|revision| *revision += 1);
+        self.workspace_revision.update(|revision| *revision += 1);
         self.persistence.save(self.model.with_value(Session::checkpoint));
         Ok(())
     }
@@ -70,6 +75,7 @@ impl Controller {
             command: kog_playback_policy::workspace::Command::Focus { .. }
         });
         let updated = matches!(&command, SessionCommand::UpdateItem { .. });
+        let tags_only = matches!(&command, SessionCommand::Metadata { .. });
         let effects = {
             let mut model = self.model.write_value();
             let _ = model.dispatch(SessionCommand::Scopes {
@@ -88,6 +94,9 @@ impl Controller {
         }
         if !progress {
             self.revision.update(|revision| *revision += 1);
+            if !tags_only {
+                self.workspace_revision.update(|revision| *revision += 1);
+            }
         }
         for effect in effects {
             match effect {

@@ -2388,6 +2388,7 @@ fn App() -> impl IntoView {
     let backend = session::Controller {
         model: session_model,
         revision: RwSignal::new(0),
+        workspace_revision: RwSignal::new(0),
         output: StoredValue::new(None),
         saved: StoredValue::new(None),
         persistence: persistence::Writer::new("sessions", Callback::new(move |error| set_message.set(error))),
@@ -2547,10 +2548,29 @@ fn App() -> impl IntoView {
         });
     };
 
+    // The queue's sort rows, resent only when something they show changed:
+    // most tag batches are for a playlist tab, not the queue, and each send
+    // makes the session refresh and save itself.
+    let sent_queue_tags = StoredValue::new(None::<u64>);
     Effect::new(move |_| {
         let entries = queue.get();
         let cache = metadata.get();
         let starred = stars.get();
+        let signature = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for entry in entries.iter() {
+                let key = meta_key(entry);
+                cache.contains_key(&key).hash(&mut hasher);
+                starred.contains(&entry_star_locator(entry)).hash(&mut hasher);
+                key.hash(&mut hasher);
+            }
+            hasher.finish()
+        };
+        if sent_queue_tags.get_value() == Some(signature) {
+            return;
+        }
+        sent_queue_tags.set_value(Some(signature));
         let rows = entries
             .iter()
             .enumerate()
