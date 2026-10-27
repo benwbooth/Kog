@@ -307,7 +307,7 @@ struct PlaylistDialog {
 /// Every field is present in the API response; the ones the web pane does not
 /// render yet are still parsed so the struct matches the wire shape.
 #[allow(dead_code)]
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct MetaRow {
     title: Option<String>,
@@ -7046,6 +7046,34 @@ fn App() -> impl IntoView {
                                         let (row_number, (index, entry)) = row;
                                         let menu_entry = entry.clone();
                                         let mobile_entry = entry.clone();
+                                        // What the row's cells show, read once per row. Cells
+                                        // subscribing to the shared signals themselves cost a
+                                        // lot: a dropped cell's subscription lingers until that
+                                        // signal next changes, so every cell redraw searched
+                                        // through thousands of them, and every tag batch redrew
+                                        // every cell. These memos change only when this row's
+                                        // own tags, star, or playing state change.
+                                        let row_meta = {
+                                            let key = meta_key(&entry);
+                                            Memo::new(move |_| metadata.with(|cache| cache.get(&key).cloned().flatten()))
+                                        };
+                                        let row_starred = {
+                                            let locator = entry_star_locator(&entry);
+                                            Memo::new(move |_| stars.with(|stars| stars.contains(&locator)))
+                                        };
+                                        let row_current = Memo::new(move |_| pane_current.get() == Some(index));
+                                        let row_status = Memo::new(move |_| {
+                                            if !row_current.get() {
+                                                ""
+                                            } else if playing.get() {
+                                                "▶"
+                                            } else if !stopped.get() {
+                                                "Ⅱ"
+                                            } else {
+                                                ""
+                                            }
+                                        });
+                                        let row_filter = Memo::new(move |_| pane_filter.get());
                                         view! {
                                             <button
                                                 class="track"
@@ -7054,7 +7082,7 @@ fn App() -> impl IntoView {
                                                 draggable=move || if playlist_workspace.snapshot().actions.append { "true" } else { "false" }
                                                 style="position: relative"
                                                 data-index=move || index.to_string()
-                                                class:current=move || pane_current.get() == Some(index)
+                                                class:current=move || row_current.get()
                                                 class:selected=move || pane_selected.read().contains(&index)
                                                 on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                     ev.prevent_default();
@@ -7138,29 +7166,13 @@ fn App() -> impl IntoView {
                                                         let title_icon_show =
                                                             title_icon.is_some();
                                                         let text = move || {
-                                                            let cache = metadata.read();
-                                                            let meta = meta_for(&cache, &entry);
-                                                            let live = if pane_current.get() == Some(index)
-                                                                && duration.get() > 0.0
-                                                            {
+                                                            let meta = row_meta.get();
+                                                            let live = if row_current.get() && duration.get() > 0.0 {
                                                                 Some(duration.get())
                                                             } else {
                                                                 None
                                                             };
-                                                            let starred = stars
-                                                                .read()
-                                                                .contains(&entry_star_locator(&entry));
-                                                            let status = if pane_current.get() == Some(index) {
-                                                                if playing.get() {
-                                                                    "▶"
-                                                                } else if !stopped.get() {
-                                                                    "Ⅱ"
-                                                                } else {
-                                                                    ""
-                                                                }
-                                                            } else {
-                                                                ""
-                                                            };
+                                                            let status = row_status.get();
                                                             if id == ColumnId::Status {
                                                                 if pane_key.get() != "queue" { return status.to_owned(); }
                                                                 policy_revision.track();
@@ -7171,7 +7183,9 @@ fn App() -> impl IntoView {
                                                             }
                                                             if id == ColumnId::Title {
                                                                 // The file name stands in until the tags arrive.
-                                                                display_title(&cache, &metadata_failed.read(), &entry)
+                                                                meta.as_ref()
+                                                                    .and_then(|meta| meta.title.clone())
+                                                                    .filter(|title| !title.trim().is_empty())
                                                                     .unwrap_or_else(|| entry.name.clone())
                                                             } else {
                                                                 column_text(
@@ -7180,7 +7194,7 @@ fn App() -> impl IntoView {
                                                                     &entry,
                                                                     meta.as_ref(),
                                                                     live,
-                                                                    starred,
+                                                                    id == ColumnId::Star && row_starred.get(),
                                                                     status,
                                                                 )
                                                             }
@@ -7199,7 +7213,7 @@ fn App() -> impl IntoView {
                                                                     | ColumnId::Artist
                                                                     | ColumnId::Album
                                                             ) {
-                                                                highlight_label(raw, pane_filter.get())
+                                                                highlight_label(raw, row_filter.get())
                                                             } else {
                                                                 raw.into_any()
                                                             }
@@ -7209,12 +7223,12 @@ fn App() -> impl IntoView {
                                                                 class=format!("cell {}", id.class())
                                                                 class:visualizer-trigger=move || {
                                                                     id == ColumnId::Status
-                                                                        && pane_current.get() == Some(index)
+                                                                        && row_current.get()
                                                                         && !stopped.get()
                                                                 }
                                                                 title=move || {
                                                                     if id == ColumnId::Status
-                                                                        && pane_current.get() == Some(index)
+                                                                        && row_current.get()
                                                                         && !stopped.get()
                                                                     {
                                                                         "Open audio visualizer".to_owned()
@@ -7265,7 +7279,7 @@ fn App() -> impl IntoView {
                                                                 <Show
                                                                     when=move || {
                                                                         id == ColumnId::Status
-                                                                            && pane_current.get() == Some(index)
+                                                                            && row_current.get()
                                                                             && playing.get()
                                                                     }
                                                                     fallback=|| ()
