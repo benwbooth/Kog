@@ -2237,6 +2237,34 @@ fn App() -> impl IntoView {
     let (resizing, set_resizing) = signal(Option::<(ColumnId, f64, f64)>::None);
 
     let (playlists, set_playlists) = signal(Vec::<(i64, String, i64)>::new());
+    // The sidebar's selected playlists (Favorites is 0). As in the desktop's
+    // Playlists list, a click selects (Ctrl toggles, Shift extends) and a
+    // double click opens the playlist in a tab.
+    let selected_playlists = RwSignal::new(Vec::<i64>::new());
+    let playlist_anchor = RwSignal::new(None::<i64>);
+    let select_playlist = move |id: i64, ev: &web_sys::MouseEvent| {
+        if ev.ctrl_key() || ev.meta_key() {
+            selected_playlists.update(|selected| match selected.iter().position(|other| *other == id) {
+                Some(at) => {
+                    selected.remove(at);
+                }
+                None => selected.push(id),
+            });
+            playlist_anchor.set(Some(id));
+        } else if ev.shift_key() {
+            let order: Vec<i64> = std::iter::once(0)
+                .chain(playlists.get_untracked().iter().map(|playlist| playlist.0))
+                .collect();
+            let anchor = playlist_anchor.get_untracked().unwrap_or(id);
+            let position = |id: i64| order.iter().position(|other| *other == id);
+            if let (Some(from), Some(to)) = (position(anchor), position(id)) {
+                selected_playlists.set(order[from.min(to)..=from.max(to)].to_vec());
+            }
+        } else {
+            selected_playlists.set(vec![id]);
+            playlist_anchor.set(Some(id));
+        }
+    };
     // The remembered pane and transport modes appear on the first paint.
     // `restoring` suppresses persistence until the initial restore settles.
     // While this is true the session effect ignores signal changes, so the
@@ -5521,6 +5549,35 @@ fn App() -> impl IntoView {
     // Add one tree row: a file expands to its playable tracks, and a folder
     // contributes playable files throughout its subtree, including folders
     // inside archives.
+    // A double clicked song, as in the desktop's file tree: added to the
+    // queue and played (its "enqueue and play" default). The first song
+    // added plays; a folder alone is only queued, like a double clicked
+    // folder there.
+    let play_rows_in_queue = move |rows: Vec<TreeRow>| {
+        let scope = base();
+        let entry_of = |row: &TreeRow| serde_json::json!({"kind":row.kind,"path":row.path,"entry":row.entry,"fragment":row.fragment,"name":row.name});
+        let mut action = QueueAction::PlayNow;
+        let mut files = Vec::new();
+        let flush = |files: &mut Vec<serde_json::Value>, action: &mut QueueAction| {
+            if !files.is_empty() {
+                backend.send(SessionCommand::Expand { scope: scope.clone(), entries: std::mem::take(files), action: *action });
+                *action = QueueAction::AddToQueue;
+            }
+        };
+        for row in rows {
+            if row.is_dir {
+                flush(&mut files, &mut action);
+                backend.send(SessionCommand::Collect {
+                    scope: scope.clone(), path: row.path, query: tree_search.get_untracked(),
+                    root: tree_root.get_untracked(), action,
+                });
+                action = QueueAction::AddToQueue;
+            } else {
+                files.push(entry_of(&row));
+            }
+        }
+        flush(&mut files, &mut action);
+    };
     let add_rows_to_playlist = move |rows: Vec<TreeRow>| {
         if rows.is_empty() { return; }
         let destination = playlist_workspace.snapshot();
@@ -6442,7 +6499,11 @@ fn App() -> impl IntoView {
                                                                     tree_anchor.set(id);
                                                                 }
                                                                 if !touch_mode && ev.detail() >= 2 {
-                                                                    add_rows_to_playlist(rows_for(&row_click));
+                                                                    if !row_click.is_dir && pane_key.get_untracked() == "queue" {
+                                                                        play_rows_in_queue(rows_for(&row_click));
+                                                                    } else {
+                                                                        add_rows_to_playlist(rows_for(&row_click));
+                                                                    }
                                                                 } else if row_click.is_dir {
                                                                     tree_toggle(row_click.path.clone());
                                                                 } else if touch_mode {
@@ -6677,19 +6738,21 @@ fn App() -> impl IntoView {
                                             view! {
                                             <button
                                                 class="tree-row favorite-row"
-                                                class:selected=move || pane_key.get() == format!("{}:0", base())
-                                                title="Open Favorites in a tab"
+                                                class:selected=move || selected_playlists.read().contains(&0)
+                                                title="Double click to open Favorites in a tab"
                                                 draggable="true"
-                                                on:click=move |_| {
+                                                on:click=move |ev: web_sys::MouseEvent| {
                                                     // Touch: a tap opens the list in
                                                     // the pane; the + button appends.
-                                                    {
+                                                    if touch_mode {
                                                         replace_pane_with_playlist(
                                                             0,
                                                             "Favorites".to_owned(),
                                                         );
                                                         set_sidebar_open.set(false);
                                                         set_mobile_view.set(MobileView::Queue);
+                                                    } else {
+                                                        select_playlist(0, &ev);
                                                     }
                                                 }
                                                 on:dragstart=move |ev: web_sys::DragEvent| {
@@ -6765,24 +6828,27 @@ fn App() -> impl IntoView {
                                                 let more_key_label = label.clone();
                                                 let more_aria_label = format!("Actions for {label}");
                                                 let open_label = label.clone();
+                                                let double_label = label.clone();
                                                 view! {
                                                     <button
                                                         class="tree-row playlist-row"
-                                                        class:selected=move || pane_key.get() == format!("{}:{drag_id}", base())
+                                                        class:selected=move || selected_playlists.read().contains(&drag_id)
                                                         class:renaming=move || renaming_playlist.get() == Some(drag_id)
-                                                        title="Open playlist in a tab"
+                                                        title="Double click to open the playlist in a tab"
                                                         draggable="true"
-                                                        on:click=move |_| {
+                                                        on:click=move |ev: web_sys::MouseEvent| {
                                                             // Touch: a tap opens the
                                                             // playlist in the pane; the
                                                             // + button appends.
-                                                            {
+                                                            if touch_mode {
                                                                 replace_pane_with_playlist(
                                                                     drag_id,
                                                                     open_label.clone(),
                                                                 );
                                                                 set_sidebar_open.set(false);
                                                                 set_mobile_view.set(MobileView::Queue);
+                                                            } else {
+                                                                select_playlist(drag_id, &ev);
                                                             }
                                                         }
                                                         on:dragstart=move |ev: web_sys::DragEvent| {
@@ -6794,7 +6860,9 @@ fn App() -> impl IntoView {
                                                         }
                                                         on:dragend=move |_| set_dragging_playlist.set(None)
                                                         on:dblclick=move |_| {
-                                                            // Single click already focuses the editor tab.
+                                                            if !touch_mode {
+                                                                replace_pane_with_playlist(drag_id, double_label.clone());
+                                                            }
                                                         }
                                                         on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                             ev.prevent_default();
