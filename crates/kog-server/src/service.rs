@@ -34,6 +34,8 @@ pub enum StreamSource {
     Encoding {
         receiver: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
     },
+    /// Part of a finished AAC encode, from the frame where a seek lands.
+    CachedFrom { path: PathBuf, offset: u64 },
 }
 
 #[derive(Clone)]
@@ -84,6 +86,17 @@ impl StreamService {
     ) -> Result<StreamSource, String> {
         if let Some(path) = self.cache.lookup(&key) {
             return Ok(StreamSource::Cached(path));
+        }
+        // A seek into a song that has been encoded once before reads the
+        // finished encode from the frame it lands on. Starting a new encode
+        // there means decoding up to that point first, which for emulated
+        // formats can take as long as playing it.
+        if key.start_ms > 0 && key.codec == crate::StreamCodec::Aac {
+            if let Some(path) = self.cache.lookup(&key.clone().with_start_ms(0)) {
+                if let Some(offset) = adts_offset(&path, key.start_ms) {
+                    return Ok(StreamSource::CachedFrom { path, offset });
+                }
+            }
         }
         let decoders = kog_audio::decoder::DecoderRegistry::new(self.decoder_settings.clone());
         let source = resolve_entry(&entry, &decoders, &self.scratch)?;
@@ -306,6 +319,31 @@ impl Drop for InspectionActive {
 /// A client that disconnects (or a filled channel) does not abort the encode:
 /// finishing the cache entry is worth more than the abandoned response, since
 /// every later play of that track then takes the cached path.
+/// The byte offset of the ADTS frame `start_ms` into an AAC file, or None
+/// when the file is not ADTS or ends first. Each frame holds 1024 samples.
+fn adts_offset(path: &Path, start_ms: u64) -> Option<u64> {
+    const RATES: [u64; 13] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+    let data = std::fs::read(path).ok()?;
+    let mut offset = 0usize;
+    let mut samples = 0u64;
+    loop {
+        let header = data.get(offset..offset + 7)?;
+        if header[0] != 0xff || header[1] & 0xf0 != 0xf0 {
+            return None;
+        }
+        let rate = *RATES.get(usize::from((header[2] >> 2) & 0x0f))?;
+        if samples * 1000 >= start_ms * rate {
+            return Some(offset as u64);
+        }
+        let length = (usize::from(header[3] & 0x03) << 11) | (usize::from(header[4]) << 3) | usize::from(header[5] >> 5);
+        if length < 7 {
+            return None;
+        }
+        offset += length;
+        samples += 1024 * (u64::from(header[6] & 0x03) + 1);
+    }
+}
+
 struct TeeWriter {
     file: std::fs::File,
     sender: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
@@ -376,6 +414,7 @@ mod tests {
         match service.open(entry, key).expect("cached stream") {
             StreamSource::Cached(path) => assert_eq!(path, entry_path),
             StreamSource::Encoding { .. } => panic!("a cached entry must not re-encode"),
+            StreamSource::CachedFrom { .. } => panic!("a cached entry is served whole"),
         }
     }
 

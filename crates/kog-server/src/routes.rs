@@ -450,6 +450,26 @@ async fn stream_audio(
         Ok(crate::service::StreamSource::Cached(path)) => {
             serve_file(&path, codec.content_type(), &headers).await
         }
+        Ok(crate::service::StreamSource::CachedFrom { path, offset }) => {
+            // Sent without a length or byte ranges, like a stream still
+            // encoding: positions count from where this one starts.
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(bytes) => bytes,
+                Err(error) => return bad_request(&format!("reading the stream file: {error}")),
+            };
+            let start = usize::try_from(offset).unwrap_or(usize::MAX).min(bytes.len());
+            let rest = axum::body::Bytes::from(bytes).slice(start..);
+            let body = axum::body::Body::from_stream(tokio_stream::once(Ok::<_, std::io::Error>(rest)));
+            let mut response = Response::new(body);
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(codec.content_type()),
+            );
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
         Ok(crate::service::StreamSource::Encoding { receiver }) => {
             // Progressive: no Range support until the cache entry exists, but
             // playback starts immediately instead of waiting for the encode.

@@ -4172,16 +4172,13 @@ fn App() -> impl IntoView {
             SessionEffect::Seek { seconds } => {
                 if let Some(audio) = audio_ref.get() {
                     let relative = seconds - stream_offset.get_untracked();
-                    // A finished encode is served with byte ranges and a
-                    // length, so the browser seeks anywhere in it. A stream
-                    // still encoding has no length (an infinite duration) and
-                    // reports a seekable range it cannot actually reach: only
-                    // what has arrived can be seeked to.
-                    let ranged = finite_duration(audio.duration()).is_some();
-                    if relative >= 0.0
-                        && (time_in_ranges(&audio.buffered(), relative)
-                            || ranged && time_in_ranges(&audio.seekable(), relative))
-                    {
+                    // Only what has arrived is seeked in place. A stream
+                    // still encoding reports a seekable range it cannot
+                    // reach, and a browser places a byte-range seek in an AAC
+                    // file by its average bitrate, which can land far off;
+                    // the server starts a stream at the exact position
+                    // instead, at once when the song was encoded before.
+                    if relative >= 0.0 && time_in_ranges(&audio.buffered(), relative) {
                         audio.set_current_time(relative);
                     } else {
                         // Mark the new source as applied before the src
@@ -4213,6 +4210,7 @@ fn App() -> impl IntoView {
     // leaves the element waiting at the same spot with no error at all, so a
     // position that has not moved for 30 seconds reloads the stream
     // from where it stands; 12 seconds when no audio has arrived at all.
+    // Only once its request has ended: a slow server is left to finish.
     {
         let window = web_sys::window().expect("window for the playback watchdog");
         let playing = playing.clone();
@@ -4236,8 +4234,12 @@ fn App() -> impl IntoView {
             let position = audio.current_time();
             let (last, ticks) = stall.get();
             let ticks = if audio.ended() || (position - last).abs() > 0.01 { 0 } else { ticks + 1 };
+            // A request still open is the server working, not a stall:
+            // starting a song partway can mean emulating everything before
+            // that point first, and reloading would only start that over.
+            let fetching = audio.network_state() == web_sys::HtmlMediaElement::NETWORK_LOADING;
             let nothing_arrived = audio.buffered().length() == 0;
-            if ticks >= 15 || nothing_arrived && ticks >= 6 {
+            if !fetching && (ticks >= 15 || nothing_arrived && ticks >= 6) {
                 stall.set((f64::NAN, 0));
                 if let Some(token) = output_token.get_untracked() {
                     source_changing.set(false);
