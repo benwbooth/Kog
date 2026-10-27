@@ -1865,6 +1865,9 @@ impl<T: Item> Session<T> {
                 return vec![];
             }
         }
+        // The web player dispatches Scopes ahead of every command and drops
+        // its effects, so tab loads must not start from it.
+        let scopes_only = matches!(&command, Command::Scopes { .. });
         let persist = !matches!(
             &command,
             Command::Output {
@@ -2219,6 +2222,31 @@ impl<T: Item> Session<T> {
         });
         if let Some(old_to_new) = mapping {
             effects.insert(0, Effect::QueueChanged { old_to_new });
+        }
+        // Tabs restored without their songs load them again from the library.
+        for key in if scopes_only { vec![] } else { self.workspace.unloaded_tabs() } {
+            if let Ok(workspace::Effect::Load {
+                key,
+                scope,
+                playlist_id,
+                generation,
+            }) = self.workspace.apply(workspace::Command::Refresh { key })
+            {
+                let token = self.token();
+                self.pending.insert(
+                    token.serial,
+                    Pending::Load {
+                        key,
+                        generation,
+                        scope: scope.clone(),
+                    },
+                );
+                effects.push(Effect::Load {
+                    token,
+                    scope,
+                    playlist_id,
+                });
+            }
         }
         self.revision += 1;
         if persist {

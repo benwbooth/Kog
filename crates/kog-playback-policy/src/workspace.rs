@@ -31,7 +31,7 @@ struct PendingSave {
     rows: Vec<Row>,
     close: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct Tab {
     key: String,
     scope: String,
@@ -46,6 +46,53 @@ struct Tab {
     loading: Option<u64>,
     saving: Option<PendingSave>,
     error: Option<String>,
+    /// Restored without its songs, which load again from the library.
+    #[serde(default)]
+    unloaded: bool,
+}
+/// A tab without unsaved edits is saved without its songs: they are the
+/// library playlist's, and load again when the session is restored. Saving
+/// every song of every open tab made each checkpoint megabytes, rebuilt and
+/// uploaded on every song change.
+impl Serialize for Tab {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Saved<'a> {
+            key: &'a str,
+            scope: &'a str,
+            playlist_id: i64,
+            name: &'a str,
+            readonly: bool,
+            draft: &'a Draft,
+            saved: &'a [Row],
+            undo: &'a [Draft],
+            redo: &'a [Draft],
+            revision: u64,
+            loading: Option<u64>,
+            saving: &'a Option<PendingSave>,
+            error: &'a Option<String>,
+            unloaded: bool,
+        }
+        let unloaded = self.unloaded || (self.saving.is_none() && !self.dirty());
+        let empty = Draft::default();
+        Saved {
+            key: &self.key,
+            scope: &self.scope,
+            playlist_id: self.playlist_id,
+            name: &self.name,
+            readonly: self.readonly,
+            draft: if unloaded { &empty } else { &self.draft },
+            saved: if unloaded { &[] } else { &self.saved },
+            undo: if unloaded { &[] } else { &self.undo },
+            redo: if unloaded { &[] } else { &self.redo },
+            revision: self.revision,
+            loading: self.loading,
+            saving: &self.saving,
+            error: if unloaded { &None } else { &self.error },
+            unloaded,
+        }
+        .serialize(serializer)
+    }
 }
 impl Tab {
     fn dirty(&self) -> bool {
@@ -120,6 +167,11 @@ pub enum Command {
         error: String,
     },
     Focus {
+        key: String,
+    },
+    /// Load a tab again if it holds no songs because it was restored
+    /// without them or its load failed, without focusing it.
+    Refresh {
         key: String,
     },
     /// Move a tab before another tab, or to the end when `before` is null.
@@ -429,7 +481,7 @@ impl Workspace {
         workspace.pending_close = None;
         workspace.queue_position = workspace.queue_position.min(workspace.tabs.len());
         for tab in &mut workspace.tabs {
-            if tab.loading.take().is_some() {
+            if tab.loading.take().is_some() && !tab.unloaded {
                 tab.error = Some("Loading was interrupted. Reload this playlist.".into());
             }
             tab.saving = None;
@@ -450,7 +502,7 @@ impl Workspace {
                 && t.saving.is_none()
                 && !t.dirty()
                 && t.draft.rows.is_empty()
-                && t.error.is_some()
+                && (t.error.is_some() || t.unloaded)
         });
         if !stale {
             return Effect::None;
@@ -468,6 +520,14 @@ impl Workspace {
             playlist_id: tab.playlist_id,
             generation,
         }
+    }
+    /// Tabs restored without their songs that are not loading yet.
+    pub(crate) fn unloaded_tabs(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|t| t.unloaded && t.loading.is_none())
+            .map(|t| t.key.clone())
+            .collect()
     }
     fn active_mut(&mut self) -> Result<&mut Tab, String> {
         self.tabs
@@ -580,6 +640,7 @@ impl Workspace {
                     loading: Some(generation),
                     saving: None,
                     error: None,
+                    unloaded: false,
                 });
                 return Ok(Effect::Load {
                     key,
@@ -610,6 +671,7 @@ impl Workspace {
                     tab.redo.clear();
                     tab.loading = None;
                     tab.error = None;
+                    tab.unloaded = false;
                 }
             }
             LoadFailed {
@@ -624,6 +686,8 @@ impl Workspace {
                 {
                     tab.loading = None;
                     tab.error = Some(error);
+                    // Not retried on every command; opening it tries again.
+                    tab.unloaded = false;
                 }
             }
             Focus { key } => {
@@ -633,6 +697,7 @@ impl Workspace {
                 self.active = key.clone();
                 return Ok(self.reload_unloaded(&key));
             }
+            Refresh { key } => return Ok(self.reload_unloaded(&key)),
             MoveTab { key, before } => {
                 if self.pending_close.is_some() {
                     return Ok(Effect::None);
