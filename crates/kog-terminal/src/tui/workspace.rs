@@ -216,6 +216,83 @@ impl Ui {
             index: self.workspace_cursor,
         });
     }
+    /// Whether the tab row is on screen.
+    pub(super) fn tab_bar_shown(&self, size: (usize, usize)) -> bool {
+        let layout = self.layout(size);
+        !self.compact_mode && (layout.show_sidebar || self.focus == Focus::Tracks)
+    }
+
+    /// Keys for the focused tab row, and ↑ from the first song back to it.
+    pub(super) fn tab_bar_key(&mut self, key: Key, size: (usize, usize)) -> bool {
+        if !self.tabs_focused {
+            let at_top = if self.is_draft() {
+                self.table_visible_tracks().first().is_none_or(|first| *first == self.workspace_cursor)
+            } else {
+                self.visible_tracks().first().is_none_or(|first| *first == self.selected[2])
+            };
+            if key == Key::Up
+                && self.focus == Focus::Tracks
+                && self.keyboard_column.is_none()
+                && at_top
+                && self.tab_bar_shown(size)
+            {
+                self.tabs_focused = true;
+                return true;
+            }
+            return false;
+        }
+        if !self.tab_bar_shown(size) || self.session.workspace_model().pending_close().is_some() {
+            self.tabs_focused = false;
+            return false;
+        }
+        self.focus = Focus::Tracks;
+        match key {
+            Key::Left | Key::Char('h') => self.workspace_cycle(-1),
+            Key::Right | Key::Char('l') => self.workspace_cycle(1),
+            Key::Enter | Key::Down | Key::Char('j') | Key::Esc | Key::Tab => self.tabs_focused = false,
+            Key::BackTab => {
+                self.tabs_focused = false;
+                self.focus = Focus::Library;
+            }
+            Key::Delete | Key::CtrlW => self.activate_tab_menu(0),
+            Key::ShiftLeft => self.activate_tab_menu(3),
+            Key::ShiftRight => self.activate_tab_menu(4),
+            Key::Char('M') | Key::ContextMenu => {
+                let layout = self.layout(size);
+                self.open_context(MenuPage::TabBar, layout.playlist_left() + 1, layout.tab_row + 1, size);
+            }
+            // Space, volume and the other player keys still work here.
+            _ => return false,
+        }
+        true
+    }
+
+    /// Run a tab menu item on the active tab.
+    pub(super) fn activate_tab_menu(&mut self, index: usize) {
+        let state = self.session.workspace_model().snapshot();
+        let active = state.tabs.iter().position(|tab| tab.key == state.active).unwrap_or(0);
+        match index {
+            0 if state.active != "queue" => self.workspace_command(Command::Close { key: state.active.clone() }),
+            1 => {
+                for tab in &state.tabs {
+                    if tab.key != state.active && tab.key != "queue" {
+                        self.workspace_command(Command::Close { key: tab.key.clone() });
+                    }
+                }
+            }
+            3 if active > 0 => self.workspace_command(Command::MoveTab {
+                key: state.active.clone(),
+                before: Some(state.tabs[active - 1].key.clone()),
+            }),
+            4 if active + 1 < state.tabs.len() => self.workspace_command(Command::MoveTab {
+                key: state.active.clone(),
+                before: state.tabs.get(active + 2).map(|tab| tab.key.clone()),
+            }),
+            _ => {}
+        }
+        self.tab_start = None;
+    }
+
     pub(super) fn workspace_key(&mut self, key: Key, size: (usize, usize)) -> bool {
         let state = self
             .session
@@ -871,7 +948,9 @@ impl Ui {
                 left + x,
                 &label,
                 len,
-                if active {
+                if active && self.tabs_focused {
+                    Surface::MenuSelected
+                } else if active {
                     Surface::Selected
                 } else {
                     Surface::Header

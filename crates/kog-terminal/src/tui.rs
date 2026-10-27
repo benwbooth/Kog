@@ -387,6 +387,7 @@ enum MenuPage {
     Tree,
     Tracks,
     Draft,
+    TabBar,
     Saved,
     Playlist,
     Columns,
@@ -419,6 +420,7 @@ impl MenuPage {
             Self::Tree => "File",
             Self::Tracks => "Playlist Row",
             Self::Draft => "Saved Playlist Row",
+            Self::TabBar => "Tab",
             Self::Saved => "Saved Playlist",
             Self::Playlist => "Playlist",
             Self::Columns | Self::ColumnContext => "Columns",
@@ -440,6 +442,7 @@ impl MenuPage {
             Self::Tree => &TREE_MENU,
             Self::Tracks => &TRACKS_MENU,
             Self::Draft => &DRAFT_MENU,
+            Self::TabBar => &TAB_MENU,
             Self::Saved => &SAVED_MENU,
             Self::Playlist => &PLAYLIST_MENU,
             Self::Columns => &COLUMNS_MENU[..12],
@@ -624,6 +627,9 @@ fn menu_item_key(page: MenuPage, index: usize) -> Option<&'static str> {
         (Tree, 3) | (Tracks, 3) => "f",
         (Saved, 3) => "r",
         (Saved, 5) => "Del",
+        (TabBar, 0) => "Del",
+        (TabBar, 3) => "Shift+←",
+        (TabBar, 4) => "Shift+→",
         (Draft, 0) => "p",
         (Draft, 1) => "n",
         (Draft, 2) => "a",
@@ -670,6 +676,7 @@ fn menu_key_help() -> Vec<String> {
         ("M".to_owned(), MenuPage::Tree, "FILE MENU (M on Files)"),
         ("M".to_owned(), MenuPage::Saved, "SAVED PLAYLIST MENU (M on Playlists)"),
         ("M".to_owned(), MenuPage::Tracks, "PLAYLIST ROW MENU (M or right click on a queue song)"),
+        ("Tab to tabs, M".to_owned(), MenuPage::TabBar, "TAB MENU (M on the focused tab row)"),
         ("M".to_owned(), MenuPage::Draft, "SAVED PLAYLIST ROW MENU (M or right click on a song in a playlist tab)"),
         ("H M".to_owned(), MenuPage::ColumnContext, "COLUMNS MENU (M on a column)"),
         ("e".to_owned(), MenuPage::TagEditor, "EDIT TAGS (e on a song)"),
@@ -1289,6 +1296,9 @@ struct Ui {
     manual_scroll_selection: [Option<usize>; 3],
     tab_drag: Option<workspace::TabDrag>,
     tab_start: Option<usize>,
+    /// The tab row has keyboard focus: ←/→ switch tabs, Enter goes into the
+    /// tab's songs. A stop between Files and the songs in the Tab cycle.
+    tabs_focused: bool,
     track_drag: Option<queue_drag::Source>,
     track_drop_target: Option<usize>,
     sort_column: Option<usize>,
@@ -1697,6 +1707,7 @@ impl Ui {
             manual_scroll_selection: [None; 3],
             tab_drag: None,
             tab_start: None,
+            tabs_focused: false,
             track_drag: None,
             track_drop_target: None,
             sort_column: None,
@@ -2607,6 +2618,10 @@ impl Ui {
         }
         if page == MenuPage::Draft {
             self.activate_draft_menu(index);
+            return;
+        }
+        if page == MenuPage::TabBar {
+            self.activate_tab_menu(index);
             return;
         }
         if page == MenuPage::ColumnContext && index == 12 {
@@ -6378,6 +6393,8 @@ impl Ui {
                 String::new(),
                 "PLAYLIST EDITOR TABS".to_owned(),
                 row("Alt+[ / Alt+]", "Previous / next tab"),
+                row("Tab to the tab row", "Then ←/→ switch, Enter/↓ songs, ↑ back"),
+                row("On the tab row", "Del close · Shift+←/→ move · M menu"),
                 row("‹ › / wheel on tabs", "Scroll tabs cut off at the right"),
                 row("Alt+1 / Ctrl+W", "Play Queue / close tab"),
                 row("Enter / double click", "Play the cursor row"),
@@ -6988,6 +7005,9 @@ impl Ui {
             }
             return true;
         }
+        if self.tab_bar_key(key, size) {
+            return true;
+        }
         if self.workspace_key(key, size) {
             return true;
         }
@@ -7160,6 +7180,8 @@ impl Ui {
             }
             Key::Tab => {
                 self.range_click_pending = None;
+                // Files → tabs → songs, when the tab row is showing.
+                self.tabs_focused = self.focus == Focus::Library && self.tab_bar_shown(size);
                 self.focus = match self.focus {
                     Focus::Playlists => Focus::Library,
                     Focus::Library => Focus::Tracks,
@@ -7168,9 +7190,11 @@ impl Ui {
             }
             Key::BackTab => {
                 self.range_click_pending = None;
+                self.tabs_focused = self.focus == Focus::Tracks && self.tab_bar_shown(size);
                 self.focus = match self.focus {
                     Focus::Playlists => Focus::Tracks,
                     Focus::Library => Focus::Playlists,
+                    Focus::Tracks if self.tabs_focused => Focus::Tracks,
                     Focus::Tracks => Focus::Library,
                 }
             }
@@ -7339,6 +7363,10 @@ impl Ui {
     }
 
     fn mouse(&mut self, button: u16, x: usize, y: usize, release: bool, size: (usize, usize)) {
+        // A click anywhere hands focus back to the panes.
+        if !release && button & (32 | 64 | 128) == 0 {
+            self.tabs_focused = false;
+        }
         if self.inspector.open {
             if button == 64 || button == 65 { self.inspector.wheel(button == 65); }
             if !release && button == 0 && y == 1 {
@@ -9807,7 +9835,11 @@ impl Ui {
         }).unwrap_or_else(|| {
             search_activity.unwrap_or_else(|| {
                 if self.status.is_empty() {
-                    "V waveform · Tab pane · M actions · H columns · x mark · ? keys · Enter open/play · Space pause".to_owned()
+                    if self.tabs_focused {
+                        "Tabs · ←/→ switch · Enter/↓ songs · Shift+←/→ move · Del close · M menu · Tab next pane".to_owned()
+                    } else {
+                        "V waveform · Tab pane · M actions · H columns · x mark · ? keys · Enter open/play · Space pause".to_owned()
+                    }
                 } else { self.status.clone() }
             })
         });
@@ -11139,6 +11171,9 @@ const DRAFT_MENU: [&str; 17] = [
     "Save",
     "Reload",
 ];
+
+/// M on the focused tab row.
+const TAB_MENU: [&str; 5] = ["Close Tab", "Close Other Tabs", "", "Move Tab Left", "Move Tab Right"];
 
 /// The Edit menu item each draft row menu item runs, past its queue actions.
 const DRAFT_MENU_EDIT: [usize; 17] = [0, 0, 0, 0, 12, 13, 5, 7, 8, 0, 0, 1, 3, 4, 0, 10, 11];
@@ -12620,6 +12655,8 @@ enum Key {
     Down,
     ShiftUp,
     ShiftDown,
+    ShiftLeft,
+    ShiftRight,
     CtrlUp,
     CtrlDown,
     Left,
@@ -12715,6 +12752,8 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
             b"B" => Key::Down,
             b"1;2A" => Key::ShiftUp,
             b"1;2B" => Key::ShiftDown,
+            b"1;2C" => Key::ShiftRight,
+            b"1;2D" => Key::ShiftLeft,
             b"1;5A" => Key::CtrlUp,
             b"1;5B" => Key::CtrlDown,
             b"1;3A" => Key::AltUp,
