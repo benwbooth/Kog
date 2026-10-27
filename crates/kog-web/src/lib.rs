@@ -4212,7 +4212,7 @@ fn App() -> impl IntoView {
     // stops delivering (a stalled request, or a server restarted mid-load)
     // leaves the element waiting at the same spot with no error at all, so a
     // position that has not moved for 30 seconds reloads the stream
-    // from where it stands.
+    // from where it stands; 12 seconds when no audio has arrived at all.
     {
         let window = web_sys::window().expect("window for the playback watchdog");
         let playing = playing.clone();
@@ -4236,7 +4236,8 @@ fn App() -> impl IntoView {
             let position = audio.current_time();
             let (last, ticks) = stall.get();
             let ticks = if audio.ended() || (position - last).abs() > 0.01 { 0 } else { ticks + 1 };
-            if ticks >= 15 {
+            let nothing_arrived = audio.buffered().length() == 0;
+            if ticks >= 15 || nothing_arrived && ticks >= 6 {
                 stall.set((f64::NAN, 0));
                 if let Some(token) = output_token.get_untracked() {
                     source_changing.set(false);
