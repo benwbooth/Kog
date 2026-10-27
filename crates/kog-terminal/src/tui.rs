@@ -9036,7 +9036,7 @@ impl Ui {
             }
         }
 
-        self.draw_workspace(&mut screen, size, &layout);
+        self.draw_workspace(&mut screen, size, &layout, &mut hover_labels);
         for y in layout.footer_top..height {
             paint(&mut screen, y + 1, 1, "", width, Surface::Toolbar, false);
         }

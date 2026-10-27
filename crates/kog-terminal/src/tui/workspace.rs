@@ -3,6 +3,9 @@ use super::*;
 use kog_audio::playback_order::selection::{Command as Select, Gesture};
 use kog_audio::playback_order::workspace::{CloseChoice, Command, QueueAction};
 
+/// The most of a playlist's name a tab shows.
+const TAB_NAME_CHARS: usize = 19;
+
 const CLOSE_CHOICES: [(CloseChoice, &str); 3] = [
     (CloseChoice::Save, "[Save]"),
     (CloseChoice::Discard, "[Discard]"),
@@ -368,7 +371,7 @@ impl Ui {
             .unwrap_or_else(|| active.saturating_sub(max_tabs - 1))
             .min(state.tabs.len().saturating_sub(1));
         for tab in state.tabs.into_iter().skip(start) {
-            let name: String = tab.name.chars().take(19).collect();
+            let name: String = tab.name.chars().take(TAB_NAME_CHARS).collect();
             let label = format!(
                 "[ {}{}{} ]",
                 name,
@@ -749,10 +752,19 @@ impl Ui {
         screen: &mut String,
         size: (usize, usize),
         layout: &Layout,
+        hover_labels: &mut HoverLabels,
     ) {
         if self.compact_mode || (!layout.show_sidebar && self.focus != Focus::Tracks) {
             return;
         }
+        let names: HashMap<String, String> = self
+            .session
+            .workspace_model()
+            .snapshot()
+            .tabs
+            .into_iter()
+            .map(|tab| (tab.key, tab.name))
+            .collect();
         let left = layout.playlist_left() + 1;
         let width = size.0.saturating_sub(left - 1);
         paint(
@@ -764,7 +776,15 @@ impl Ui {
             Surface::Header,
             false,
         );
-        for (x, len, _, label, active) in self.workspace_tab_cells(width) {
+        for (x, len, key, label, active) in self.workspace_tab_cells(width) {
+            // A name cut to fit its tab reads in full on hover.
+            if let (Some(name), Some(pointer)) = (names.get(&key), hover_labels.pointer)
+                && pointer.1 == layout.tab_row
+                && (left - 1 + x..left - 1 + x + len).contains(&pointer.0)
+                && (name.chars().count() > TAB_NAME_CHARS || len < cell_width(&label))
+            {
+                hover_labels.label = Some(HoverLabel { text: name.clone() });
+            }
             paint(
                 screen,
                 layout.tab_row + 1,
