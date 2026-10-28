@@ -447,15 +447,17 @@ fn draw_keyboard(
         let start = index * width / whites.len();
         let end = (index + 1) * width / whites.len();
         let key_width = end - start;
-        let fill = if index == 0 {
-            " ".repeat(key_width)
-        } else {
-            format!("│{}", " ".repeat(key_width - 1))
-        };
         let bg = color(*key, "224;227;233");
+        // The line between two keys stays unlit, so a lit key shows its
+        // own cells only, not its left neighbor's edge.
+        let (edge, fill) = if index == 0 {
+            ("", " ".repeat(key_width))
+        } else {
+            ("│", " ".repeat(key_width - 1))
+        };
         for row in 0..height {
             out.push_str(&format!(
-                "\x1b[{};{}H\x1b[38;2;70;77;85;48;2;{}m{}\x1b[0m",
+                "\x1b[{};{}H\x1b[38;2;70;77;85;48;2;224;227;233m{edge}\x1b[48;2;{}m{}\x1b[0m",
                 y + row,
                 x + start,
                 bg,
@@ -466,9 +468,9 @@ fn draw_keyboard(
             out.push_str(&format!(
                 "\x1b[{};{}H\x1b[38;2;25;29;37;48;2;{}m{}\x1b[0m",
                 y + height - 1,
-                x + start,
+                x + start + edge.len().min(1),
                 bg,
-                truncate(&format!("C{}", *key as i32 / 12 - 1), key_width)
+                truncate(&format!("C{}", *key as i32 / 12 - 1), key_width - edge.len().min(1))
             ));
         }
     }
@@ -514,7 +516,8 @@ fn draw_pads(out: &mut String, channel: &Channel, area: (usize, usize, usize, us
         let start = left + index * (pad_width + 1);
         for row in 0..height {
             let text = if row == height / 2 {
-                let label = truncate(&pad.label, pad_width);
+                // truncate pads to the width; centering needs the bare label.
+                let label = truncate(&pad.label, pad_width).trim_end().to_owned();
                 let padding = pad_width - cell_width(&label);
                 format!("{}{label}{}", " ".repeat(padding / 2), " ".repeat(padding - padding / 2))
             } else {
