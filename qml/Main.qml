@@ -3403,7 +3403,9 @@ ApplicationWindow {
 
                     ScrollBar.vertical: ScrollBar {
                         id: directoryScrollBar
-                        policy: ScrollBar.AsNeeded
+                        // AsNeeded only shows the bar while scrolling; keep
+                        // it up whenever the tree overflows.
+                        policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
                     }
                 }
                 }
@@ -3482,11 +3484,17 @@ ApplicationWindow {
                         // Row height plus spacing, for drop positions.
                         readonly property int rowPitch: 22
 
+                        ScrollBar.vertical: ScrollBar {
+                            id: playlistsScrollBar
+                            policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                        }
+
                         delegate: PlaylistSidebarRow {
                             id: playlistRow
                             required property int index
                             objectName: "sidebarPlaylist_" + pid
                             width: playlistsList.width
+                                - (playlistsScrollBar.visible ? playlistsScrollBar.implicitWidth + 2 : 0)
                             height: playlistsList.rowPitch - playlistsList.spacing
                             theme: root.palette
                             selected: root.isPlaylistSelected(pid)
@@ -3764,7 +3772,7 @@ ApplicationWindow {
 
                     ScrollBar.vertical: ScrollBar {
                         id: playlistVerticalScrollBar
-                        policy: ScrollBar.AsNeeded
+                        policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
                         onPressedChanged: if (pressed) {
                             playlistKineticWheel.stop()
                             playlistHorizontalWheel.stop()
@@ -3772,7 +3780,7 @@ ApplicationWindow {
                     }
                     ScrollBar.horizontal: ScrollBar {
                         id: playlistHorizontalScrollBar
-                        policy: ScrollBar.AsNeeded
+                        policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
                         onPressedChanged: if (pressed)
                             playlistHorizontalWheel.stop()
                     }
