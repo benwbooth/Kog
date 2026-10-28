@@ -481,6 +481,12 @@ impl Workspace {
         workspace.pending_close = None;
         workspace.queue_position = workspace.queue_position.min(workspace.tabs.len());
         for tab in &mut workspace.tabs {
+            // A tab saved with no songs loads them again: an older Kog that
+            // restored a tab saved without its songs saves it back empty,
+            // without the flag that says so.
+            if tab.draft.rows.is_empty() && tab.saved.is_empty() && tab.saving.is_none() {
+                tab.unloaded = true;
+            }
             if tab.loading.take().is_some() && !tab.unloaded {
                 tab.error = Some("Loading was interrupted. Reload this playlist.".into());
             }
