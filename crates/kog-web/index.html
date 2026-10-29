@@ -131,6 +131,16 @@
         });
         addEventListener("pointerup", () => { dragging = false; });
         document.addEventListener("pointerleave", () => { if (!dragging) mark(null); });
+        // A pane also shows its bar for a moment after it scrolls (wheel,
+        // trackpad or keyboard), as the desktop window does.
+        const idle = new WeakMap();
+        document.addEventListener("scroll", (event) => {
+          const element = event.target;
+          if (!(element instanceof Element)) return;
+          element.classList.add("scrollbar-scrolling");
+          clearTimeout(idle.get(element));
+          idle.set(element, setTimeout(() => element.classList.remove("scrollbar-scrolling"), 900));
+        }, { capture: true, passive: true });
       })();
     </script>
   </body>

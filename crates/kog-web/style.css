@@ -2149,7 +2149,8 @@ body.touch .track .index-cell {
   transition: --scrollbar-opacity 150ms ease;
 }
 
-.scrollbar-hover {
+.scrollbar-hover,
+.scrollbar-scrolling {
   --scrollbar-opacity: 1;
 }
 
@@ -2170,7 +2171,8 @@ body.touch .track .index-cell {
 }
 
 ::-webkit-scrollbar-thumb:hover,
-.scrollbar-hover::-webkit-scrollbar-thumb {
+.scrollbar-hover::-webkit-scrollbar-thumb,
+.scrollbar-scrolling::-webkit-scrollbar-thumb {
   background: var(--muted);
   background-clip: content-box;
 }

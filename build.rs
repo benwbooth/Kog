@@ -43,6 +43,7 @@ fn main() {
         "qml/PaneSplitView.qml",
         "qml/CountPreservingListView.qml",
         "qml/KineticWheelHandler.qml",
+        "qml/FadingScrollBar.qml",
         "qml/Lyrics.qml",
         "qml/Main.qml",
         "qml/PlaylistSidebarRow.qml",
