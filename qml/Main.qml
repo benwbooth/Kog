@@ -3400,16 +3400,15 @@ ApplicationWindow {
                     KineticWheelHandler {
                         view: directoryTree
                     }
-
-                    HoverHandler { id: directoryHover }
                     ScrollBar.vertical: ScrollBar {
                         id: directoryScrollBar
                         // Its space stays reserved whenever the tree
                         // overflows, so rows never shift; the bar itself
-                        // shows while the pointer is over the pane or it
-                        // is in use.
+                        // shows only while the pointer is over it or it
+                        // is being dragged.
                         policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
-                        opacity: directoryHover.hovered || active ? 1 : 0
+                        hoverEnabled: true
+                        opacity: hovered || pressed ? 1 : 0
                         Behavior on opacity { NumberAnimation { duration: 150 } }
                     }
                 }
@@ -3488,12 +3487,11 @@ ApplicationWindow {
                         spacing: 1
                         // Row height plus spacing, for drop positions.
                         readonly property int rowPitch: 22
-
-                        HoverHandler { id: playlistsHover }
                         ScrollBar.vertical: ScrollBar {
                             id: playlistsScrollBar
                             policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
-                            opacity: playlistsHover.hovered || active ? 1 : 0
+                            hoverEnabled: true
+                            opacity: hovered || pressed ? 1 : 0
                             Behavior on opacity { NumberAnimation { duration: 150 } }
                         }
 
@@ -3777,12 +3775,11 @@ ApplicationWindow {
                         }
                         onDragCanceled: root.playlistDropTarget = -1
                     }
-
-                    HoverHandler { id: playlistHover }
                     ScrollBar.vertical: ScrollBar {
                         id: playlistVerticalScrollBar
                         policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
-                        opacity: playlistHover.hovered || active ? 1 : 0
+                        hoverEnabled: true
+                        opacity: hovered || pressed ? 1 : 0
                         Behavior on opacity { NumberAnimation { duration: 150 } }
                         onPressedChanged: if (pressed) {
                             playlistKineticWheel.stop()
@@ -3792,7 +3789,8 @@ ApplicationWindow {
                     ScrollBar.horizontal: ScrollBar {
                         id: playlistHorizontalScrollBar
                         policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
-                        opacity: playlistHover.hovered || active ? 1 : 0
+                        hoverEnabled: true
+                        opacity: hovered || pressed ? 1 : 0
                         Behavior on opacity { NumberAnimation { duration: 150 } }
                         onPressedChanged: if (pressed)
                             playlistHorizontalWheel.stop()

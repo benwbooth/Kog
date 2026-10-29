@@ -283,8 +283,22 @@ FocusScope {
             delegate: editor.compact ? classicRow : tableRow
             onContentYChanged: scrollSave.restart()
             onContentXChanged: scrollSave.restart()
-            ScrollBar.vertical: ScrollBar { id: verticalBar; policy: ScrollBar.AsNeeded }
-            ScrollBar.horizontal: ScrollBar { id: horizontalBar; policy: ScrollBar.AsNeeded }
+            // As in the main window: space reserved while the list
+            // overflows, the bar shown only under the pointer or in a drag.
+            ScrollBar.vertical: ScrollBar {
+                id: verticalBar
+                policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                hoverEnabled: true
+                opacity: hovered || pressed ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 150 } }
+            }
+            ScrollBar.horizontal: ScrollBar {
+                id: horizontalBar
+                policy: size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                hoverEnabled: true
+                opacity: hovered || pressed ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 150 } }
+            }
             footer: Item { width: 1; height: list.horizontalScrollGutter }
             KineticWheelHandler { view: list }
             KineticWheelHandler { view: list; orientation: Qt.Horizontal }

@@ -306,11 +306,12 @@ button:focus-visible {
   touch-action: none;
 }
 
-/* A wider invisible touch zone around the thin splitter. */
+/* A wider invisible touch zone around the thin splitter, kept off the
+ * sidebar's scrollbar on its left so that bar can still be grabbed. */
 .pane-resizer::before {
   content: "";
   position: absolute;
-  inset: 0 -7px;
+  inset: 0 -7px 0 0;
 }
 
 .pane-resizer:hover,
@@ -2127,14 +2128,15 @@ body.touch .track .index-cell {
 }
 
 /* Scrollbars: Qt draws a slim groove with a rounded handle. Like the desktop
- * window, a pane shows its bar only while the pointer is over it; the space
- * stays reserved so rows never shift. */
+ * window, a bar shows only while the pointer is over the bar itself (the
+ * index.html script marks that pane .scrollbar-hover); the space stays
+ * reserved so rows never shift. */
 * {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
 }
 
-*:hover {
+.scrollbar-hover {
   scrollbar-color: var(--muted) transparent;
 }
 
@@ -2155,7 +2157,7 @@ body.touch .track .index-cell {
 }
 
 ::-webkit-scrollbar-thumb:hover,
-:hover::-webkit-scrollbar-thumb {
+.scrollbar-hover::-webkit-scrollbar-thumb {
   background: var(--muted);
   background-clip: content-box;
 }

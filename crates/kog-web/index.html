@@ -83,5 +83,55 @@
         }
       }, 10000);
     </script>
+    <script>
+      // A pane shows its scrollbar only while the pointer is over the bar
+      // itself (or dragging it), as the desktop window does. CSS cannot tell
+      // a hover over the bar from one over the content, so this marks the
+      // scrolling element whose bar strip is under the pointer.
+      (() => {
+        let marked = null;
+        const mark = (element) => {
+          if (marked === element) return;
+          marked?.classList.remove("scrollbar-hover");
+          marked = element;
+          marked?.classList.add("scrollbar-hover");
+        };
+        const barUnder = (target, x, y) => {
+          // Every element under the pointer, not just the topmost: a
+          // splitter's grab zone can overlap the edge of the pane beside it.
+          const seen = new Set();
+          for (const top of document.elementsFromPoint(x, y)) {
+            const found = barAbove(top, x, y, seen);
+            if (found) return found;
+          }
+          return null;
+        };
+        const barAbove = (target, x, y, seen) => {
+          for (let element = target; element && element !== document; element = element.parentElement) {
+            if (seen.has(element)) break;
+            seen.add(element);
+            if (!(element instanceof Element)) continue;
+            const vertical = element.offsetWidth - element.clientWidth;
+            const horizontal = element.offsetHeight - element.clientHeight;
+            if (vertical <= 0 && horizontal <= 0) continue;
+            const box = element.getBoundingClientRect();
+            if ((vertical > 0 && x >= box.right - vertical && x <= box.right)
+                || (horizontal > 0 && y >= box.bottom - horizontal && y <= box.bottom)) {
+              return element;
+            }
+          }
+          return null;
+        };
+        let dragging = false;
+        addEventListener("pointermove", (event) => {
+          if (!dragging) mark(barUnder(event.target, event.clientX, event.clientY));
+        }, { passive: true });
+        addEventListener("pointerdown", (event) => {
+          dragging = marked !== null && barUnder(event.target, event.clientX, event.clientY) === marked;
+        });
+        addEventListener("pointerup", () => { dragging = false; });
+        document.addEventListener("pointerleave", () => { if (!dragging) mark(null); });
+      })();
+    </script>
   </body>
 </html>
