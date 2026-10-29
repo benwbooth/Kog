@@ -2126,9 +2126,15 @@ body.touch .track .index-cell {
   }
 }
 
-/* Scrollbars: Qt draws a slim groove with a rounded handle. */
+/* Scrollbars: Qt draws a slim groove with a rounded handle. Like the desktop
+ * window, a pane shows its bar only while the pointer is over it; the space
+ * stays reserved so rows never shift. */
 * {
   scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover {
   scrollbar-color: var(--muted) transparent;
 }
 
@@ -2142,13 +2148,14 @@ body.touch .track .index-cell {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--muted);
+  background: transparent;
   border: 2px solid transparent;
   border-radius: 6px;
   background-clip: content-box;
 }
 
-::-webkit-scrollbar-thumb:hover {
+::-webkit-scrollbar-thumb:hover,
+:hover::-webkit-scrollbar-thumb {
   background: var(--muted);
   background-clip: content-box;
 }
