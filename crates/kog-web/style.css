@@ -2131,13 +2131,26 @@ body.touch .track .index-cell {
  * window, a bar shows only while the pointer is over the bar itself (the
  * index.html script marks that pane .scrollbar-hover); the space stays
  * reserved so rows never shift. */
+/* Fades in and out like the desktop's bars: the thumb's opacity is a
+ * registered number, so it transitions, and the scrollbar color follows it. */
+@property --scrollbar-opacity {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+
 * {
   scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+  --scrollbar-opacity: 0;
+  scrollbar-color: color-mix(in srgb, var(--muted) calc(var(--scrollbar-opacity) * 100%), transparent) transparent;
+}
+
+:where(.section-body, .playlist .rows, .tree, .modal-body, .channel-keyboards, .channel-tracker) {
+  transition: --scrollbar-opacity 150ms ease;
 }
 
 .scrollbar-hover {
-  scrollbar-color: var(--muted) transparent;
+  --scrollbar-opacity: 1;
 }
 
 ::-webkit-scrollbar {
