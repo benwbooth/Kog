@@ -258,7 +258,7 @@ FocusScope {
             clip: true
             model: editor.rows.length
             reuseItems: true
-            cacheBuffer: Math.min(height * 1.5, 1200)
+            cacheBuffer: Math.max(1200, height * 2)
             boundsBehavior: Flickable.StopAtBounds
             readonly property real verticalScrollGutter: verticalBar.visible ? verticalBar.implicitWidth + 4 : 0
             readonly property real horizontalScrollGutter: horizontalBar.visible ? horizontalBar.implicitHeight + 4 : 0

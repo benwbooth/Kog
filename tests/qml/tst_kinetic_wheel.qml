@@ -71,7 +71,7 @@ Item {
 
         function test_mouseWheelMomentumContinuesAfterNotch() {
             mouseWheel(view, view.width / 2, view.height / 2, 0, -120, Qt.NoButton, Qt.NoModifier);
-            verify(view.contentY >= 40, "wheel input must move immediately instead of waiting for momentum frames");
+            verify(kineticWheel.wheelAnimating, "a notch starts Chrome's eased glide toward its destination");
             tryVerify(function () {
                 return view.contentY > 0;
             }, 100);
@@ -80,7 +80,7 @@ Item {
             wait(80);
             verify(view.contentY > firstPosition, "content should keep moving after the initial wheel impulse");
             verify(kineticWheel.velocity > 0, "momentum should still be decelerating");
-            tryCompare(kineticWheel, "velocity", 0, 160);
+            tryCompare(kineticWheel, "wheelAnimating", false, 400);
             compare(view.contentY, 120, "one notch uses the browser's 120-pixel distance without a long coast");
         }
 
@@ -98,7 +98,7 @@ Item {
         function test_repeatedWheelsDoNotBuildALongCoast() {
             for (let i = 0; i < 5; ++i)
                 mouseWheel(view, 160, 100, 0, -120, Qt.NoButton, Qt.NoModifier);
-            tryCompare(kineticWheel, "velocity", 0, 200);
+            tryCompare(kineticWheel, "wheelAnimating", false, 400);
             compare(view.contentY, 600, "distance adds linearly instead of accumulating kinetic energy");
         }
 
@@ -176,7 +176,8 @@ Item {
             kineticWheel.start(-1);
             wait(32);
             kineticWheel.start(1);
-            verify(kineticWheel.velocity < 0);
+            // The reversed glide starts from rest, as Chrome's does.
+            tryVerify(function () { return kineticWheel.velocity < 0; }, 100);
             const firstPosition = view.contentY;
             wait(80);
             verify(view.contentY < firstPosition);

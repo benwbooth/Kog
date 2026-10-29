@@ -18,7 +18,9 @@ Label {
     textFormat: highlighting ? Text.RichText : Text.PlainText
     elide: highlighting ? Text.ElideNone : Text.ElideRight
     wrapMode: Text.NoWrap
-    clip: true
+    // No clip: plain text elides itself and highlighted text is elided above
+    // before it is set. A clip per label made each of a list's hundreds of
+    // cells its own draw call, which slowed every frame while scrolling.
     Accessible.name: sourceText
 
     TextMetrics {

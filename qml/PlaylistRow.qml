@@ -184,7 +184,6 @@ Item {
             width: 18
             height: 18
             visible: cell.customIcon
-            clip: true
 
             Image {
                 anchors.fill: parent

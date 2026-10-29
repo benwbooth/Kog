@@ -19,17 +19,21 @@ WheelHandler {
     property bool drivingHorizontally: horizontal
     property real velocity: 0
     property real maximumVelocity: 9000
-    // Browser wheel deltas describe distance, not added kinetic energy.
-    // Move on the input event, then ease the remainder over a short glide.
-    // Keeping a destination also preserves small high-resolution wheel steps
-    // instead of losing them to deceleration between input events.
+    // Wheel notches scroll as Chrome on Linux does (cc's
+    // ScrollOffsetAnimationCurve): 120 px per notch, eased in and out over
+    // 0.2 s for a notch, falling to 0.1 s for 480 px or more. A notch that
+    // arrives mid-glide extends the destination and continues from the
+    // current speed instead of starting from rest. Keeping a destination
+    // also preserves small high-resolution wheel steps.
     property real wheelStep: 120
-    property real wheelDuration: 0.12
+    property real wheelDuration: 0.2
     property bool wheelAnimating: false
     property real wheelTarget: 0
     property real wheelStart: 0
+    property real wheelStartVelocity: 0
     property real wheelElapsed: 0
-    property real deceleration: 2500
+    // Trackpad fling deceleration, as Chrome's physics-based fling on Linux.
+    property real deceleration: 2300
     property double lastPixelEventTime: 0
     property real pixelVelocity: 0
 
@@ -85,14 +89,28 @@ WheelHandler {
             stop();
             return false;
         }
-        const immediate = Math.sign(delta) * Math.min(Math.abs(delta) * 0.5, Math.abs(wheelTarget - current));
-        moveTo(current + immediate);
-        wheelStart = currentContent();
+        // Chrome's inverse-delta duration: 12 frames at 60 Hz up to 120 px,
+        // 6 frames from 480 px, linear in between.
+        const distance = Math.abs(wheelTarget - current);
+        wheelDuration = Math.max(6, Math.min(12, 14 - distance / 60)) / 60;
+        wheelStartVelocity = wheelAnimating && velocity * (wheelTarget - current) > 0 ? velocity : 0;
+        wheelStart = current;
         wheelElapsed = 0;
         wheelAnimating = true;
-        velocity = (wheelTarget - wheelStart) * 3 / wheelDuration;
         momentumAnimation.start();
         return true;
+    }
+
+    // A cubic from the start position and speed to the destination at rest:
+    // from rest it is the ease-in-out curve; mid-glide it keeps the speed.
+    function wheelCurve(t) {
+        const span = wheelTarget - wheelStart;
+        const v0 = wheelStartVelocity * wheelDuration;
+        const t2 = t * t, t3 = t2 * t;
+        return {
+            position: wheelStart + v0 * (t3 - 2 * t2 + t) + span * (3 * t2 - 2 * t3),
+            velocity: (v0 * (3 * t2 - 4 * t + 1) + span * (6 * t - 6 * t2)) / wheelDuration,
+        };
     }
 
     function moveTo(position) {
@@ -157,9 +175,9 @@ WheelHandler {
         if (wheelAnimating) {
             wheelElapsed += Math.max(0, frameTime);
             const progress = Math.min(1, wheelElapsed / wheelDuration);
-            const remaining = 1 - progress;
-            moveTo(wheelStart + (wheelTarget - wheelStart) * (1 - remaining * remaining * remaining));
-            velocity = (wheelTarget - wheelStart) * 3 * remaining * remaining / wheelDuration;
+            const point = wheelCurve(progress);
+            moveTo(point.position);
+            velocity = progress === 1 ? 0 : point.velocity;
             if (progress === 1 || currentContent() === minimumContent() || currentContent() === maximumContent())
                 stop();
             return;

@@ -3677,7 +3677,9 @@ ApplicationWindow {
                     clip: true
                     rowCount: appController.playlist_count
                     reuseItems: true
-                    cacheBuffer: Math.min(height * 1.5, 1200)
+                    // Rows built ahead of the view, so fast scrolling on a
+                    // tall window does not build them mid-frame.
+                    cacheBuffer: Math.max(1200, height * 2)
                     boundsBehavior: Flickable.StopAtBounds
                     readonly property real verticalScrollGutter:
                         playlistVerticalScrollBar.visible
