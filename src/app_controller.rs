@@ -1986,6 +1986,9 @@ pub struct AppControllerRust {
     library_db: kog_core::db::LibraryDb,
     /// The library's data version last seen, to notice outside changes.
     library_version: i64,
+    /// The playlists' fingerprint last seen, so other library writes do not
+    /// reload them.
+    library_playlists: String,
     starred: HashSet<String>,
     /// Bumped on every star change; part of each tab's generation.
     starred_serial: u64,
@@ -2234,6 +2237,7 @@ impl Default for AppControllerRust {
             filter: String::new(),
             library_db,
             library_version: 0,
+            library_playlists: String::new(),
             starred: HashSet::new(),
             starred_serial: 0,
             directory,
@@ -4215,7 +4219,15 @@ impl qobject::AppController {
         if version != self.as_ref().rust().library_version {
             let first = self.as_ref().rust().library_version == 0;
             self.as_mut().rust_mut().library_version = version;
-            changed |= !first;
+            // Any commit by another connection changes the version: the
+            // server saving a web session, a tag cache, a preference.
+            // Reloading every playlist for those stalled the window a few
+            // times a second, so reload only when the playlists changed.
+            let fingerprint = self.as_ref().rust().library_db.playlists_fingerprint();
+            if fingerprint != self.as_ref().rust().library_playlists {
+                self.as_mut().rust_mut().library_playlists = fingerprint;
+                changed |= !first;
+            }
         }
         if changed {
             self.as_mut().bump_playlists_revision();

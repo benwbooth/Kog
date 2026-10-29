@@ -538,6 +538,22 @@ impl LibraryDb {
             .unwrap_or(0)
     }
 
+    /// A cheap fingerprint of the playlists and their songs: it changes when
+    /// a playlist is added, removed, renamed, moved or edited, but not when
+    /// other library state (sessions, preferences, tag caches) is written.
+    pub fn playlists_fingerprint(&self) -> String {
+        self.conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) || ':' || IFNULL(MAX(id), 0) || ':' || IFNULL(SUM(position), 0)
+                                || ':' || IFNULL(SUM(LENGTH(name)), 0) FROM playlists)
+                        || '/' || (SELECT COUNT(*) || ':' || IFNULL(MAX(id), 0) FROM playlist_entries)
+                        || '/' || (SELECT COUNT(*) FROM stars)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default()
+    }
+
     pub fn list_playlists(&self) -> Result<Vec<StoredPlaylist>, String> {
         let mut statement = self
             .conn
