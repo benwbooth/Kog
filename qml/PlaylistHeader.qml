@@ -257,7 +257,8 @@ Rectangle {
                 if (!valid)
                     break
                 const column = copyColumn(defaults[defaultIndex])
-                column.width = Math.max(column.minimumWidth,
+                // The same sliver floor as dragging a column narrower.
+                column.width = Math.max(Math.min(column.minimumWidth, 16),
                     Math.min(column.maximumWidth, width))
                 column.visible = visibility === "1"
                 visibleCount += column.visible ? 1 : 0

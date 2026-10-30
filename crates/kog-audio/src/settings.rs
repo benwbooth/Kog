@@ -30,7 +30,7 @@ const EFFECTS_SETTING_FILE: &str = "effects-settings";
 const SHUFFLE_MODE_SETTING_FILE: &str = "shuffle-mode";
 const REPEAT_MODE_SETTING_FILE: &str = "repeat-mode";
 const RADIO_ENABLED_SETTING_FILE: &str = "radio-enabled";
-const PLAYLIST_COLUMN_IDS: [&str; 20] = [
+const PLAYLIST_COLUMN_IDS: [&str; 22] = [
     "index",
     "star",
     "status",
@@ -41,6 +41,8 @@ const PLAYLIST_COLUMN_IDS: [&str; 20] = [
     "composer",
     "album",
     "length",
+    "filesizebytes",
+    "filesize",
     "date",
     "genre",
     "track",
@@ -450,11 +452,9 @@ fn validate_playlist_column_layout(value: &str) -> bool {
         return false;
     }
     let entries = value.split(';').collect::<Vec<_>>();
-    // Nineteen-entry layouts predate the star column; they stay valid and
-    // the header fills in the missing column with its default.
-    if entries.len() != PLAYLIST_COLUMN_IDS.len()
-        && entries.len() + 1 != PLAYLIST_COLUMN_IDS.len()
-    {
+    // Older layouts predate the star and file size columns; they stay
+    // valid and the header fills in missing columns with their defaults.
+    if !(19..=PLAYLIST_COLUMN_IDS.len()).contains(&entries.len()) {
         return false;
     }
 
@@ -472,7 +472,8 @@ fn validate_playlist_column_layout(value: &str) -> bool {
         let valid_width = fields[1]
             .trim()
             .parse::<f64>()
-            .is_ok_and(|width| width.is_finite() && (20.0..=4096.0).contains(&width));
+            // Dragging a column narrower stops at a 16 px sliver.
+            .is_ok_and(|width| width.is_finite() && (16.0..=32_768.0).contains(&width));
         if !valid_width || !matches!(fields[2].trim(), "0" | "1") {
             return false;
         }
@@ -647,7 +648,12 @@ mod tests {
         // Twenty-entry layouts add the star column after the index.
         let with_star = valid.replacen("index,54,1;", "index,54,1;star,40,1;", 1);
         assert!(validate_playlist_column_layout(&with_star));
-        // Anything else than nineteen or twenty entries stays invalid.
+        // Twenty-two entries add the file size columns after the length.
+        let with_sizes = with_star.replacen("length,70,1;", "length,70,1;filesizebytes,110,0;filesize,88,1;", 1);
+        assert!(validate_playlist_column_layout(&with_sizes));
+        // A column dragged down to a sliver stays valid.
+        assert!(validate_playlist_column_layout(&with_sizes.replace("genre,120,1", "genre,16,1")));
+        // Fewer than nineteen entries stays invalid.
         assert!(!validate_playlist_column_layout(
             &valid.replace(";bitrate,64,0", "")
         ));
