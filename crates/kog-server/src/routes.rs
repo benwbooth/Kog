@@ -98,6 +98,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/devices/block", post(set_device_blocked))
         .route("/api/stream", get(stream_audio))
         .route("/api/mml", get(mml_score))
+        .route("/api/levels", get(song_levels))
         .route("/api/inspection", get(channel_inspection)
             .layer(tower_http::compression::CompressionLayer::new()))
         .merge(crate::api::router())
@@ -354,6 +355,45 @@ async fn mml_score(
 #[derive(serde::Deserialize)]
 struct InspectionQuery {
     position: f64,
+}
+
+/// The song's level meter timeline, for browsers that cannot tap their own
+/// audio output (iOS has no `captureStream`). Always the whole song, so a seek
+/// reads the same data; `x-kog-complete` says whether more is coming.
+async fn song_levels(
+    State(state): State<AppState>,
+    axum::extract::Query(stream): axum::extract::Query<StreamQuery>,
+) -> Response {
+    let location = match stream.location() {
+        Ok(location) => location,
+        Err(error) => return bad_request(&error),
+    };
+    let entry = kog_audio::playlist::PlaylistEntry {
+        location,
+        fragment: (!stream.fragment.trim().is_empty()).then(|| stream.fragment.trim().to_owned()),
+    };
+    let codec = match stream.codec(state.config.read().await.default_codec) {
+        Ok(codec) => codec,
+        Err(error) => return bad_request(&error),
+    };
+    let engine = stream.midi_engine.as_deref().and_then(kog_audio::settings::MidiEngine::from_setting)
+        .unwrap_or_else(|| state.streams.midi_engine());
+    let key = stream_key_for_request(&stream, codec,
+        stream.bitrate.unwrap_or(crate::stream::DEFAULT_BITRATE_KBPS), engine).with_start_ms(0);
+    let streams = state.streams.clone();
+    match tokio::task::spawn_blocking(move || streams.levels(entry, &key)).await {
+        Ok(Ok((bytes, complete))) => (
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+                (header::HeaderName::from_static("x-kog-complete"),
+                    HeaderValue::from_static(if complete { "1" } else { "0" })),
+            ],
+            bytes,
+        ).into_response(),
+        Ok(Err(error)) => bad_request(&error),
+        Err(error) => bad_request(&error.to_string()),
+    }
 }
 
 #[derive(serde::Serialize)]

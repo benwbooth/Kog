@@ -11,7 +11,7 @@
 //! file removes that cost from every later play or seek.
 
 use std::io::Write;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +47,8 @@ pub struct StreamService {
     probe_lock: Arc<Mutex<()>>,
     inspection_active: Arc<Mutex<HashMap<String, PathBuf>>>,
     mml: crate::mml::MmlJobs,
+    /// Songs whose level timelines are being worked out right now.
+    levels_active: Arc<Mutex<HashSet<String>>>,
 }
 
 impl StreamService {
@@ -66,6 +68,7 @@ impl StreamService {
             probe_lock: Arc::new(Mutex::new(())),
             inspection_active: Arc::new(Mutex::new(HashMap::new())),
             mml: crate::mml::MmlJobs::default(),
+            levels_active: Arc::default(),
         }
     }
 
@@ -135,6 +138,45 @@ impl StreamService {
             if let Some(window) = crate::inspection::read_window(&path, position)? { return Ok(Some(window)); }
         }
         crate::inspection::read_window(&self.cache.inspection_path(key), position)
+    }
+
+    /// The song's level timeline so far (six bytes per meter update) and
+    /// whether it is complete. The first request starts working it out; it is
+    /// its own decode, so it needs nothing from the stream's encode or cache.
+    pub fn levels(&self, entry: PlaylistEntry, key: &StreamKey) -> Result<(Vec<u8>, bool), String> {
+        let directory = self.cache.levels_directory();
+        let stem = key.stem();
+        let finished = directory.join(format!("{stem}.levels"));
+        if let Ok(bytes) = std::fs::read(&finished) {
+            return Ok((bytes, true));
+        }
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let partial = directory.join(format!("{stem}.levels.part"));
+        if self.levels_active.lock().unwrap_or_else(|e| e.into_inner()).insert(stem.clone()) {
+            let service = self.clone();
+            let key = key.clone();
+            let path = partial.clone();
+            std::thread::spawn(move || {
+                let result = service.write_levels(entry, &key, &path)
+                    .and_then(|()| std::fs::rename(&path, &finished).map_err(|error| error.to_string()));
+                if let Err(error) = result {
+                    eprintln!("kog-server: working out song levels: {error}");
+                    let _ = std::fs::remove_file(&path);
+                }
+                service.levels_active.lock().unwrap_or_else(|e| e.into_inner()).remove(&stem);
+            });
+        }
+        Ok((std::fs::read(&partial).unwrap_or_default(), false))
+    }
+
+    fn write_levels(&self, entry: PlaylistEntry, key: &StreamKey, path: &Path) -> Result<(), String> {
+        let settings = self.render_settings(key);
+        let decoders = DecoderRegistry::new(settings.clone());
+        // Archive members live in the registry's workspace, kept to the end.
+        let source = resolve_entry(&entry, &decoders, &self.scratch)?;
+        let mut pcm = PcmReader::open(source, settings)?;
+        let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
+        kog_audio::streaming::write_levels(&mut pcm, &mut std::io::BufWriter::new(file))
     }
 
     /// Read one entry's tags without encoding it, using the same resolution
@@ -416,6 +458,44 @@ mod tests {
             StreamSource::Encoding { .. } => panic!("a cached entry must not re-encode"),
             StreamSource::CachedFrom { .. } => panic!("a cached entry is served whole"),
         }
+    }
+
+    #[test]
+    fn levels_cover_the_whole_song_for_clients_that_cannot_tap_their_audio() {
+        let (directory, cache) = cache();
+        let path = directory.path().join("tone.wav");
+        let samples: Vec<u8> = (0..44_100)
+            .flat_map(|index| {
+                let phase = index as f32 * 440.0 * std::f32::consts::TAU / 44_100.0;
+                ((phase.sin() * 20_000.0) as i16).to_le_bytes()
+            })
+            .collect();
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&(36 + samples.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
+        wav.extend_from_slice(&44_100_u32.to_le_bytes());
+        wav.extend_from_slice(&88_200_u32.to_le_bytes());
+        wav.extend_from_slice(b"\x02\0\x10\0data");
+        wav.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&samples);
+        std::fs::write(&path, wav).unwrap();
+
+        let scratch = directory.path().join("scratch");
+        let service = StreamService::new(cache, DecoderSettings::default(), scratch);
+        let key = StreamKey::new(path.to_string_lossy(), StreamCodec::Aac, 192);
+        let entry = PlaylistEntry { location: PlaylistLocation::Local(path), fragment: None };
+        let levels = (0..600)
+            .find_map(|_| {
+                let (bytes, complete) = service.levels(entry.clone(), &key).expect("levels");
+                if !complete {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                complete.then_some(bytes)
+            })
+            .expect("levels finish");
+        assert_eq!(levels.len() % 6, 0);
+        assert!((18..=22).contains(&(levels.len() / 6)), "{} ticks", levels.len() / 6);
+        assert!(levels.iter().any(|level| *level > 0));
     }
 
     #[test]

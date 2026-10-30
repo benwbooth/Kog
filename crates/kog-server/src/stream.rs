@@ -141,6 +141,12 @@ impl StreamCache {
             .join(format!("{}.{}", key.stem(), key.codec.extension()))
     }
 
+    /// Level timelines are a few kilobytes each and outlive evicted audio.
+    pub fn levels_directory(&self) -> PathBuf {
+        // Beside the cache: everything inside it is a codec's folder.
+        self.root.with_file_name("stream-levels")
+    }
+
     pub fn inspection_path(&self, key: &StreamKey) -> PathBuf {
         Self::companion_path(&self.entry_path(key))
     }

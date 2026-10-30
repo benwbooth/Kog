@@ -2065,6 +2065,68 @@ fn install_cut_off_tooltips() {
     );
 }
 
+/// The current song's level meter from `/api/levels`, for browsers that cannot
+/// tap their own audio output.
+#[derive(Default)]
+struct LevelTimeline {
+    stream: String,
+    bytes: Vec<u8>,
+    complete: bool,
+    pending: bool,
+    requested_at: f64,
+}
+
+impl LevelTimeline {
+    fn bars_at(&self, seconds: f64) -> Option<[f32; 6]> {
+        let tick = (seconds.max(0.0) * f64::from(kog_playback_policy::waveform::UPDATES_PER_SECOND)) as usize;
+        let bars = self.bytes.get(tick * 6..tick * 6 + 6)?;
+        Some(std::array::from_fn(|band| f32::from(bars[band]) / 255.0))
+    }
+}
+
+/// Fetch the playing stream's timeline, again every 1.5 s while the server is
+/// still working it out.
+fn request_level_timeline(timeline: &Rc<RefCell<LevelTimeline>>, stream: &str, header: Option<String>) {
+    let now = js_sys::Date::now();
+    // A seek restarts the stream at start_ms; the timeline covers the song.
+    let stream_url = stream.split_once("&start_ms=").map_or(stream, |(url, _)| url);
+    {
+        let mut state = timeline.borrow_mut();
+        if state.stream != stream_url {
+            *state = LevelTimeline { stream: stream_url.to_owned(), ..LevelTimeline::default() };
+        }
+        if state.complete || state.pending || now - state.requested_at < 1_500.0 {
+            return;
+        }
+        state.pending = true;
+        state.requested_at = now;
+    }
+    let endpoint = stream_url.replacen("/api/stream", "/api/levels", 1);
+    let timeline = timeline.clone();
+    let stream_url = stream_url.to_owned();
+    leptos::task::spawn_local(async move {
+        let mut request = Request::get(&endpoint);
+        if let Some(header) = header {
+            request = request.header("Authorization", &header);
+        }
+        let reply = match request.send().await {
+            Ok(response) if response.ok() => {
+                let complete = response.headers().get("x-kog-complete").as_deref() == Some("1");
+                response.binary().await.ok().map(|bytes| (bytes, complete))
+            }
+            _ => None,
+        };
+        let mut state = timeline.borrow_mut();
+        state.pending = false;
+        if state.stream == stream_url {
+            if let Some((bytes, complete)) = reply {
+                state.bytes = bytes;
+                state.complete = complete;
+            }
+        }
+    });
+}
+
 /// The playing row's level meter, as the desktop's PlaylistRow draws it: six
 /// pill bars on black, laid out like the Dynamic Island's waveform, widening,
 /// bouncing and shading blue to green as they grow. Paint styles are inline so
@@ -4389,6 +4451,8 @@ fn App() -> impl IntoView {
         let bounce = Rc::new(RefCell::new(kog_playback_policy::waveform::Bounce::default()));
         // Consecutive silent reads while audibly playing: a stale tap.
         let dry_reads = Rc::new(std::cell::Cell::new(0u32));
+        // Levels from the server, for browsers with no way to tap the audio.
+        let timeline = Rc::new(RefCell::new(LevelTimeline::default()));
 
         // Warm the AudioContext on the first pointer press, when it legally
         // starts Running. Never touches the element.
@@ -4503,6 +4567,16 @@ fn App() -> impl IntoView {
                 if visualizer_open.get_untracked() {
                     set_visualizer_wave.set(Vec::new());
                     set_visualizer_spectrum.set(Vec::new());
+                }
+                return;
+            }
+            // iOS has no captureStream, and routing the element itself through
+            // an AudioContext would stop playback when the screen locks.
+            if !js_sys::Reflect::has(&audio, &"captureStream".into()).unwrap_or(false) {
+                let position = audio.current_time() + stream_offset.get_untracked();
+                request_level_timeline(&timeline, &audio.src(), auth().header());
+                if let Some(bars) = timeline.borrow().bars_at(position) {
+                    set_audio_levels.set(bounce.borrow_mut().apply(bars));
                 }
                 return;
             }

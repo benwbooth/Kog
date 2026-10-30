@@ -8,7 +8,7 @@
 //! and gives us one uniform format to encode: 48 kHz stereo f32, which is also
 //! what Opus wants and what AAC and FLAC accept.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -281,6 +281,53 @@ impl Read for PcmReader {
         self.position += count;
         Ok(count)
     }
+}
+
+/// Write the level meter's six bars for the whole song, one byte per bar at
+/// `waveform::UPDATES_PER_SECOND`, for clients that cannot read the levels off
+/// their own audio output. Flushes about once a second so a reader can follow.
+pub fn write_levels(pcm: &mut PcmReader, output: &mut impl Write) -> Result<(), String> {
+    use kog_playback_policy::waveform;
+    let rate = pcm.sample_rate();
+    let channels = usize::from(pcm.channels());
+    let hop = (rate / waveform::UPDATES_PER_SECOND).max(1) as usize;
+    let window = waveform::frame_len(rate);
+    let mut bytes = vec![0_u8; 64 * 1024];
+    let mut leftover = Vec::new();
+    let mut mono = Vec::with_capacity(window + hop);
+    let mut since_hop = 0;
+    let mut ticks = 0_u32;
+    loop {
+        let count = pcm.read(&mut bytes).map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        leftover.extend_from_slice(&bytes[..count]);
+        let frame_bytes = channels * std::mem::size_of::<f32>();
+        let whole = leftover.len() - leftover.len() % frame_bytes;
+        for frame in leftover[..whole].chunks_exact(frame_bytes) {
+            let sum: f32 = frame
+                .chunks_exact(4)
+                .map(|sample| f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]))
+                .sum();
+            mono.push(sum / channels as f32);
+            since_hop += 1;
+            if since_hop < hop {
+                continue;
+            }
+            since_hop = 0;
+            let start = mono.len().saturating_sub(window);
+            let bars = waveform::levels(&mono[start..], rate).map(|level| (level.clamp(0.0, 1.0) * 255.0) as u8);
+            output.write_all(&bars).map_err(|error| error.to_string())?;
+            mono.drain(..start);
+            ticks += 1;
+            if ticks.is_multiple_of(waveform::UPDATES_PER_SECOND) {
+                output.flush().map_err(|error| error.to_string())?;
+            }
+        }
+        leftover.drain(..whole);
+    }
+    output.flush().map_err(|error| error.to_string())
 }
 
 /// Resolve a playlist entry to the single source a stream can be built from.
