@@ -20,8 +20,14 @@ Item {
         revision
         return app.track_status_message_at(rowIndex)
     }
-    readonly property bool isCurrentTrack: app.current_index >= 0
-        && Number(app.track_number_at(rowIndex)) === app.current_index + 1
+    // The row's queue number can change after current_index does (a
+    // restored queue fills in after the resumed song starts), so this
+    // re-checks on every playlist revision too.
+    readonly property bool isCurrentTrack: {
+        revision
+        return app.current_index >= 0
+            && Number(app.track_number_at(rowIndex)) === app.current_index + 1
+    }
     readonly property bool isPlaying: isCurrentTrack
         && app.playback_state === "playing"
     readonly property bool isActiveTrack: isCurrentTrack
