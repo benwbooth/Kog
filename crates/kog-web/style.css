@@ -2664,7 +2664,8 @@ body.touch .track .index-cell {
     font-size: 12px;
   }
 
-  .mobile-track-status:empty {
+  .mobile-track-status:empty,
+  .mobile-track-status.idle {
     display: none;
   }
 

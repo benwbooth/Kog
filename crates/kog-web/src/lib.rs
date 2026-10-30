@@ -2065,6 +2065,58 @@ fn install_cut_off_tooltips() {
     );
 }
 
+/// The playing row's level meter, as the desktop's PlaylistRow draws it: six
+/// pill bars on black, laid out like the Dynamic Island's waveform, widening,
+/// bouncing and shading blue to green as they grow. Paint styles are inline so
+/// a stale cached stylesheet cannot hide them. `pinned` holds it to its
+/// cell's right edge (the desktop table); otherwise it sits in the flow (the
+/// mobile song card).
+#[component]
+fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
+    view! {
+        <span
+            class="row-meter"
+            style=if pinned { "position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" } else { "position: relative; display: inline-block; width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" }
+        >
+            <For
+                each=|| [0usize, 1, 2, 3, 4, 5]
+                key=|band| *band
+                let:band
+            >
+                <span
+                    class="row-meter-bar"
+                    style=move || {
+                        let level = levels
+                            .get()
+                            .get(band)
+                            .copied()
+                            .unwrap_or(0.0)
+                            .clamp(0.0, 1.0);
+                        // Cool to hot as the bar grows.
+                        let fill = format!("hsl({:.0}, 85%, 62%)", 210.0 - 90.0 * level);
+                        // The bars' 20x14 area,
+                        // laid out as iOS does.
+                        const WIDTH: f32 = 20.0;
+                        const HEIGHT: f32 = 14.0;
+                        let slot = WIDTH / kog_playback_policy::waveform::BARS as f32;
+                        let base = slot / 2.0;
+                        let width = base * (1.0 + kog_playback_policy::waveform::WIDTH_GROWTH * level);
+                        let height = (level * HEIGHT).max(base);
+                        let left = slot * (band as f32 + 0.5) - width / 2.0;
+                        let top = (HEIGHT - height) / 2.0;
+                        format!(
+                            "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; transition: left {ms}ms, top {ms}ms, width {ms}ms, height {ms}ms; transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);",
+                            2.0 + left,
+                            2.0 + top,
+                            ms = kog_playback_policy::waveform::SPRING_MS,
+                        )
+                    }
+                ></span>
+            </For>
+        </span>
+    }
+}
+
 #[component]
 fn App() -> impl IntoView {
     install_cut_off_tooltips();
@@ -7395,46 +7447,7 @@ fn App() -> impl IntoView {
                                                                     // grow. Paint styles are inline
                                                                     // so a stale cached stylesheet
                                                                     // cannot hide them.
-                                                                    <span
-                                                                        class="row-meter"
-                                                                        style="position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;"
-                                                                    >
-                                                                        <For
-                                                                            each=|| [0usize, 1, 2, 3, 4, 5]
-                                                                            key=|band| *band
-                                                                            let:band
-                                                                        >
-                                                                            <span
-                                                                                class="row-meter-bar"
-                                                                                style=move || {
-                                                                                    let level = audio_levels
-                                                                                        .get()
-                                                                                        .get(band)
-                                                                                        .copied()
-                                                                                        .unwrap_or(0.0)
-                                                                                        .clamp(0.0, 1.0);
-                                                                                    // Cool to hot as the bar grows.
-                                                                                    let fill = format!("hsl({:.0}, 85%, 62%)", 210.0 - 90.0 * level);
-                                                                                    // The bars' 20x14 area,
-                                                                                    // laid out as iOS does.
-                                                                                    const WIDTH: f32 = 20.0;
-                                                                                    const HEIGHT: f32 = 14.0;
-                                                                                    let slot = WIDTH / kog_playback_policy::waveform::BARS as f32;
-                                                                                    let base = slot / 2.0;
-                                                                                    let width = base * (1.0 + kog_playback_policy::waveform::WIDTH_GROWTH * level);
-                                                                                    let height = (level * HEIGHT).max(base);
-                                                                                    let left = slot * (band as f32 + 0.5) - width / 2.0;
-                                                                                    let top = (HEIGHT - height) / 2.0;
-                                                                                    format!(
-                                                                                        "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; transition: left {ms}ms, top {ms}ms, width {ms}ms, height {ms}ms; transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);",
-                                                                                        2.0 + left,
-                                                                                        2.0 + top,
-                                                                                        ms = kog_playback_policy::waveform::SPRING_MS,
-                                                                                    )
-                                                                                }
-                                                                            ></span>
-                                                                        </For>
-                                                                    </span>
+                                                                    <RowMeter levels=audio_levels pinned=true/>
                                                                 </Show>
                                                             </span>
                                                         }
@@ -7463,6 +7476,7 @@ fn App() -> impl IntoView {
                                                                 <span class="mobile-track-head">
                                                                     <span
                                                                         class="mobile-track-status"
+                                                                        class:idle=move || pane_current.get() != Some(index) || stopped.get()
                                                                         role="button"
                                                                         tabindex="0"
                                                                         aria-label="Open audio visualizer"
@@ -7483,7 +7497,15 @@ fn App() -> impl IntoView {
                                                                                 }
                                                                             }
                                                                         }
-                                                                    >{move || if pane_current.get() == Some(index) && !stopped.get() { if playing.get() { "▶" } else { "Ⅱ" } } else { "" }}</span>
+                                                                    >
+                                                                        {move || if pane_current.get() == Some(index) && !stopped.get() && !playing.get() { "Ⅱ" } else { "" }}
+                                                                        <Show
+                                                                            when=move || pane_current.get() == Some(index) && playing.get()
+                                                                            fallback=|| ()
+                                                                        >
+                                                                            <RowMeter levels=audio_levels pinned=false/>
+                                                                        </Show>
+                                                                    </span>
                                                                     <span class="mobile-track-title">
                                                                         {move || display_title(&metadata.read(), &metadata_failed.read(), &mobile_title_entry).unwrap_or_default()}
                                                                     </span>
