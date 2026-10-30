@@ -288,6 +288,29 @@ Window {
                     }
 
                     PreferenceGroup {
+                        title: qsTr("Looping songs")
+                        Layout.fillWidth: true
+
+                        RowLayout {
+                            anchors.fill: parent
+                            PreferenceLabel { text: qsTr("Play:") }
+                            ComboBox {
+                                readonly property var choices: ["once", "twice", "2min", "3min", "5min"]
+                                Layout.fillWidth: true
+                                model: [
+                                    qsTr("Once, fading as the loop restarts"),
+                                    qsTr("Loop once more"),
+                                    qsTr("Loop for 2 minutes"),
+                                    qsTr("Loop for 3 minutes"),
+                                    qsTr("Loop for 5 minutes")
+                                ]
+                                currentIndex: Math.max(0, choices.indexOf(root.app.loop_policy))
+                                onActivated: root.app.select_loop_policy(choices[currentIndex])
+                            }
+                        }
+                    }
+
+                    PreferenceGroup {
                         title: qsTr("When adding folders")
                         Layout.fillWidth: true
 

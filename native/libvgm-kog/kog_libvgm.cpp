@@ -2,6 +2,7 @@
 #include "inspection_registers.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -72,6 +73,7 @@ struct kog_libvgm {
     bool ended;
     uint32_t sample_rate;
     uint64_t total_frames;
+    uint64_t position;
     std::string title;
     std::string artist;
     std::string album;
@@ -85,7 +87,8 @@ struct kog_libvgm {
           started(false),
           ended(false),
           sample_rate(0),
-          total_frames(0) {}
+          total_frames(0),
+          position(0) {}
 
     ~kog_libvgm() {
         if (started)
@@ -161,6 +164,7 @@ struct kog_libvgm {
         size_t rom_size,
         uint32_t output_sample_rate,
         uint32_t loop_count,
+        uint32_t loop_time_limit_ms,
         uint32_t fade_samples,
         uint32_t end_silence_samples,
         bool observe = true) {
@@ -235,6 +239,17 @@ struct kog_libvgm {
             last_error = "libvgm selected no player engine";
             return false;
         }
+        // A time limit loops a looping song as many times as come closest
+        // to it (at least once) instead of a fixed count.
+        const UINT32 loop_ticks = engine->GetLoopTicks();
+        if (loop_time_limit_ms != 0 && loop_ticks != 0) {
+            const double loop_seconds = engine->Tick2Second(loop_ticks);
+            const double intro_seconds =
+                engine->Tick2Second(engine->GetTotalTicks() - loop_ticks);
+            const double remaining = loop_time_limit_ms / 1000.0 - intro_seconds;
+            const double loops = remaining > 0.0 ? std::floor(remaining / loop_seconds + 0.5) : 1.0;
+            loop_count = static_cast<uint32_t>(std::max(1.0, std::min(1000.0, loops)));
+        }
         if (engine->GetPlayerType() == FCC_VGM) {
             VGMPlayer *vgm_player = dynamic_cast<VGMPlayer *>(engine);
             if (vgm_player != NULL)
@@ -243,7 +258,9 @@ struct kog_libvgm {
             player.SetLoopCount(loop_count);
         }
 
-        const double seconds = engine->Tick2Second(engine->GetTotalTicks());
+        // What actually plays: every loop and the fade of a looping song,
+        // not just one pass through the file.
+        const double seconds = player.GetTotalTime(PLAYTIME_LOOP_INCL | PLAYTIME_WITH_FADE);
         if (seconds < 0.0) {
             last_error = "libvgm returned an invalid duration";
             return false;
@@ -302,6 +319,7 @@ extern "C" kog_libvgm *kog_libvgm_create(
     size_t yrw801_rom_size,
     uint32_t sample_rate,
     uint32_t loop_count,
+    uint32_t loop_time_limit_ms,
     uint32_t fade_samples,
     uint32_t end_silence_samples,
     char *error,
@@ -315,6 +333,7 @@ extern "C" kog_libvgm *kog_libvgm_create(
                 yrw801_rom_size,
                 sample_rate,
                 loop_count,
+                loop_time_limit_ms,
                 fade_samples,
                 end_silence_samples)) {
             copy_error(error, error_size, decoder->last_error);
@@ -375,12 +394,24 @@ extern "C" size_t kog_libvgm_render(
         return 0;
     try {
         decoder->last_error.clear();
-        const size_t frames_to_render = std::min(frames, static_cast<size_t>(kRenderFrames));
+        // libvgm keeps rendering (looping) after the song's end; stop at
+        // the length reported to the player, or when libvgm says it's done.
+        const uint64_t position = decoder->position;
+        if ((decoder->player.GetState() & PLAYSTATE_FIN) != 0
+            || (decoder->total_frames > 0 && position >= decoder->total_frames)) {
+            decoder->ended = true;
+            return 0;
+        }
+        size_t frames_to_render = std::min(frames, static_cast<size_t>(kRenderFrames));
+        if (decoder->total_frames > 0)
+            frames_to_render = static_cast<size_t>(
+                std::min<uint64_t>(frames_to_render, decoder->total_frames - position));
         const uint32_t bytes_requested =
             static_cast<uint32_t>(frames_to_render * kChannels * sizeof(int32_t));
         const uint32_t bytes_rendered =
             decoder->player.Render(bytes_requested, decoder->render_buffer.data());
         const size_t frames_rendered = bytes_rendered / (kChannels * sizeof(int32_t));
+        decoder->position += frames_rendered;
         const size_t samples_rendered = frames_rendered * kChannels;
         for (size_t sample = 0; sample < samples_rendered; ++sample) {
             output[sample] = static_cast<float>(
@@ -420,6 +451,7 @@ extern "C" int kog_libvgm_seek(kog_libvgm *decoder, uint64_t frame) {
             decoder->last_error = output;
             return 1;
         }
+        decoder->position = frame;
         return 0;
     } catch (const std::exception &exception) {
         decoder->last_error = exception.what();

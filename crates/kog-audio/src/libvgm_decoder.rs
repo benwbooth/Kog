@@ -13,19 +13,26 @@ const LIBVGM_SAMPLE_RATE: u32 = 44_100;
 const LIBVGM_CHANNELS: u16 = 2;
 const LIBVGM_BITS_PER_SAMPLE: u8 = 24;
 const LIBVGM_RENDER_FRAMES: usize = 2_048;
-const LIBVGM_LOOP_COUNT: u32 = 2;
-const LIBVGM_FADE: Duration = Duration::from_secs(8);
 const LIBVGM_END_SILENCE: Duration = Duration::from_millis(500);
 
 pub struct LibVgmBackend;
 
 impl LibVgmBackend {
     fn open(source: &PlaybackSource) -> Result<LibVgm, String> {
+        // The loop policy picks the count, or a time limit libvgm turns into
+        // one from the song's own intro and loop lengths.
+        let policy = crate::looping::current();
+        let (loops, limit) = match policy {
+            crate::looping::LoopPolicy::Once => (1, None),
+            crate::looping::LoopPolicy::Twice => (2, None),
+            crate::looping::LoopPolicy::Minutes(_) => (2, Some(policy.untimed_length())),
+        };
         LibVgm::open(
             &source.path,
             LIBVGM_SAMPLE_RATE,
-            LIBVGM_LOOP_COUNT,
-            LIBVGM_FADE,
+            loops,
+            limit,
+            policy.fade(),
             LIBVGM_END_SILENCE,
         )
     }

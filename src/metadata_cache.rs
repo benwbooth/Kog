@@ -72,7 +72,9 @@ fn stamp(entry: &StoredEntry) -> Option<String> {
     }
     let metadata = std::fs::metadata(&entry.path).ok()?;
     let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
-    Some(format!("{FORMAT}:{}:{modified}", metadata.len()))
+    // Looping songs' lengths follow the looping setting.
+    let looping = kog_audio::looping::current().setting_value();
+    Some(format!("{FORMAT}:{looping}:{}:{modified}", metadata.len()))
 }
 
 fn track_json(track: &Track) -> Value {

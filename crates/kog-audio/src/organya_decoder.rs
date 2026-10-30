@@ -13,7 +13,6 @@ const ORGANYA_SAMPLE_RATE: u32 = 44_100;
 const ORGANYA_CHANNELS: u16 = 2;
 const ORGANYA_BITS_PER_SAMPLE: u8 = 32;
 const ORGANYA_RENDER_FRAMES: usize = 1_024;
-const ORGANYA_LOOP_COUNT: u32 = 2;
 const ORGANYA_FADE: Duration = Duration::from_secs(8);
 
 pub struct OrganyaBackend;
@@ -23,7 +22,7 @@ impl OrganyaBackend {
         Organya::open(
             &source.path,
             ORGANYA_SAMPLE_RATE,
-            ORGANYA_LOOP_COUNT,
+            crate::looping::current().fixed_loops(),
             ORGANYA_FADE,
         )
     }

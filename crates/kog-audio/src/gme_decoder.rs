@@ -15,8 +15,11 @@ const GME_DEFAULT_SAMPLE_RATE: u32 = 44_100;
 const GME_SPC_SAMPLE_RATE: u32 = 32_000;
 const GME_CHANNELS: u16 = 2;
 const GME_RENDER_FRAMES: usize = 1_024;
+#[cfg(any(test, feature = "test-util"))]
 const GME_DEFAULT_LENGTH: Duration = Duration::from_secs(150);
+#[cfg(any(test, feature = "test-util"))]
 const GME_DEFAULT_FADE: Duration = Duration::from_secs(8);
+#[cfg(any(test, feature = "test-util"))]
 const GME_DEFAULT_LOOP_COUNT: u32 = 2;
 
 pub struct GmeBackend;
@@ -48,8 +51,18 @@ impl GmeBackend {
             ));
         }
         let info = emu.track_info(track)?;
-        let plan = info.playback_plan(GME_DEFAULT_LENGTH, GME_DEFAULT_FADE, GME_DEFAULT_LOOP_COUNT);
+        let plan = Self::plan(&info);
         Ok((track, info, plan))
+    }
+
+    /// The track's length under the loop policy.
+    fn plan(info: &GmeTrackInfo) -> GmePlaybackPlan {
+        let policy = crate::looping::current();
+        let loops = policy.loops(
+            Duration::from_millis(info.intro_length_ms.max(0) as u64),
+            Duration::from_millis(info.loop_length_ms.max(0) as u64),
+        );
+        info.playback_plan(policy.untimed_length(), policy.fade(), loops)
     }
 }
 

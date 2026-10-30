@@ -20,7 +20,7 @@ pub struct FurnaceBackend;
 
 impl FurnaceBackend {
     fn open(source: &PlaybackSource) -> Result<Furnace, String> {
-        Furnace::open(&source.path, FURNACE_SAMPLE_RATE, source.subsong, FURNACE_LOOP_COUNT, FURNACE_FADE)
+        Furnace::open(&source.path, FURNACE_SAMPLE_RATE, source.subsong, crate::looping::current().fixed_loops(), FURNACE_FADE)
     }
 }
 

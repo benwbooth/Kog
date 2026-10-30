@@ -325,7 +325,9 @@ impl MetadataCache {
 /// Stable identity for a lookup: the same fields the library locator uses,
 /// so the POST batch and the GET lookup share one cache entry.
 fn metadata_key(kind: &str, path: &str, entry: &str, fragment: &str) -> String {
-    format!("{kind}|{path}|{entry}|{}", fragment.trim())
+    // Looping songs' lengths follow the looping setting.
+    let looping = kog_audio::looping::current().setting_value();
+    format!("{kind}|{path}|{entry}|{}|{looping}", fragment.trim())
 }
 
 /// Turn a client entry into a resolved, probed row.
@@ -2604,6 +2606,33 @@ pub async fn set_midi_setting(
     axum::Json(serde_json::json!({ "engine": engine.setting_value() })).into_response()
 }
 
+/// `GET /api/settings/looping` — how long looping songs play, and the choices.
+pub async fn looping_settings() -> Response {
+    let options: Vec<_> = kog_audio::looping::CHOICES
+        .iter()
+        .map(|choice| serde_json::json!({ "value": choice.setting_value(), "label": choice.label() }))
+        .collect();
+    axum::Json(serde_json::json!({
+        "policy": kog_audio::looping::current().setting_value(),
+        "options": options,
+    }))
+    .into_response()
+}
+
+/// `POST /api/settings/looping` — save the looping choice for every player.
+pub async fn set_looping_setting(axum::Json(body): axum::Json<serde_json::Value>) -> Response {
+    let Some(value) = body["policy"].as_str() else {
+        return bad_request("a policy value is required");
+    };
+    let Some(policy) = kog_audio::looping::LoopPolicy::from_setting(value) else {
+        return bad_request(&format!("unknown looping choice: {value}"));
+    };
+    if let Err(error) = kog_audio::looping::save(policy) {
+        return bad_request(&error);
+    }
+    axum::Json(serde_json::json!({ "policy": policy.setting_value() })).into_response()
+}
+
 pub fn router() -> axum::Router<AppState> {
     use axum::routing::{get, post};
     axum::Router::new()
@@ -2640,6 +2669,10 @@ pub fn router() -> axum::Router<AppState> {
         .route(
             "/api/settings/midi",
             get(midi_settings).post(set_midi_setting),
+        )
+        .route(
+            "/api/settings/looping",
+            get(looping_settings).post(set_looping_setting),
         )
         .route("/api/columns", get(get_columns).post(set_columns))
 }

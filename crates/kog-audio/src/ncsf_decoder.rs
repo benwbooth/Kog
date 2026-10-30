@@ -9,6 +9,7 @@ use crate::decoder::{DecoderBackend, DecoderCapabilities, PlaybackSource, Stream
 use crate::ncsf::Ncsf;
 
 const NCSF_EXTENSIONS: &[&str] = &["ncsf", "minincsf"];
+#[cfg(test)]
 const NCSF_DEFAULT_LENGTH: Duration = Duration::from_secs(150);
 const NCSF_DEFAULT_FADE: Duration = Duration::from_secs(8);
 const NCSF_RENDER_FRAMES: usize = 2_048;
@@ -17,7 +18,7 @@ pub struct NcsfBackend;
 
 impl NcsfBackend {
     fn open(source: &PlaybackSource) -> Result<Ncsf, String> {
-        Ncsf::open(&source.path, NCSF_DEFAULT_LENGTH, NCSF_DEFAULT_FADE)
+        Ncsf::open(&source.path, crate::looping::current().untimed_length(), NCSF_DEFAULT_FADE)
     }
 }
 

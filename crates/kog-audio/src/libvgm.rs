@@ -15,6 +15,7 @@ unsafe extern "C" {
         yrw801_rom_size: usize,
         sample_rate: u32,
         loop_count: u32,
+        loop_time_limit_ms: u32,
         fade_samples: u32,
         end_silence_samples: u32,
         error: *mut c_char,
@@ -56,6 +57,7 @@ impl LibVgm {
         path: &Path,
         sample_rate: u32,
         loop_count: u32,
+        loop_time_limit: Option<Duration>,
         fade: Duration,
         end_silence: Duration,
     ) -> Result<Self, String> {
@@ -89,6 +91,7 @@ impl LibVgm {
                 rom.len(),
                 sample_rate,
                 loop_count,
+                loop_time_limit.map_or(0, |limit| u32::try_from(limit.as_millis()).unwrap_or(u32::MAX)),
                 fade_samples,
                 end_silence_samples,
                 error.as_mut_ptr(),
@@ -251,6 +254,7 @@ mod tests {
             &path,
             44_100,
             2,
+            None,
             Duration::from_secs(8),
             Duration::from_millis(500),
         )
@@ -268,8 +272,21 @@ mod tests {
             22_050
         );
         pcm.fill(0.0);
-        assert!(decoder.render(&mut pcm).expect("render after seek") > 0);
+        let after_seek = decoder.render(&mut pcm).expect("render after seek") as u64;
+        assert!(after_seek > 0);
         assert!(pcm.iter().any(|sample| sample.abs() > 0.000_01));
+
+        // Playback stops at the reported length instead of rendering on.
+        let mut rendered = 22_050 + after_seek;
+        loop {
+            let frames = decoder.render(&mut pcm).expect("render to the end");
+            if frames == 0 {
+                break;
+            }
+            rendered += frames as u64;
+            assert!(rendered <= 44_100, "rendered past the end");
+        }
+        assert_eq!(rendered, 44_100);
 
         std::fs::remove_file(path).ok();
     }

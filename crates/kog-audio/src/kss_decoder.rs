@@ -25,9 +25,6 @@ const KSS_MASTER_VOLUME: i32 = 48;
 /// A plain KSS file has no song count (any of 256 numbers may play); real
 /// rips hold a handful, so list this many rather than flood the pane.
 const KSS_UNLISTED_SONGS: u32 = 16;
-const KSS_DEFAULT_LENGTH: Duration = Duration::from_secs(150);
-const KSS_DEFAULT_FADE: Duration = Duration::from_secs(8);
-const KSS_LOOP_COUNT: u64 = 2;
 
 unsafe extern "C" {
     fn kog_kss_open(
@@ -130,12 +127,19 @@ struct KssPlan {
 impl KssEntry {
     fn plan(&self) -> KssPlan {
         let millis = |duration: Duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        // A known loop plays as many times as the loop policy asks; a listed
+        // length otherwise; songs with neither play the default length.
+        let policy = crate::looping::current();
         let play_ms = match (self.length_ms, self.loop_ms) {
+            (_, Some(looped)) if looped > 0 => {
+                let intro = self.intro_ms.unwrap_or(0);
+                let loops = policy.loops(Duration::from_millis(intro), Duration::from_millis(looped));
+                intro + looped * u64::from(loops)
+            }
             (Some(length), _) if length > 0 => length,
-            (_, Some(looped)) if looped > 0 => self.intro_ms.unwrap_or(0) + looped * KSS_LOOP_COUNT,
-            _ => millis(KSS_DEFAULT_LENGTH),
+            _ => millis(policy.untimed_length()),
         };
-        let fade_ms = self.fade_ms.unwrap_or_else(|| millis(KSS_DEFAULT_FADE));
+        let fade_ms = self.fade_ms.unwrap_or_else(|| millis(policy.fade()));
         KssPlan { play_ms, total_ms: play_ms.saturating_add(fade_ms) }
     }
 }
@@ -481,7 +485,8 @@ mod tests {
         assert_eq!((title.play_ms, title.total_ms), (77_000, 87_000));
         assert_eq!((list.entries[1].number, list.entries[1].title.as_str()), (10, "Name, Entry"));
         assert_eq!((list.entries[1].intro_ms, list.entries[1].loop_ms), (Some(10_000), Some(20_500)));
-        assert_eq!(list.entries[1].plan().play_ms, 30_500);
+        // A known loop wins over the listed length: the intro plus the loop twice.
+        assert_eq!(list.entries[1].plan().play_ms, 51_000);
         // No length: the intro plus the loop twice.
         assert_eq!(list.entries[2].plan().play_ms, 120_000);
         assert_eq!(list.entries[2].plan().total_ms, 128_000);

@@ -2151,6 +2151,9 @@ fn App() -> impl IntoView {
     // desktop's Preferences > Synthesis backend.
     let (midi_engine, set_midi_engine) = signal(String::new());
     let (midi_options, set_midi_options) = signal(Vec::<(String, String)>::new());
+    // How long looping songs play, shared with the desktop and terminal.
+    let (looping, set_looping) = signal(String::new());
+    let (looping_options, set_looping_options) = signal(Vec::<(String, String)>::new());
     let (version, set_version) = signal(String::new());
     // Queue indices the pane actions act on. The anchor is a queue index too;
     // Shift-click resolves its range through the current visible row order.
@@ -3364,6 +3367,19 @@ fn App() -> impl IntoView {
                         }
                     }
                     set_midi_options.set(options);
+                }
+                if let Ok(value) = get_json("/api/settings/looping".to_owned()).await {
+                    set_looping.set(value["policy"].as_str().unwrap_or_default().to_owned());
+                    let options = value["options"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|option| {
+                            let value = option["value"].as_str()?.to_owned();
+                            Some((value, option["label"].as_str().unwrap_or_default().to_owned()))
+                        })
+                        .collect();
+                    set_looping_options.set(options);
                 }
             });
         }
@@ -8070,6 +8086,34 @@ fn App() -> impl IntoView {
                                 </select>
                             </label>
                             <p class="hint">"Changing this reloads the current MIDI track. The SF2 and ROM engines need the assets the desktop's Preferences sets."</p>
+                            <label>
+                                "Looping songs"
+                                <select
+                                    prop:value=move || {
+                                        looping_options.track();
+                                        looping.get()
+                                    }
+                                    on:change=move |event| {
+                                        let value = event_target_value(&event);
+                                        let header = auth().header();
+                                        let url = format!("{}/api/settings/looping", base());
+                                        leptos::task::spawn_local(async move {
+                                            match post_json(url, header, serde_json::json!({ "policy": value })).await {
+                                                Ok(reply) => {
+                                                    set_looping.set(reply["policy"].as_str().unwrap_or_default().to_owned());
+                                                    set_message.set(String::new());
+                                                }
+                                                Err(error) => set_message.set(error),
+                                            }
+                                        });
+                                    }
+                                >
+                                    <For each=move || looping_options.get() key=|option| option.0.clone() let:option>
+                                        <option value={option.0.clone()}>{option.1.clone()}</option>
+                                    </For>
+                                </select>
+                            </label>
+                            <p class="hint">"Where songs that loop (NSF, SPC, VGM and the like) end, from the next song. The desktop and terminal players share it."</p>
                         </Show>
                         <label class="check">
                             <input

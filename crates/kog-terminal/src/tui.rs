@@ -2809,6 +2809,13 @@ impl Ui {
                 let _ = kog_audio::settings::save_text(EXPORT_EFFECTS_SETTING, if enabled { "true" } else { "false" });
                 self.status = format!("Export with equalizer and effects: {}", if enabled { "on" } else { "off" });
             }
+            (MenuPage::Preferences, 20) => {
+                let policy = kog_audio::looping::current().next();
+                match kog_audio::looping::save(policy) {
+                    Ok(()) => self.status = format!("Looping songs: {}", policy.label()),
+                    Err(error) => self.status = error,
+                }
+            }
             (MenuPage::Preferences, 17) => {
                 self.modal = None;
                 self.effects_view.show(AppSettings::load().effects);
@@ -11024,7 +11031,7 @@ const PLAYBACK_MENU: [&str; 14] = [
     "Clear Queue",
     "Seek to Time…",
 ];
-const PREFERENCES_MENU: [&str; 20] = [
+const PREFERENCES_MENU: [&str; 21] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -11045,6 +11052,7 @@ const PREFERENCES_MENU: [&str; 20] = [
     "Effects…",
     "Cycle Export Format",
     "Export With Effects On/Off",
+    "Cycle Looping Songs",
 ];
 const SERVER_MENU: [&str; 17] = [
     "Start Server",

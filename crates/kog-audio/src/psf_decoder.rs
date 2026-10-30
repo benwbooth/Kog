@@ -11,6 +11,7 @@ use crate::psf::Psf;
 const PSF_EXTENSIONS: &[&str] = &[
     "psf", "minipsf", "psf2", "minipsf2", "snsf", "minisnsf", "2sf", "mini2sf",
 ];
+#[cfg(test)]
 const PSF_DEFAULT_LENGTH: Duration = Duration::from_secs(150);
 const PSF_DEFAULT_FADE: Duration = Duration::from_secs(8);
 const PSF_RENDER_FRAMES: usize = 2_048;
@@ -19,7 +20,7 @@ pub struct PsfBackend;
 
 impl PsfBackend {
     fn open(source: &PlaybackSource) -> Result<Psf, String> {
-        Psf::open(&source.path, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE)
+        Psf::open(&source.path, crate::looping::current().untimed_length(), PSF_DEFAULT_FADE)
     }
 }
 

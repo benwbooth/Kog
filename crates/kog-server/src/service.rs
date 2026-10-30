@@ -116,7 +116,7 @@ impl StreamService {
         bars: usize,
     ) -> crate::mml::Status {
         let settings = self.render_settings(key);
-        let job_key = format!("{}\0{}", key.locator, key.render_profile.as_deref().unwrap_or_default());
+        let job_key = format!("{}\0{}\0{}", key.locator, key.render_profile.as_deref().unwrap_or_default(), key.looping);
         self.mml.status(job_key, title, entry, settings, self.scratch.join("mml"), have, bars)
     }
 

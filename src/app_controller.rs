@@ -75,6 +75,7 @@ pub mod qobject {
         #[qproperty(QString, midi_engine)]
         #[qproperty(QString, midi_status)]
         #[qproperty(QString, opening_files_behavior)]
+        #[qproperty(QString, loop_policy)]
         #[qproperty(bool, read_cue_sheets_in_folders)]
         #[qproperty(bool, read_playlists_in_folders)]
         #[qproperty(bool, show_tray_icon)]
@@ -475,6 +476,8 @@ pub mod qobject {
         fn select_midi_engine(self: Pin<&mut AppController>, engine: QString);
         #[qinvokable]
         fn select_opening_files_behavior(self: Pin<&mut AppController>, behavior: QString);
+        #[qinvokable]
+        fn select_loop_policy(self: Pin<&mut AppController>, policy: QString);
         #[qinvokable]
         fn set_folder_cue_mode(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
@@ -1941,6 +1944,7 @@ pub struct AppControllerRust {
     midi_engine: QString,
     midi_status: QString,
     opening_files_behavior: QString,
+    loop_policy: QString,
     read_cue_sheets_in_folders: bool,
     read_playlists_in_folders: bool,
     show_tray_icon: bool,
@@ -2200,6 +2204,7 @@ impl Default for AppControllerRust {
             midi_engine,
             midi_status,
             opening_files_behavior: qstring(app_settings.opening_files_behavior.setting_value()),
+            loop_policy: qstring(kog_audio::looping::current().setting_value()),
             read_cue_sheets_in_folders: app_settings.read_cue_sheets_in_folders,
             read_playlists_in_folders: app_settings.read_playlists_in_folders,
             show_tray_icon: app_settings.show_tray_icon,
@@ -6739,6 +6744,24 @@ impl qobject::AppController {
             OpeningFilesBehavior::Enqueue => "Opening files will enqueue without starting playback",
             OpeningFilesBehavior::EnqueueAndPlay => "Opening files will enqueue and start playback",
         }));
+    }
+
+    pub fn select_loop_policy(mut self: Pin<&mut Self>, policy: QString) {
+        let value = policy.to_string();
+        let Some(policy) = kog_audio::looping::LoopPolicy::from_setting(&value) else {
+            self.as_mut()
+                .set_status(qstring(format!("Unknown looping choice: {value}")));
+            return;
+        };
+        if let Err(error) = kog_audio::looping::save(policy) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_loop_policy(qstring(policy.setting_value()));
+        self.as_mut().set_status(qstring(format!(
+            "Looping songs: {} (from the next song)",
+            policy.label()
+        )));
     }
 
     pub fn set_folder_cue_mode(mut self: Pin<&mut Self>, enabled: bool) {

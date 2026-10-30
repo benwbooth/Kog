@@ -36,7 +36,7 @@ int main() {
     for(unsigned i=0;i<60;++i)file.push_back(0x62);
     fm(0x28,0);file.insert(file.end(),{0x50,0x9f,0x66});put32(file,4,file.size()-4);
     char error[512]{};
-    auto create=[&](){auto*p=kog_libvgm_create(file.data(),file.size(),nullptr,0,44100,1,0,0,error,sizeof(error)); if(!p)std::fprintf(stderr,"%s\n",error);assert(p);return std::unique_ptr<kog_libvgm>(p);};
+    auto create=[&](){auto*p=kog_libvgm_create(file.data(),file.size(),nullptr,0,44100,1,0,0,0,error,sizeof(error)); if(!p)std::fprintf(stderr,"%s\n",error);assert(p);return std::unique_ptr<kog_libvgm>(p);};
     auto observed=create();
     auto plain=std::make_unique<kog_libvgm>();
     assert(plain->initialize(file.data(),file.size(),nullptr,0,44100,1,0,0,false));

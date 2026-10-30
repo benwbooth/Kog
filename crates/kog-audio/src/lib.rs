@@ -38,6 +38,7 @@ pub mod inspection;
 pub(crate) mod embedded_helper;
 pub mod legacy_id3;
 pub mod library_policy;
+pub mod looping;
 pub mod libvgm;
 pub mod libvgm_decoder;
 pub mod mt32;

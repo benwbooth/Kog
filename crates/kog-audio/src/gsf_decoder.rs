@@ -9,6 +9,7 @@ use crate::decoder::{DecoderBackend, DecoderCapabilities, PlaybackSource, Stream
 use crate::gsf::Gsf;
 
 const GSF_EXTENSIONS: &[&str] = &["gsf", "minigsf"];
+#[cfg(test)]
 const GSF_DEFAULT_LENGTH: Duration = Duration::from_secs(150);
 const GSF_DEFAULT_FADE: Duration = Duration::from_secs(8);
 const GSF_RENDER_FRAMES: usize = 2_048;
@@ -17,7 +18,7 @@ pub struct GsfBackend;
 
 impl GsfBackend {
     fn open(source: &PlaybackSource) -> Result<Gsf, String> {
-        Gsf::open(&source.path, GSF_DEFAULT_LENGTH, GSF_DEFAULT_FADE)
+        Gsf::open(&source.path, crate::looping::current().untimed_length(), GSF_DEFAULT_FADE)
     }
 }
 

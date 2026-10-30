@@ -17,6 +17,7 @@ kog_libvgm *kog_libvgm_create(
     size_t yrw801_rom_size,
     uint32_t sample_rate,
     uint32_t loop_count,
+    uint32_t loop_time_limit_ms,
     uint32_t fade_samples,
     uint32_t end_silence_samples,
     char *error,

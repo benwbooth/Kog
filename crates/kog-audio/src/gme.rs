@@ -75,11 +75,13 @@ impl GmeTrackInfo {
         default_fade: Duration,
         loop_count: u32,
     ) -> GmePlaybackPlan {
-        let play_length_ms = if self.length_ms > 0 {
-            self.length_ms as u64
-        } else if self.loop_length_ms > 0 {
+        // A known loop plays as many times as the loop policy asks; a tagged
+        // length otherwise; songs with neither play the default length.
+        let play_length_ms = if self.loop_length_ms > 0 {
             self.intro_length_ms.max(0) as u64
-                + self.loop_length_ms as u64 * u64::from(loop_count.min(10))
+                + self.loop_length_ms as u64 * u64::from(loop_count.min(1000))
+        } else if self.length_ms > 0 {
+            self.length_ms as u64
         } else {
             duration_milliseconds(default_length)
         };

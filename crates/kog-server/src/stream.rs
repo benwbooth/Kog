@@ -30,6 +30,8 @@ pub struct StreamKey {
     pub render_profile: Option<String>,
     /// Start decoding at this position, including on the first uncached play.
     pub start_ms: u64,
+    /// The looping setting, which sets where looping songs end.
+    pub looping: String,
 }
 
 impl StreamKey {
@@ -40,6 +42,7 @@ impl StreamKey {
             bitrate_kbps: clamp_bitrate(bitrate_kbps),
             render_profile: None,
             start_ms: 0,
+            looping: kog_audio::looping::current().setting_value(),
         }
     }
 
@@ -69,6 +72,11 @@ impl StreamKey {
         if let Some(profile) = &self.render_profile {
             fingerprint.push('\0');
             fingerprint.push_str(profile);
+        }
+        // Songs encoded before the setting existed looped twice.
+        if self.looping != kog_audio::looping::LoopPolicy::Twice.setting_value() {
+            fingerprint.push_str("\0looping=");
+            fingerprint.push_str(&self.looping);
         }
         // Preserve the existing full-track cache identity at position zero.
         if self.start_ms != 0 {
