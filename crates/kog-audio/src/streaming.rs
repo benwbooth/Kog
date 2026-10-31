@@ -285,7 +285,7 @@ impl Read for PcmReader {
 
 /// Write the level meter's six bars for the whole song, one byte per bar at
 /// `waveform::UPDATES_PER_SECOND`, for clients that cannot read the levels off
-/// their own audio output. Flushes about once a second so a reader can follow.
+/// their own audio output. Flushes often so a reader can follow from the start.
 pub fn write_levels(pcm: &mut PcmReader, output: &mut impl Write) -> Result<(), String> {
     use kog_playback_policy::waveform;
     let rate = pcm.sample_rate();
@@ -321,7 +321,7 @@ pub fn write_levels(pcm: &mut PcmReader, output: &mut impl Write) -> Result<(), 
             output.write_all(&bars).map_err(|error| error.to_string())?;
             mono.drain(..start);
             ticks += 1;
-            if ticks.is_multiple_of(waveform::UPDATES_PER_SECOND) {
+            if ticks.is_multiple_of(4) {
                 output.flush().map_err(|error| error.to_string())?;
             }
         }

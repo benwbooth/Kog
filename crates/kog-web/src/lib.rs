@@ -2084,9 +2084,9 @@ impl LevelTimeline {
     }
 }
 
-/// Fetch the playing stream's timeline, again every 1.5 s while the server is
-/// still working it out.
-fn request_level_timeline(timeline: &Rc<RefCell<LevelTimeline>>, stream: &str, header: Option<String>) {
+/// Fetch the playing stream's timeline while the server is still working it
+/// out: quickly until it covers the next few seconds, then every 1.5 s.
+fn request_level_timeline(timeline: &Rc<RefCell<LevelTimeline>>, stream: &str, position: f64, header: Option<String>) {
     let now = js_sys::Date::now();
     // A seek restarts the stream at start_ms; the timeline covers the song.
     let stream_url = stream.split_once("&start_ms=").map_or(stream, |(url, _)| url);
@@ -2095,7 +2095,8 @@ fn request_level_timeline(timeline: &Rc<RefCell<LevelTimeline>>, stream: &str, h
         if state.stream != stream_url {
             *state = LevelTimeline { stream: stream_url.to_owned(), ..LevelTimeline::default() };
         }
-        if state.complete || state.pending || now - state.requested_at < 1_500.0 {
+        let wait = if state.bars_at(position + 3.0).is_some() { 1_500.0 } else { 150.0 };
+        if state.complete || state.pending || now - state.requested_at < wait {
             return;
         }
         state.pending = true;
@@ -4572,7 +4573,7 @@ fn App() -> impl IntoView {
             // an AudioContext would stop playback when the screen locks.
             if !js_sys::Reflect::has(&audio, &"captureStream".into()).unwrap_or(false) {
                 let position = audio.current_time() + stream_offset.get_untracked();
-                request_level_timeline(&timeline, &audio.src(), auth().header());
+                request_level_timeline(&timeline, &audio.src(), position, auth().header());
                 if let Some(bars) = timeline.borrow().bars_at(position) {
                     set_audio_levels.set(bars);
                 }
