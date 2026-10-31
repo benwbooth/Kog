@@ -346,8 +346,8 @@ Item {
 
                                 Behavior on level {
                                     SpringAnimation {
-                                        spring: 7
-                                        damping: 0.22
+                                        spring: 5
+                                        damping: 0.7
                                         epsilon: 0.005
                                     }
                                 }

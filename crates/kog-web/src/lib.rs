@@ -2138,7 +2138,7 @@ fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
     view! {
         <span
             class="row-meter"
-            style=if pinned { "position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" } else { "position: relative; display: inline-block; width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" }
+            style=if pinned { "position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" } else { "position: relative; top: auto; right: auto; transform: none; display: block; width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" }
         >
             <For
                 each=|| [0usize, 1, 2, 3, 4, 5]
@@ -2167,7 +2167,7 @@ fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
                         let left = slot * (band as f32 + 0.5) - width / 2.0;
                         let top = (HEIGHT - height) / 2.0;
                         format!(
-                            "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; transition: left {ms}ms, top {ms}ms, width {ms}ms, height {ms}ms; transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);",
+                            "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; transition: left {ms}ms, top {ms}ms, width {ms}ms, height {ms}ms; transition-timing-function: cubic-bezier(0.3, 1.1, 0.6, 1);",
                             2.0 + left,
                             2.0 + top,
                             ms = kog_playback_policy::waveform::SPRING_MS,
@@ -4447,8 +4447,6 @@ fn App() -> impl IntoView {
             Rc::new(RefCell::new(None));
         // Warmed context, ready before the tap exists.
         let context_slot: Rc<RefCell<Option<web_sys::AudioContext>>> = Rc::new(RefCell::new(None));
-        // Beat emphasis state, as the desktop keeps per stream.
-        let bounce = Rc::new(RefCell::new(kog_playback_policy::waveform::Bounce::default()));
         // Consecutive silent reads while audibly playing: a stale tap.
         let dry_reads = Rc::new(std::cell::Cell::new(0u32));
         // Levels from the server, for browsers with no way to tap the audio.
@@ -4576,7 +4574,7 @@ fn App() -> impl IntoView {
                 let position = audio.current_time() + stream_offset.get_untracked();
                 request_level_timeline(&timeline, &audio.src(), auth().header());
                 if let Some(bars) = timeline.borrow().bars_at(position) {
-                    set_audio_levels.set(bounce.borrow_mut().apply(bars));
+                    set_audio_levels.set(bars);
                 }
                 return;
             }
@@ -4628,10 +4626,10 @@ fn App() -> impl IntoView {
             // The latest frame, measured as the desktop measures it.
             let rate = context.sample_rate() as u32;
             let frame = kog_playback_policy::waveform::frame_len(rate).min(samples.len());
-            set_audio_levels.set(bounce.borrow_mut().apply(kog_playback_policy::waveform::levels(
+            set_audio_levels.set(kog_playback_policy::waveform::levels(
                 &samples[samples.len() - frame..],
                 rate,
-            )));
+            ));
         });
         web_sys::window()
             .expect("window for the level meter")

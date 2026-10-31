@@ -9,9 +9,8 @@
 pub const BARS: usize = 6;
 /// How often the bars get new heights.
 pub const UPDATES_PER_SECOND: u32 = 20;
-/// How long a bar takes to spring to a new height, in milliseconds (iOS
-/// takes 325; shorter reads as bouncier).
-pub const SPRING_MS: u32 = 140;
+/// How long a bar takes to spring to a new height, in milliseconds, as on iOS.
+pub const SPRING_MS: u32 = 325;
 /// How much wider a bar at full height is than a quiet one.
 pub const WIDTH_GROWTH: f32 = 0.66;
 
@@ -124,54 +123,6 @@ fn fft(real: &mut [f32], imag: &mut [f32]) {
     }
 }
 
-/// Beat emphasis on top of the iOS heights: each bar rides on how far its
-/// band is above its own recent average, so beats kick it up and lulls drop
-/// it instead of it hovering, and a sudden rise in the bass (a kick drum or
-/// downbeat) throws every bar up together for a moment. Silence stays dark.
-#[derive(Clone, Debug, Default)]
-pub struct Bounce {
-    average: [f32; BARS],
-    bass_average: f32,
-    previous_bass: f32,
-    pulse: f32,
-    cooldown: u32,
-}
-
-impl Bounce {
-    pub fn apply(&mut self, levels: [f32; BARS]) -> [f32; BARS] {
-        let bass = levels[0].max(levels[1]);
-        let rise = bass - self.previous_bass;
-        self.previous_bass = bass;
-        self.bass_average += 0.1 * (bass - self.bass_average);
-        self.cooldown = self.cooldown.saturating_sub(1);
-        if self.cooldown == 0 && rise > 0.08 && bass > self.bass_average + 0.05 {
-            self.pulse = 1.0;
-            // At most one beat per 200 ms.
-            self.cooldown = UPDATES_PER_SECOND / 5;
-        }
-        let pulse = self.pulse;
-        self.pulse *= 0.5;
-        std::array::from_fn(|index| {
-            let level = levels[index];
-            self.average[index] += 0.15 * (level - self.average[index]);
-            // The treble moves less in the iOS heights, so it gets more kick.
-            let kick = 2.5 * (1.0 + 0.35 * index as f32);
-            let gate = (level / 0.03).clamp(0.0, 1.0);
-            let beat = pulse * if index < 2 { 0.5 } else { 0.3 };
-            ((0.35 + kick * (level - self.average[index]) + beat) * gate).clamp(0.0, 1.0)
-        })
-    }
-
-    /// Whether the last update started a beat.
-    pub fn beat(&self) -> bool {
-        self.pulse == 0.5
-    }
-
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
-}
-
 /// Feeds a running stream into the analysis: keeps the latest frame and
 /// produces new heights `UPDATES_PER_SECOND` times a second.
 #[derive(Clone, Debug, Default)]
@@ -181,7 +132,6 @@ pub struct Analyzer {
     cursor: usize,
     since_update: u32,
     levels: [f32; BARS],
-    bounce: Bounce,
 }
 
 impl Analyzer {
@@ -210,7 +160,7 @@ impl Analyzer {
             .chain(&self.frame[..self.cursor])
             .copied()
             .collect();
-        self.levels = self.bounce.apply(levels(&ordered, self.sample_rate));
+        self.levels = levels(&ordered, self.sample_rate);
         true
     }
 
@@ -223,7 +173,6 @@ impl Analyzer {
         self.cursor = 0;
         self.since_update = 0;
         self.levels = [0.0; BARS];
-        self.bounce.reset();
     }
 }
 
@@ -235,19 +184,6 @@ mod tests {
         (0..1024)
             .map(|i| amplitude * (2.0 * std::f32::consts::PI * frequency * i as f32 / 48_000.0).sin())
             .collect()
-    }
-
-    #[test]
-    fn a_bass_hit_after_quiet_is_a_beat() {
-        let mut bounce = Bounce::default();
-        // A steady quiet tone: past its onset, no beats.
-        for update in 0..10 {
-            bounce.apply(levels(&sine(120.0, 0.01), 48_000));
-            assert!(update < 5 || !bounce.beat());
-        }
-        let hit = bounce.apply(levels(&sine(120.0, 0.6), 48_000));
-        assert!(bounce.beat());
-        assert!(hit[0] > 0.8 || hit[1] > 0.8, "{hit:?}");
     }
 
     #[test]
