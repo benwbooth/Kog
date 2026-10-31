@@ -830,7 +830,7 @@ button:focus-visible {
   top: 50%;
   transform: translateY(-50%);
   width: 24px;
-  height: 18px;
+  height: 21px;
   box-sizing: border-box;
   border-radius: 4px;
   background: #000;

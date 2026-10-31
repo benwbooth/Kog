@@ -2138,7 +2138,7 @@ fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
     view! {
         <span
             class="row-meter"
-            style=if pinned { "position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" } else { "position: relative; top: auto; right: auto; transform: none; display: block; width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" }
+            style=if pinned { "position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 21px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" } else { "position: relative; top: auto; right: auto; transform: none; display: block; width: 24px; height: 21px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" }
         >
             <For
                 each=|| [0usize, 1, 2, 3, 4, 5]
@@ -2156,10 +2156,10 @@ fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
                             .clamp(0.0, 1.0);
                         // Cool to hot as the bar grows.
                         let fill = format!("hsl({:.0}, 85%, 62%)", 210.0 - 90.0 * level);
-                        // The bars' 20x14 area,
+                        // The bars' 20x17 area,
                         // laid out as iOS does.
                         const WIDTH: f32 = 20.0;
-                        const HEIGHT: f32 = 14.0;
+                        const HEIGHT: f32 = 17.0;
                         let slot = WIDTH / kog_playback_policy::waveform::BARS as f32;
                         let base = slot / 2.0;
                         let width = base * (1.0 + kog_playback_policy::waveform::WIDTH_GROWTH * level);

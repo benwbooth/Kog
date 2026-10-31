@@ -295,7 +295,7 @@ Item {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     width: 24
-                    height: 18
+                    height: 21
                     visible: root.isPlaying
 
                     // Six pill bars on a black rectangle, laid out like the Dynamic
@@ -321,7 +321,7 @@ Item {
                         id: waveformArea
                         anchors.centerIn: parent
                         width: 20
-                        height: 14
+                        height: 17
 
                         Repeater {
                             model: 6
