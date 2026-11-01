@@ -299,6 +299,8 @@ fn save_playlist_session(path: &Path, tracks: &[Track], selected: usize) -> Resu
 }
 
 struct TrackMetadata {
+    /// The decoder that plays this song.
+    backend: String,
     title: String,
     artist: String,
     album: String,
@@ -1350,6 +1352,7 @@ impl Ui {
                         kog_audio::streaming::resolve_entry(&playlist_entry, &decoders, &scratch)
                     });
                     let metadata = resolved.ok().map(|source| {
+                        let backend = decoders.selected_backend_name(&source).unwrap_or_default().to_owned();
                         let track = AudioTrack::from_source(source, &decoders);
                         let title = if (entry.kind == "archive" || entry.kind == "remote")
                             && track.title
@@ -1382,6 +1385,7 @@ impl Ui {
                             lyrics: track.lyrics,
                             codec: track.codec,
                             genre: track.genre,
+                            backend,
                         }
                     });
                     if results.send((generation, key, metadata)).is_err() {
@@ -9912,6 +9916,13 @@ impl Ui {
         } else {
             message
         };
+        let backend = self
+            .playing
+            .and_then(|index| self.tracks.get(index))
+            .and_then(|track| self.metadata_for(track))
+            .filter(|metadata| !metadata.backend.is_empty())
+            .map(|metadata| format!("Playing with {} ", metadata.backend))
+            .unwrap_or_default();
         paint(
             &mut screen,
             height,
@@ -9921,6 +9932,18 @@ impl Ui {
             Surface::Toolbar,
             false,
         );
+        // The hints give way: which decoder is playing stays readable.
+        if cell_width(&backend) * 2 < width {
+            paint(
+                &mut screen,
+                height,
+                width + 1 - cell_width(&backend),
+                &backend,
+                cell_width(&backend),
+                Surface::Toolbar,
+                false,
+            );
+        }
         if self.menu_open {
             let mut layers = self.menu_parents.clone();
             layers.push(self.active_menu_layer());
