@@ -85,8 +85,12 @@ pub mod qobject {
     }
 }
 
+use std::ffi::{CStr, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use cxx_qt_lib::{QModelIndex, QString, QUrl};
 
@@ -212,4 +216,97 @@ mod tests {
             "Sonic + Classics.zip"
         );
     }
+}
+
+const WALK_DIRECTORY: u32 = 1;
+const WALK_MATCHED: u32 = 2;
+const WALK_ARCHIVE: u32 = 4;
+
+type WalkVisit = extern "C" fn(*mut c_void, *const c_char, usize, u32, u64) -> bool;
+
+/// The tree search's filesystem pass, shared with the server's walker: see
+/// `kog_core::file_search`. One entry reported to C++, or none for a progress
+/// report, under `visit`'s lock.
+///
+/// # Safety
+/// `root` and `query` are NUL-terminated, `cancel` and `paused` are valid
+/// `std::atomic_bool`s (one byte, like `AtomicBool`), and all outlive the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_file_search_walk(
+    root: *const c_char,
+    query: *const c_char,
+    cancel: *const AtomicBool,
+    paused: *const AtomicBool,
+    context: *mut c_void,
+    visit: WalkVisit,
+) {
+    use kog_core::file_search::{Matcher, walk};
+    let (root, query, cancel, paused) = unsafe {
+        (
+            CStr::from_ptr(root).to_string_lossy(),
+            CStr::from_ptr(query).to_string_lossy(),
+            &*cancel,
+            &*paused,
+        )
+    };
+    let matcher = Matcher::new(&query);
+    let scanned = AtomicU64::new(0);
+    let reported = Mutex::new((context as usize, Instant::now()));
+    walk(PathBuf::from(&*root), (), |directory, (), subfolders| {
+        while paused.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return true;
+        };
+        let mut found: Vec<(PathBuf, u32)> = Vec::new();
+        let mut scratch = Vec::new();
+        let mut count = 0;
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name();
+            if kog_server::media_filter::is_hidden_name(&name) {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            count += 1;
+            let mut flags = 0;
+            if matcher.is_match(name.as_encoded_bytes(), &mut scratch) {
+                flags |= WALK_MATCHED;
+            }
+            if file_type.is_dir() {
+                flags |= WALK_DIRECTORY;
+                subfolders.push(entry.path(), ());
+            } else if kog_audio::archive::is_path(Path::new(&name)) {
+                flags |= WALK_ARCHIVE;
+            }
+            if flags & (WALK_MATCHED | WALK_ARCHIVE) != 0 {
+                found.push((entry.path(), flags));
+            }
+        }
+        let scanned = scanned.fetch_add(count, Ordering::Relaxed) + count;
+        let mut proceed = true;
+        if found.is_empty() {
+            if let Ok(mut report) = reported.try_lock() {
+                if report.1.elapsed() >= Duration::from_millis(100) {
+                    report.1 = Instant::now();
+                    proceed = visit(report.0 as *mut c_void, std::ptr::null(), 0, 0, scanned);
+                }
+            }
+            return proceed;
+        }
+        let report = reported.lock().unwrap_or_else(|error| error.into_inner());
+        for (path, flags) in found {
+            let bytes = path.as_os_str().as_encoded_bytes();
+            proceed = visit(report.0 as *mut c_void, bytes.as_ptr().cast(), bytes.len(), flags, scanned);
+            if !proceed {
+                break;
+            }
+        }
+        proceed
+    });
 }

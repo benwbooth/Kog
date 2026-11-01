@@ -5,6 +5,7 @@
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QDirIterator>
+#include <QtCore/QFile>
 #include <QtCore/QFutureWatcher>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSet>
@@ -98,6 +99,16 @@ struct SearchResult {
     int archiveCount = 0;
     bool scanningArchives = false;
 };
+extern "C" {
+// src/file_tree_model.rs. `visit` runs for each match and archive, and with a
+// null path now and then to report progress; returning false ends the walk.
+void kog_file_search_walk(const char *root, const char *query, const std::atomic_bool *cancel,
+                          const std::atomic_bool *paused, void *context,
+                          bool (*visit)(void *, const char *, size_t, uint32_t, uint64_t));
+}
+constexpr uint32_t kogWalkDirectory = 1;
+constexpr uint32_t kogWalkMatched = 2;
+constexpr uint32_t kogWalkArchive = 4;
 struct SearchProgress {
     QMutex mutex;
     std::optional<SearchResult> latest;
@@ -148,24 +159,31 @@ SearchResult scan(const QString &root, const QString &query,
         ++result.matches;
         result.limited = result.matches >= matchLimit || result.paths.size() >= nodeLimit;
     };
-    QDirIterator entries(root, QDir::AllEntries | QDir::NoDotAndDotDot,
-                         QDirIterator::Subdirectories); // Never follow directory symlinks.
+    // The walk itself runs in Rust across a work-stealing thread pool. Only
+    // names that match, and archives, come back here, one thread at a time.
     QStringList archives;
-    while (!cancel->load(std::memory_order_relaxed) && entries.hasNext()) {
-        wait_while_paused();
-        entries.next();
-        const auto info = entries.fileInfo();
-        const auto relative = base.relativeFilePath(info.absoluteFilePath());
-        if (kogIsMetadataPath(info.absoluteFilePath())) continue;
-        if (!info.isDir() && !supportedFile(info.fileName(), extensions)) continue;
-        const bool archive = info.isFile() && kogIsArchive(info.absoluteFilePath());
-        if (matches(info.fileName()))
-            match(relative, {info.absoluteFilePath(), info.isDir(), info.isDir() || archive});
-        if (result.limited) break;
-        if (archive) archives.append(info.absoluteFilePath());
-        ++result.filesScanned;
+    const auto visit = [&](const char *bytes, size_t length, uint32_t flags, uint64_t scanned) {
+        result.filesScanned = int(scanned);
+        if (bytes != nullptr) {
+            const auto path = QFile::decodeName(QByteArray::fromRawData(bytes, qsizetype(length)));
+            const bool directory = flags & kogWalkDirectory;
+            if (directory || supportedFile(path, extensions)) {
+                const bool archive = flags & kogWalkArchive;
+                if (flags & kogWalkMatched)
+                    match(base.relativeFilePath(path), {path, directory, directory || archive});
+                if (archive) archives.append(path);
+            }
+        }
         publish();
-    }
+        return !result.limited;
+    };
+    const auto thunk = [](void *context, const char *bytes, size_t length, uint32_t flags, uint64_t scanned) {
+        return (*static_cast<decltype(visit) *>(context))(bytes, length, flags, scanned);
+    };
+    const auto rootBytes = QFile::encodeName(root);
+    const auto queryBytes = query.toUtf8();
+    kog_file_search_walk(rootBytes.constData(), queryBytes.constData(), cancel.get(), paused.get(),
+                         const_cast<void *>(static_cast<const void *>(&visit)), thunk);
     // Ordinary files must not wait behind a slow solid archive. Search the
     // filesystem first, then stream archive matches into the same stable tree.
     result.archiveCount = archives.size();

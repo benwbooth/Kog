@@ -7,6 +7,7 @@
 pub mod db;
 pub mod effects;
 pub mod equalizer;
+pub mod file_search;
 pub mod media_path;
 pub mod mpris;
 pub mod patch;

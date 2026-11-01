@@ -1769,13 +1769,6 @@ fn walk_library_for_search(
     tokens: Vec<String>,
     shared: Arc<SearchShared>,
 ) {
-    let finish = |matches: &mut Vec<SearchMatch>, limited: bool, shared: &SearchShared| {
-        if !matches.is_empty() {
-            shared.matches.lock().unwrap().extend(matches.drain(..));
-        }
-        shared.limited.store(limited, Ordering::Relaxed);
-        shared.done.store(true, Ordering::Relaxed);
-    };
     let Ok(root) = root.map(Ok).unwrap_or_else(|| library.resolve(None)) else {
         shared.done.store(true, Ordering::Relaxed);
         return;
@@ -1784,121 +1777,88 @@ fn walk_library_for_search(
         kog_audio::settings::AppSettings::load().decoder_settings(),
     );
     let extensions = decoders.audio_extensions();
-    let ascii_query = tokens.iter().all(|token| token.is_ascii());
-    let matched = |name: &str| {
-        if ascii_query && name.is_ascii() {
-            tokens.iter().all(|token| {
-                name.as_bytes()
-                    .windows(token.len())
-                    .any(|window| window.eq_ignore_ascii_case(token.as_bytes()))
-            })
-        } else {
-            let folded = name.to_lowercase();
-            tokens.iter().all(|token| folded.contains(token))
-        }
-    };
-    let mut matches: Vec<SearchMatch> = Vec::new();
-    let mut archives: Vec<std::path::PathBuf> = Vec::new();
-    let mut limited = false;
-    let mut published = 0_usize;
-    let publish = |shared: &SearchShared,
-                   matches: &mut Vec<SearchMatch>,
-                   limited: &mut bool,
-                   published: &mut usize| {
-        *published += matches.len();
-        if *published >= SEARCH_MATCH_LIMIT {
-            *limited = true;
-        }
-        if !matches.is_empty() {
-            shared.matches.lock().unwrap().extend(matches.drain(..));
-        }
-    };
+    let matcher = kog_core::file_search::Matcher::new(&tokens.join(" "));
+    let archives = std::sync::Mutex::new(Vec::new());
 
     // Filesystem pass: every folder and supported file, a match when its own
     // name carries every word, or when it sits under a folder that matched
     // (the folder's whole contents are exposed, matching the desktop).
-    let mut pending = vec![(root, false)];
-    while let Some((directory, inherited)) = pending.pop() {
-        if !shared.wait_until_ready() {
-            return;
+    kog_core::file_search::walk(root, false, |directory, under_matched, subfolders| {
+        if !shared.wait_until_ready() || shared.limited.load(Ordering::Relaxed) {
+            return false;
         }
-        // The flag is inherited by every child when a directory matches.
-        // Rechecking all previously matched directories here made a broad
-        // search increasingly expensive as the walk progressed.
-        let under_matched = inherited;
-        let dir_is_metadata = kog_core::media_path::is_metadata(&directory);
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
+        let dir_is_metadata = kog_core::media_path::is_metadata(directory);
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return true;
         };
+        let mut found = Vec::new();
+        let mut folder_archives = Vec::new();
+        let mut scratch = Vec::new();
+        let mut scanned = 0_u64;
         for entry in entries.filter_map(Result::ok) {
-            if !shared.wait_until_ready() {
-                return;
-            }
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if dir_is_metadata || crate::media_filter::is_hidden_name(&entry.file_name()) {
+            let file_name = entry.file_name();
+            if dir_is_metadata || crate::media_filter::is_hidden_name(&file_name) {
                 continue;
             }
-            shared.scanned.fetch_add(1, Ordering::Relaxed);
-            let path = entry.path();
-            if file_type.is_dir() {
-                let name_match = matched(&name);
-                if name_match {
-                    matches.push(SearchMatch {
-                        name: name.clone(),
-                        path: path.to_string_lossy().into_owned(),
-                        entry: String::new(),
-                        kind: "dir",
-                        is_dir: true,
-                    });
-                    publish(&shared, &mut matches, &mut limited, &mut published);
-                    if limited {
-                        break;
-                    }
-                }
-                pending.push((path, under_matched || name_match));
-                continue;
-            }
-            let Some(extension) = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .map(|extension| extension.to_ascii_lowercase())
-            else {
-                continue;
+            scanned += 1;
+            let bytes = file_name.as_encoded_bytes();
+            let hit = |path: &std::path::Path, kind, is_dir| SearchMatch {
+                name: file_name.to_string_lossy().into_owned(),
+                path: path.to_string_lossy().into_owned(),
+                entry: String::new(),
+                kind,
+                is_dir,
             };
-            if !extensions.contains(&extension) {
+            if file_type.is_dir() {
+                let name_match = matcher.is_match(bytes, &mut scratch);
+                let path = entry.path();
+                if name_match {
+                    found.push(hit(&path, "dir", true));
+                }
+                subfolders.push(path, under_matched || name_match);
+                continue;
+            }
+            if !supported_extension(bytes, &extensions) {
                 continue;
             }
             // An archive is a container: it browses like a folder, and its
             // members are searched in the pass below.
-            let container = kog_audio::archive::is_path(&path);
-            if container {
-                archives.push(path.clone());
+            let name_match = under_matched || matcher.is_match(bytes, &mut scratch);
+            let container = kog_audio::archive::is_path(std::path::Path::new(&file_name));
+            if !name_match && !container {
+                continue;
             }
-            if under_matched || matched(&name) {
+            let path = entry.path();
+            if name_match {
                 // A matching archive surfaces as a folder of its members.
-                matches.push(SearchMatch {
-                    name,
-                    path: path.to_string_lossy().into_owned(),
-                    entry: String::new(),
-                    kind: if container { "dir" } else { "local" },
-                    is_dir: container,
-                });
-                publish(&shared, &mut matches, &mut limited, &mut published);
-                if limited {
-                    break;
-                }
+                found.push(hit(&path, if container { "dir" } else { "local" }, container));
+            }
+            if container {
+                folder_archives.push(path);
             }
         }
-        if limited {
-            break;
+        shared.scanned.fetch_add(scanned, Ordering::Relaxed);
+        if !folder_archives.is_empty() {
+            archives.lock().unwrap().append(&mut folder_archives);
         }
-        if !matches.is_empty() {
-            shared.matches.lock().unwrap().extend(matches.drain(..));
+        if !found.is_empty() {
+            let mut all = shared.matches.lock().unwrap();
+            let remaining = SEARCH_MATCH_LIMIT.saturating_sub(all.len());
+            all.extend(found.into_iter().take(remaining));
+            if all.len() >= SEARCH_MATCH_LIMIT {
+                shared.limited.store(true, Ordering::Relaxed);
+                return false;
+            }
         }
+        true
+    });
+    if shared.cancel.load(Ordering::Relaxed) {
+        return;
     }
+    let archives = archives.into_inner().unwrap();
 
     // Archive pass: list each archive's members and match their names, the
     // desktop's "Archives %2 of %3" stage.
@@ -1906,7 +1866,7 @@ fn walk_library_for_search(
         .archive_count
         .store(archives.len() as u64, Ordering::Relaxed);
     shared.scanning_archives.store(true, Ordering::Relaxed);
-    if !limited && !archives.is_empty() {
+    if !shared.limited.load(Ordering::Relaxed) && !archives.is_empty() {
         // libarchive can spend noticeable time opening an individual solid
         // archive. A small fixed number of workers keeps the search moving
         // without opening thousands of files or saturating the disk at once.
@@ -1920,7 +1880,7 @@ fn walk_library_for_search(
                 let shared = &shared;
                 let archives = &archives;
                 let extensions = &extensions;
-                let matched = &matched;
+                let matcher = &matcher;
                 let next_archive = &next_archive;
                 scope.spawn(move || {
                     loop {
@@ -1945,6 +1905,7 @@ fn walk_library_for_search(
                             }
                         };
                         let mut found = Vec::new();
+                        let mut scratch = Vec::new();
                         for member in members.iter() {
                             if !shared.wait_until_ready() {
                                 break;
@@ -1969,7 +1930,7 @@ fn walk_library_for_search(
                                 }
                             }
                             let base = entry.rsplit('/').next().unwrap_or(entry);
-                            if matched(base) {
+                            if matcher.is_match(base.as_bytes(), &mut scratch) {
                                 found.push(SearchMatch {
                                     name: base.to_owned(),
                                     path: archive.to_string_lossy().into_owned(),
@@ -1996,11 +1957,23 @@ fn walk_library_for_search(
             }
         });
     }
-    finish(
-        &mut matches,
-        limited || shared.limited.load(Ordering::Relaxed),
-        &shared,
-    );
+    shared.done.store(true, Ordering::Relaxed);
+}
+
+/// Whether a file name's extension is a supported one, without allocating:
+/// this runs for every file in the library.
+fn supported_extension(name: &[u8], extensions: &std::collections::HashSet<String>) -> bool {
+    let Some(dot) = name.iter().rposition(|byte| *byte == b'.').filter(|dot| *dot > 0) else {
+        return false;
+    };
+    let extension = &name[dot + 1..];
+    let mut lowercase = [0_u8; 16];
+    let Some(buffer) = lowercase.get_mut(..extension.len()) else {
+        return false;
+    };
+    buffer.copy_from_slice(extension);
+    buffer.make_ascii_lowercase();
+    std::str::from_utf8(buffer).is_ok_and(|extension| extensions.contains(extension))
 }
 
 /// The longest existing ancestor of `path` that is an archive file, with the
@@ -2683,14 +2656,12 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn local_search_pauses_inside_a_folder_and_resumes_without_losing_hits() {
+    fn local_search_pauses_between_folders_and_resumes_without_losing_hits() {
         let directory = tempfile::tempdir().unwrap();
         for index in 0..128 {
-            std::fs::write(
-                directory.path().join(format!("Phantasy Star {index}.mp3")),
-                [],
-            )
-            .unwrap();
+            let folder = directory.path().join(format!("folder {index}"));
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join(format!("Phantasy Star {index}.mp3")), []).unwrap();
         }
         let library = Arc::new(Library::new(
             Some(directory.path().to_path_buf()),
@@ -2701,7 +2672,7 @@ mod tests {
             shared: shared.clone(),
         };
         // Hold the first publication, so pause deterministically lands in the
-        // middle of a flat directory, rather than before or after the scan.
+        // middle of the walk, rather than before or after it.
         let publication = shared.matches.lock().unwrap();
         let worker_shared = shared.clone();
         let worker = std::thread::spawn(move || {
@@ -2713,7 +2684,7 @@ mod tests {
             );
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while search.progress().scanned == 0 {
+        while search.progress().scanned <= 128 {
             assert!(
                 std::time::Instant::now() < deadline,
                 "scanner did not start"
@@ -2728,7 +2699,7 @@ mod tests {
         let (hits, done) = search.results_since(0);
         assert!(!done);
         assert!(!hits.is_empty());
-        assert!(before.scanned < 128);
+        assert!(before.scanned < 256);
         std::thread::sleep(std::time::Duration::from_millis(80));
         assert_eq!(search.progress(), before);
         search.set_paused(false);
