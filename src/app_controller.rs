@@ -192,6 +192,8 @@ pub mod qobject {
         #[qinvokable]
         fn workspace_track_value_at(self: &AppController, index: i32, column: QString) -> QString;
         #[qinvokable]
+        fn shown_total_time(self: &AppController) -> QString;
+        #[qinvokable]
         fn workspace_tab_value_at(
             self: &AppController,
             key: QString,
@@ -3837,6 +3839,28 @@ impl qobject::AppController {
             .unwrap_or_default(),
         )
     }
+    /// The combined length of the queue or playlist tab in front, as h:mm:ss.
+    pub fn shown_total_time(&self) -> QString {
+        let this = self.rust();
+        let total: Duration = if this.workspace_tracks_key == kog_audio::playback_order::workspace::QUEUE_TAB {
+            this.visible_indices
+                .iter()
+                .filter_map(|index| this.tracks.get(*index)?.duration)
+                .sum()
+        } else {
+            this.workspace_tracks
+                .rows
+                .iter()
+                .filter_map(|row| row.track.as_ref()?.duration)
+                .sum()
+        };
+        let seconds = total.as_secs();
+        qstring(match seconds / 3_600 {
+            0 => format!("{}:{:02}", seconds / 60, seconds % 60),
+            hours => format!("{hours}:{:02}:{:02}", seconds / 60 % 60, seconds % 60),
+        })
+    }
+
     pub fn workspace_track_value_at(&self, index: i32, column: QString) -> QString {
         self.metadata_row_value(&self.rust().workspace_tracks.rows, index, column)
     }

@@ -2729,7 +2729,11 @@ ApplicationWindow {
                             const count = workspace.active === "queue"
                                 ? appController.playlist_count
                                 : (workspace.entries || []).length
-                            return count === 1 ? qsTr("1 song") : qsTr("%1 songs").arg(count.toLocaleString(Qt.locale(), "f", 0))
+                            appController.playlist_revision
+                            appController.workspace_metadata_revision
+                            const songs = count === 1 ? qsTr("1 song") : qsTr("%1 songs").arg(count.toLocaleString(Qt.locale(), "f", 0))
+                            const total = appController.shown_total_time()
+                            return total === "0:00" ? songs : songs + " · " + total
                         }
                         font.pixelSize: 10
                         color: root.palette.placeholderText

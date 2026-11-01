@@ -1213,6 +1213,7 @@ struct Ui {
     input_cursor: usize,
     input_select_all: bool,
     search_due: Option<Instant>,
+    shown_total: std::cell::RefCell<Option<((usize, usize, String), u64)>>,
     search: Option<LocalSearch>,
     search_query: String,
     search_root: Option<PathBuf>,
@@ -1629,6 +1630,7 @@ impl Ui {
             input_cursor: 0,
             input_select_all: false,
             search_due: None,
+            shown_total: Default::default(),
             search: None,
             search_query: String::new(),
             search_root: None,
@@ -6355,6 +6357,45 @@ impl Ui {
         }
     }
 
+    /// The combined length of the queue or playlist tab in front. Remembered
+    /// between redraws until the tab, its size or the song info changes.
+    fn shown_total_seconds(&self) -> u64 {
+        let snapshot_key = (
+            self.session.shown_count(),
+            self.metadata.len(),
+            self.session.workspace_model().active().to_owned(),
+        );
+        if let Some((key, seconds)) = &*self.shown_total.borrow() {
+            if *key == snapshot_key {
+                return *seconds;
+            }
+        }
+        let view = self.session.workspace();
+        let total: Duration = if view.active == kog_audio::playback_order::workspace::QUEUE_TAB {
+            self.session
+                .visible()
+                .iter()
+                .filter_map(|index| self.metadata_for(self.tracks.get(*index)?)?.duration)
+                .sum()
+        } else {
+            view.entries
+                .iter()
+                .filter_map(|entry| {
+                    let key = format!(
+                        "{}\0{}\0{}\0{}",
+                        entry["kind"].as_str().unwrap_or("local"),
+                        entry["path"].as_str()?,
+                        entry["entry"].as_str().unwrap_or_default(),
+                        entry["fragment"].as_str().unwrap_or_default(),
+                    );
+                    self.metadata.get(&key)?.as_ref()?.duration
+                })
+                .sum()
+        };
+        *self.shown_total.borrow_mut() = Some((snapshot_key, total.as_secs()));
+        total.as_secs()
+    }
+
     fn visible_tracks(&self) -> Vec<usize> {
         self.session.visible().to_vec()
     }
@@ -9784,7 +9825,15 @@ impl Ui {
         );
         // Songs in the queue or playlist tab in front, by the volume.
         let count = self.session.shown_count();
-        let count_label = if count == 1 { "1 song".to_owned() } else { format!("{count} songs") };
+        let mut count_label = if count == 1 { "1 song".to_owned() } else { format!("{count} songs") };
+        let seconds = self.shown_total_seconds();
+        if seconds > 0 {
+            count_label.push_str(" · ");
+            count_label.push_str(&match seconds / 3_600 {
+                0 => format!("{}:{:02}", seconds / 60, seconds % 60),
+                hours => format!("{hours}:{:02}:{:02}", seconds / 60 % 60, seconds % 60),
+            });
+        }
         let count_row = if volume_row == layout.footer_top { volume_row + 1 } else { volume_row - 1 };
         let count_width = width.saturating_sub(icon_x).saturating_sub(1);
         paint(

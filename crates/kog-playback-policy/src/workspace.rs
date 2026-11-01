@@ -347,6 +347,10 @@ impl Actions {
 }
 
 impl Workspace {
+    pub fn active(&self) -> &str {
+        &self.active
+    }
+
     pub(crate) fn active_rows(&self) -> Option<(&str, &[Row])> {
         self.tabs
             .iter()
