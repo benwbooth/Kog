@@ -187,7 +187,7 @@ impl StreamService {
     /// Serialized to bound native probe work. Each entry resolves in a unique
     /// temporary directory so metadata and playback requests cannot mix.
     pub fn probe_entry(&self, entry: PlaylistEntry) -> Result<StreamProperties, String> {
-        self.probe_entry_with_size(entry).map(|(properties, _)| properties)
+        self.probe_entry_with_size(entry).map(|(properties, ..)| properties)
     }
 
     /// Probe tags and capture the resolved file's size during the same lookup.
@@ -196,7 +196,7 @@ impl StreamService {
     pub fn probe_entry_with_size(
         &self,
         entry: PlaylistEntry,
-    ) -> Result<(StreamProperties, Option<u64>), String> {
+    ) -> Result<(StreamProperties, Option<u64>, Option<&'static str>), String> {
         let _guard = self
             .probe_lock
             .lock()
@@ -209,6 +209,7 @@ impl StreamService {
         } else {
             std::fs::metadata(&source.path).ok().map(|metadata| metadata.len())
         };
+        let backend = decoders.selected_backend_name(&source);
         let mut properties = decoders.probe(&source)?;
         // The album artist and composer never come from a decoder backend;
         // read them the way the desktop's tag path does.
@@ -252,7 +253,7 @@ impl StreamService {
                 properties.album = Some(album);
             }
         }
-        Ok((properties, file_size_bytes))
+        Ok((properties, file_size_bytes, backend))
     }
 
     /// The synthesizer new MIDI streams decode with. `DecoderSettings`
@@ -640,7 +641,7 @@ mod tests {
             DecoderSettings::default(),
             directory.path().join("scratch"),
         );
-        let (_, file_size_bytes) = service
+        let (_, file_size_bytes, _) = service
             .probe_entry_with_size(PlaylistEntry {
                 location: PlaylistLocation::Local(path),
                 fragment: None,

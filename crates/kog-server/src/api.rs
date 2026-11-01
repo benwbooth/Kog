@@ -264,10 +264,16 @@ pub struct MetadataRow {
     pub codec: Option<String>,
     pub bitrate: Option<u32>,
     pub file_size_bytes: Option<u64>,
+    /// The decoder that plays this entry.
+    pub backend: Option<String>,
 }
 
 impl MetadataRow {
-    fn from_properties(properties: StreamProperties, file_size_bytes: Option<u64>) -> Self {
+    fn from_properties(
+        properties: StreamProperties,
+        file_size_bytes: Option<u64>,
+        backend: Option<&str>,
+    ) -> Self {
         Self {
             title: properties.title,
             artist: properties.artist,
@@ -285,6 +291,7 @@ impl MetadataRow {
             codec: properties.codec,
             bitrate: properties.bitrate,
             file_size_bytes,
+            backend: backend.map(str::to_owned),
         }
     }
 }
@@ -351,8 +358,8 @@ fn probe_metadata(
     Ok(streams
         .probe_entry_with_size(source)
         .ok()
-        .map(|(properties, file_size_bytes)| {
-            MetadataRow::from_properties(properties, file_size_bytes)
+        .map(|(properties, file_size_bytes, backend)| {
+            MetadataRow::from_properties(properties, file_size_bytes, backend)
         }))
 }
 
@@ -2958,14 +2965,16 @@ mod tests {
             codec: None,
             bitrate: None,
             file_size_bytes: None,
+            backend: None,
         }
     }
 
     #[test]
     fn metadata_serializes_exact_file_bytes() {
-        let row = MetadataRow::from_properties(StreamProperties::default(), Some(1_572_864));
+        let row = MetadataRow::from_properties(StreamProperties::default(), Some(1_572_864), Some("libvgm"));
         let json = serde_json::to_value(row).unwrap();
         assert_eq!(json["fileSizeBytes"], 1_572_864);
+        assert_eq!(json["backend"], "libvgm");
     }
 
     #[test]

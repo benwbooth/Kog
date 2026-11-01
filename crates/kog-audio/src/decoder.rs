@@ -1168,6 +1168,10 @@ impl DecoderRegistry {
             .map(|properties| (backend.id(), properties))
     }
 
+    pub fn selected_backend_name(&self, source: &PlaybackSource) -> Option<&'static str> {
+        self.select_source(source).map(DecoderBackend::display_name)
+    }
+
     pub fn selected_backend_id(&self, source: &PlaybackSource) -> Option<&'static str> {
         self.select_source(source).map(DecoderBackend::id)
     }

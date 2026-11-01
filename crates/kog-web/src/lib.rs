@@ -326,6 +326,7 @@ struct MetaRow {
     codec: Option<String>,
     bitrate: Option<u32>,
     file_size_bytes: Option<u64>,
+    backend: Option<String>,
 }
 
 /// The columns the pane sorts by, matching the visible header order.
@@ -5037,33 +5038,35 @@ fn App() -> impl IntoView {
     };
 
 
-    // The pane's status line, shared by the header and the transport: how many
-    // tracks the pane shows (all of the queue, or the filter's matches) and
-    // their total probed duration, in the desktop's footer spirit.
+    // The transport's status line, in the desktop's footer spirit: the decoder
+    // playing the current song, how many songs a filter left (the count above
+    // already gives the unfiltered total) and their total probed duration.
     let status_line = move || -> String {
         let cache = metadata.read();
         let total = pane_entries.read().len();
         let rows = all_rows.read();
         let shown = rows.len();
-        let mut text = if shown == total {
-            if total == 1 {
-                "1 track".to_owned()
-            } else {
-                format!("{total} tracks")
+        let mut parts = Vec::new();
+        if !stopped.get() {
+            if let Some(backend) = current_entry()
+                .and_then(|entry| meta_for(&cache, &entry))
+                .and_then(|meta| meta.backend)
+            {
+                parts.push(format!("Playing with {backend}"));
             }
-        } else {
-            format!("{shown} of {total}")
-        };
+        }
+        if shown != total {
+            parts.push(format!("{shown} of {total}"));
+        }
         let seconds: f64 = rows
             .iter()
             .filter_map(|(_, entry)| meta_for(&cache, entry))
             .filter_map(|meta| meta.duration)
             .sum();
         if seconds > 0.0 {
-            text.push_str(" · ");
-            text.push_str(&clock(seconds));
+            parts.push(clock(seconds));
         }
-        text
+        parts.join(" · ")
     };
 
     let queue_files = move |directory: &str| -> Vec<Entry> {
