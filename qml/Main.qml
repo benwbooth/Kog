@@ -2793,9 +2793,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignRight
                     text: {
-                        if (root.footer.transientStatus)
-                            return appController.status
-                        return appController.total_duration
+                        return root.footer.transientStatus ? appController.status : ""
                     }
                     font.pixelSize: 10
                     color: root.palette.placeholderText

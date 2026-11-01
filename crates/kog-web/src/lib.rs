@@ -5038,35 +5038,28 @@ fn App() -> impl IntoView {
     };
 
 
-    // The transport's status line, in the desktop's footer spirit: the decoder
-    // playing the current song, how many songs a filter left (the count above
-    // already gives the unfiltered total) and their total probed duration.
+    // The transport's status line, as on the desktop: the decoder playing the
+    // current song.
     let status_line = move || -> String {
         let cache = metadata.read();
-        let total = pane_entries.read().len();
-        let rows = all_rows.read();
-        let shown = rows.len();
-        let mut parts = Vec::new();
-        if !stopped.get() {
-            if let Some(backend) = current_entry()
-                .and_then(|entry| meta_for(&cache, &entry))
-                .and_then(|meta| meta.backend)
-            {
-                parts.push(format!("Playing with {backend}"));
-            }
+        if stopped.get() {
+            return String::new();
         }
-        if shown != total {
-            parts.push(format!("{shown} of {total}"));
-        }
-        let seconds: f64 = rows
+        current_entry()
+            .and_then(|entry| meta_for(&cache, &entry))
+            .and_then(|meta| meta.backend)
+            .map(|backend| format!("Playing with {backend}"))
+            .unwrap_or_default()
+    };
+    // The total probed length of what the pane lists.
+    let pane_total = move || -> f64 {
+        let cache = metadata.read();
+        all_rows
+            .read()
             .iter()
             .filter_map(|(_, entry)| meta_for(&cache, entry))
             .filter_map(|meta| meta.duration)
-            .sum();
-        if seconds > 0.0 {
-            parts.push(clock(seconds));
-        }
-        parts.join(" · ")
+            .sum()
     };
 
     let queue_files = move |directory: &str| -> Vec<Entry> {
@@ -7898,7 +7891,9 @@ fn App() -> impl IntoView {
                                 } else {
                                     pane_entries.read().len()
                                 };
-                                if count == 1 { "1 song".to_owned() } else { format!("{count} songs") }
+                                let songs = if count == 1 { "1 song".to_owned() } else { format!("{count} songs") };
+                                let seconds = pane_total();
+                                if seconds > 0.0 { format!("{songs} · {}", clock(seconds)) } else { songs }
                             }}
                         </div>
                         <div class="volume-row">
