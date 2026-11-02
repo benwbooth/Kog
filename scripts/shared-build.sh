@@ -30,6 +30,16 @@ trap open_target EXIT
 # output: a file only one side has would make the other side rebuild.
 sync=(rsync -lc --no-times --no-perms --chmod=a+rwX)
 if [[ -e "$source_dir/.git" ]]; then
+  # Nix fetches raw blobs, but some submodules ask Git for CRLF on checkout.
+  # Any difference under native/ reruns the native build, so turn that off.
+  git -C "$source_dir" submodule --quiet foreach --recursive '
+    attributes="$(git rev-parse --git-path info/attributes)"
+    grep -qsx "* -text" "$attributes" && exit 0
+    mkdir -p "$(dirname "$attributes")"
+    echo "* -text" >>"$attributes"
+    git ls-files --eol | awk "\$2 ~ /crlf|mixed/ {print \$NF}" | xargs -r rm -f
+    git checkout-index -a
+  '
   file_list="$work_dir/source-files"
   {
     git -C "$source_dir" ls-files -z --recurse-submodules
