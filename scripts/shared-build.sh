@@ -37,8 +37,7 @@ if [[ -e "$source_dir/.git" ]]; then
     grep -qsx "* -text" "$attributes" && exit 0
     mkdir -p "$(dirname "$attributes")"
     echo "* -text" >>"$attributes"
-    git ls-files --eol | awk "\$2 ~ /crlf|mixed/ {print \$NF}" | xargs -r rm -f
-    git checkout-index -a
+    git checkout -q -- .
   '
   file_list="$work_dir/source-files"
   {
