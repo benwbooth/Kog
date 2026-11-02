@@ -20,8 +20,8 @@
 #
 # The app's own output goes to target/dev-app.log.
 #
-# Editing flake.nix rebuilds the whole dev shell environment and invalidates
-# cargo's cache; avoid it while iterating.
+# Debug builds go through scripts/shared-build.sh, which is what lets `nix
+# build` and the system package reuse them. target/debug links to that build.
 
 set -uo pipefail
 
@@ -47,6 +47,11 @@ while (( $# )); do
   esac
   shift
 done
+
+if [[ -z "${KOG_CARGO_VENDOR:-}" ]]; then
+  echo "this dev shell is out of date: leave it and start 'nix develop' again." >&2
+  exit 1
+fi
 
 for tool in cargo watchexec; do
   command -v "$tool" >/dev/null || {
@@ -82,6 +87,30 @@ web_assets_stale() {
   return 1
 }
 
+cargo_command=(cargo)
+if [[ "$profile" == "debug" ]]; then
+  cargo_command=(scripts/shared-build.sh "$root")
+  if [[ ! -L target/debug ]]; then
+    mkdir -p target /var/tmp/cargo-nix/kog/target/debug
+    rm -rf target/debug
+    ln -s /var/tmp/cargo-nix/kog/target/debug target/debug
+  fi
+fi
+
+# True when watchexec reports only .qml edits and this is a debug run.
+qml_only_change() {
+  local paths="${WATCHEXEC_WRITTEN_PATH:-}:${WATCHEXEC_CREATED_PATH:-}:${WATCHEXEC_RENAMED_PATH:-}:${WATCHEXEC_META_CHANGED_PATH:-}"
+  local path found=1
+  [[ "$mode" == "run" && "$profile" == "debug" && -x "$binary" ]] || return 1
+  IFS=: read -ra paths <<<"$paths"
+  for path in "${paths[@]}"; do
+    [[ -n "$path" ]] || continue
+    [[ "$path" == *.qml ]] || return 1
+    found=0
+  done
+  return "$found"
+}
+
 # --------------------------------------------------------------------- step
 #
 # One build-and-swap pass. This is what watchexec runs on every settled change.
@@ -103,17 +132,21 @@ if (( step )); then
   fi
 
   case "$mode" in
-    check) command=(cargo check "${profile_args[@]}" --workspace) ;;
-    test) command=(cargo test "${profile_args[@]}" --workspace) ;;
+    check) command=("${cargo_command[@]}" check "${profile_args[@]}" --workspace) ;;
+    test) command=("${cargo_command[@]}" test "${profile_args[@]}" --workspace) ;;
     # Keep the standalone terminal/server executables current alongside kog.
     # Otherwise an older kog-tui can keep writing decoder diagnostics over
     # the screen even though the shared TUI code has already been fixed.
-    run) command=(cargo build "${profile_args[@]}" --workspace --bins) ;;
+    run) command=("${cargo_command[@]}" build "${profile_args[@]}" --workspace --bins) ;;
   esac
 
-  if ! "${command[@]}"; then
-    echo "[dev] build failed; keeping the running app" >&2
-    exit 1
+  # Debug runs load QML from the source tree, so a QML edit only needs the app
+  # restarted. The next compile embeds it.
+  if ! qml_only_change; then
+    if ! "${command[@]}"; then
+      echo "[dev] build failed; keeping the running app" >&2
+      exit 1
+    fi
   fi
 
   if [[ "$mode" == "run" ]]; then

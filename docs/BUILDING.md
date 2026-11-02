@@ -34,13 +34,15 @@ links a very large Qt binary. After that:
 
 - Only the crates you touched are recompiled, and `mold` (configured in the dev
   shell) cuts the app's link step to seconds.
-- Avoid editing `flake.nix` while iterating. It rebuilds the shell environment,
-  which changes the compiler flags for every build script and forces the native
-  libraries to rebuild.
+- Editing `flake.nix` needs a fresh `nix develop`, and can rebuild the native
+  libraries.
 - `--check` compiles no binary at all, so it is the quickest way to chase a type
   error.
-- Do not iterate with `nix build`: that is a release build in a sandbox from a
-  fresh source tree.
+- `scripts/dev.sh` builds in `/var/tmp/cargo-nix/kog`, and `target/debug` links
+  there. `nix build` and the system package use the same directory, so they
+  reuse the dev build, but `nix build` itself is slow to iterate with: it copies
+  `native/` into the store first. Running `cargo` by hand in the checkout builds
+  separately into `target/`; use `scripts/shared-build.sh . <command>` instead.
 
 For an existing checkout, initialize the native sources first:
 

@@ -5360,7 +5360,11 @@ impl qobject::AppController {
 
     /// The revision stamped into this build, for the title bar and About box.
     pub fn build_revision(&self) -> QString {
-        qstring(env!("KOG_BUILD_REV"))
+        // The Nix package sets this in a wrapper, so a commit doesn't recompile.
+        match std::env::var("KOG_BUILD_REV") {
+            Ok(revision) => qstring(&revision),
+            Err(_) => qstring(env!("KOG_BUILD_REV")),
+        }
     }
 
     /// When this binary was linked, in milliseconds since the epoch, so QML can

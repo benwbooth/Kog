@@ -52,6 +52,23 @@
           buildInputs = (previous.buildInputs or [ ]) ++ [ pkgs.lz4 ];
           configureFlags = (previous.configureFlags or [ ]) ++ [ "--with-lz4" ];
         });
+        # Read as a string so the store path only changes with the lock's
+        # content, not with every source tree or commit.
+        KOG_CARGO_VENDOR = (crane.mkLib pkgs).vendorCargoDeps {
+          cargoLockContents = builtins.readFile ./Cargo.lock;
+        };
+        LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+        kogLibraries = qtModules ++ [ kogFfmpeg kogLibarchive pkgs.alsa-lib pkgs.zlib pkgs.libxcb-cursor ];
+        # What the package's setup hooks compute, propagated libraries
+        # included, so the dev loop can use exactly the same search path.
+        KOG_PKG_CONFIG_PATH = pkgs.runCommand "kog-pkg-config-path"
+          {
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = kogLibraries;
+          }
+          ''
+            printf %s "$PKG_CONFIG_PATH" > $out
+          '';
         linuxRuntimeLibraries = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.libxcb-cursor
         ];
@@ -110,165 +127,94 @@
                   'gzip -9 -c "$1" > "$1.gz"' _ {} \;
               '';
             };
-            # Shared build environment for the dependency closure and the
-            # final crate: third-party dependencies compile once and stay
-            # cached while only Kog itself rebuilds per tag.
-            #
-            # Version bumps must NOT invalidate that cache: the dependency
-            # graph never depends on our own version string, so the deps
-            # build sees manifests with the version pinned to a constant
-            # while the final package builds the real tree (and reports
-            # the real version).
-            # CXX-Qt caches absolute header paths. Both Cargo passes must use
-            # /build/source so those paths still resolve in the final build.
-            normalize = tree: pkgs.runCommand "source"
-              {
-                nativeBuildInputs = [ pkgs.python3 ];
-              }
-              ''
-                cp -r ${tree} $out
-                chmod -R u+w $out
-                ${pkgs.python3}/bin/python3 - <<'PYEOF'
-                import os
-                import re
-                import tomllib
-                root = os.environ["out"]
-                # Every workspace member manifest: pin the version constant so
-                # release bumps cannot invalidate the cached dependency build.
-                manifests = [os.path.join(root, "Cargo.toml")]
-                workspace = tomllib.loads(open(manifests[0]).read())["workspace"]
-                manifests += [os.path.join(root, member, "Cargo.toml")
-                              for member in workspace["members"]]
-                names = []
-                for manifest in manifests:
-                    text = open(manifest).read()
-                    names.append(tomllib.loads(text)["package"]["name"])
-                    text, count = re.subn(
-                        r'(\[package\]\s*\n(?:(?!\[)[^\n]*\n)*?version = ")[^"]*(")',
-                        r"\g<1>0.0.0\g<2>", text, count=1,
-                    )
-                    assert count == 1, manifest + " has no package version"
-                    open(manifest, "w").write(text)
-                lock = os.path.join(root, "Cargo.lock")
-                text = open(lock).read()
-                for name in names:
-                    text, count = re.subn(
-                        r'(\[\[package\]\]\nname = "' + name + r'"\nversion = ")[^"]*(")',
-                        r"\g<1>0.0.0\g<2>",
-                        text,
-                        count=1,
-                    )
-                    assert count == 1, name + " stanza not found in Cargo.lock"
-                open(lock, "w").write(text)
-                PYEOF
-              '';
-            normalizedSrc = normalize (pkgs.lib.cleanSource ./.);
-            # Just what the bundled C/C++ libraries need: the workspace
-            # manifests, the kog-native crate and native/. Its store path only
-            # changes when one of those does, so their build stays cached
-            # through every Rust-only change.
-            nativeTree = normalize (pkgs.lib.fileset.toSource {
-              root = ./.;
-              fileset = pkgs.lib.fileset.unions ([
-                ./Cargo.toml
-                ./Cargo.lock
-                ./crates/kog-native
-                ./native
-                # Targets of the root manifest's [patch.crates-io].
-                ./vendor
-              ] ++ map (member: ./. + "/${member}/Cargo.toml") (builtins.filter (member: member != "crates/kog-native")
-                (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.members));
-            });
-            commonArgs = {
-              src = pkgs.lib.cleanSource ./.;
-              nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.clang pkgs.mold pkgs.qt6.wrapQtAppsHook ];
-              # Fast links: the final binary is huge (Qt/C++ in release).
-              RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
+            # One compile for dev and the system: this builds in the target
+            # directory scripts/dev.sh uses, so it reuses what the dev loop
+            # compiled. Falls back to a throwaway directory when the sandbox
+            # doesn't expose the cache.
+            compiled = pkgs.stdenv.mkDerivation {
+              pname = "kog";
+              version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+              src = ./.;
+              nativeBuildInputs = [
+                pkgs.cargo
+                pkgs.rustc
+                pkgs.cmake
+                pkgs.ninja
+                pkgs.pkg-config
+                pkgs.clang
+                pkgs.mold
+                pkgs.rsync
+                pkgs.qt6.wrapQtAppsHook
+              ];
+              buildInputs = kogLibraries;
+              inherit KOG_CARGO_VENDOR KOG_PKG_CONFIG_PATH LIBCLANG_PATH;
+              QMAKE = "${qtEnv}/bin/qmake";
               # Cargo invokes CMake/Ninja for decoder libraries; they must not
               # replace Cargo's top-level configure/build/install phases.
               dontUseCmakeConfigure = true;
               dontUseNinjaBuild = true;
               dontUseNinjaCheck = true;
               dontUseNinjaInstall = true;
-              buildInputs = qtModules ++ [ kogFfmpeg kogLibarchive pkgs.alsa-lib pkgs.zlib pkgs.libxcb-cursor ];
-              QMAKE = "${qtEnv}/bin/qmake";
-              LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-              preBuild = ''
+              dontConfigure = true;
+              # Rewriting native/**/config.guess would mark native/ as changed.
+              dontUpdateAutotoolsGnuConfigScripts = true;
+              buildPhase = ''
+                runHook preBuild
                 export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
                 # Qt's setup hook can replace QMAKE with qtbase's split output.
                 # CXX-Qt needs the combined installation's QML .prl metadata.
                 export QMAKE="${qtEnv}/bin/qmake"
                 export QT_INCLUDE_PATH="${qtEnv}/include"
                 export QT_LIBEXEC_PATH="${qtEnv}/libexec"
+                # The crate falls back to a committed placeholder page.
+                rm -rf crates/kog-server/web
+                mkdir -p crates/kog-server/web
+                cp -r ${kogWeb}/. crates/kog-server/web/
+                chmod -R u+w crates/kog-server/web
+                # A build script rerun by a different user can't reuse the
+                # other's output directory, so build privately if this fails.
+                export KOG_WORK_DIR=/var/tmp/cargo-nix/kog
+                if ! { [ -w /var/tmp/cargo-nix ] && bash scripts/shared-build.sh . build --workspace --bins; }; then
+                  export KOG_WORK_DIR=$TMPDIR/cargo-nix
+                  bash scripts/shared-build.sh . build --workspace --bins
+                fi
+                mkdir -p bin
+                cp "$KOG_WORK_DIR"/target/debug/{kog,kog-tui,kog-server} bin/
+                runHook postBuild
+              '';
+              installPhase = ''
+                runHook preInstall
+                install -Dm755 -t "$out/bin" bin/*
+                install -Dm644 packaging/linux/org.kog.player.desktop "$out/share/applications/org.kog.player.desktop"
+                install -Dm644 qml/icons/kog.svg "$out/share/icons/hicolor/scalable/apps/org.kog.player.svg"
+                install -Dm644 packaging/linux/org.kog.player.metainfo.xml "$out/share/metainfo/org.kog.player.metainfo.xml"
+                runHook postInstall
               '';
             };
-            cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
-              src = normalizedSrc;
-              # The dummy workspace crane synthesizes for the deps pass does
-              # not round-trip every member manifest, so `--locked` would
-              # reject its own synthetic lock. Resolution is still pinned by
-              # the vendored crate set, so dropping the flag is safe here;
-              # the real package build below keeps `--locked`.
-              cargoExtraArgs = "";
-            });
-            # The bundled C/C++ libraries, built once per change to native/
-            # on top of the dependency cache; the package build reuses them.
-            nativeArtifacts = craneLib.cargoBuild (commonArgs // {
-              pname = "kog-native";
-              src = craneLib.mkDummySrc {
-                src = nativeTree;
-                # nativeTree leaves out the Rust sources, so mkDummySrc cannot
-                # detect the auto-discovered targets and Cargo would reject
-                # the manifests; stub them here.
-                extraDummyScript = ''
-                  mkdir -p $out/src
-                  [ -e $out/src/main.rs ] || echo 'fn main() {}' > $out/src/main.rs
-                  for member in $out/crates/*/; do
-                    [ -e $member/Cargo.toml ] || continue
-                    mkdir -p $member/src
-                    [ -e $member/src/lib.rs ] || touch $member/src/lib.rs
-                  done
-                  rm -rf $out/crates/kog-native $out/native
-                  cp -r ${nativeTree}/crates/kog-native $out/crates/kog-native
-                  cp -r ${nativeTree}/native $out/native
-                '';
-              };
-              inherit cargoArtifacts;
-              cargoExtraArgs = "-p kog-native";
-              doCheck = false;
-            });
           in
           {
             # Exposed so the frontend can be built (and inspected) on its own:
             # release jobs build it, then the package build embeds it.
             kog-web = kogWeb;
-            default = craneLib.buildPackage (
-              commonArgs
-              // {
-                cargoArtifacts = nativeArtifacts;
-                KOG_BUILD_REV = inputs.self.shortRev or inputs.self.dirtyShortRev or "unknown";
-                # Embed the built frontend here, not in the shared args: the
-                # deps derivation uses a synthetic tree with no web directory.
-                # The crate falls back to a committed placeholder page.
-                preBuild = commonArgs.preBuild + ''
-                  rm -rf crates/kog-server/web
-                  mkdir -p crates/kog-server/web
-                  cp -r ${kogWeb}/. crates/kog-server/web/
-                '';
-                postInstall = ''
-                  install -Dm644 packaging/linux/org.kog.player.desktop "$out/share/applications/org.kog.player.desktop"
-                  install -Dm644 qml/icons/kog.svg "$out/share/icons/hicolor/scalable/apps/org.kog.player.svg"
-                  install -Dm644 packaging/linux/org.kog.player.metainfo.xml "$out/share/metainfo/org.kog.player.metainfo.xml"
-                '';
-                meta = {
-                  description = "Format-comprehensive local music player";
-                  homepage = "https://github.com/benwbooth/Kog";
-                  license = pkgs.lib.licenses.gpl3Plus;
-                  platforms = pkgs.lib.platforms.linux;
-                  mainProgram = "kog";
-                };
-              }
-            );
+            inherit compiled;
+            # The revision lives here rather than in the compiled package, so
+            # a commit that doesn't change the source reuses the compile.
+            default = pkgs.symlinkJoin {
+              name = "kog-${compiled.version}";
+              paths = [ compiled ];
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+              postBuild = ''
+                wrapProgram $out/bin/kog \
+                  --set KOG_BUILD_REV "${inputs.self.shortRev or inputs.self.dirtyShortRev or "unknown"}"
+              '';
+              meta = {
+                description = "Format-comprehensive local music player";
+                homepage = "https://github.com/benwbooth/Kog";
+                license = pkgs.lib.licenses.gpl3Plus;
+                platforms = pkgs.lib.platforms.linux;
+                mainProgram = "kog";
+              };
+            };
           }
         );
         apps = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
@@ -288,6 +234,7 @@
               pkg-config
               lld
               mold
+              rsync
               rust-analyzer
               rustc
               rustfmt
@@ -303,16 +250,13 @@
             ++ qtModules;
 
           QMAKE = "${qtEnv}/bin/qmake";
+          inherit KOG_CARGO_VENDOR KOG_PKG_CONFIG_PATH LIBCLANG_PATH;
           FLAKE_INPUTS = builtins.concatStringsSep ":" (
             map (input: input.outPath) (builtins.attrValues (builtins.removeAttrs inputs [ "self" ]))
           );
 
           shellHook = ''
             export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
-            # Kog's final link is large; mold cuts it to a few seconds, which
-            # is what makes the dev loop feel instant. Kept in the shell (not
-            # a script) so every cargo invocation here shares one fingerprint.
-            export RUSTFLAGS="''${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
             # The host environment can carry NIX_CFLAGS_LINK="-L/usr/lib",
             # and on NixOS /usr/lib holds the system's glibc, which can be
             # newer than the shell's; a binary linked against it won't load.

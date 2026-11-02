@@ -64,8 +64,12 @@ pkg-config = "0.3.32"
 # heavier songs underrun and play nothing. The UI crates stay quick to build.
 # Nobody debugs Kog with a debugger: without debug info the binary is a
 # fraction of the size and links in seconds instead of minutes.
+# This profile also builds the system package, which reuses the dev build, so
+# Kog's own crates get a light pass and nothing keeps symbols.
 [profile.dev]
 debug = 0
+strip = true
+opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2
