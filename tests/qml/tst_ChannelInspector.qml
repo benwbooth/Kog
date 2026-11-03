@@ -19,6 +19,10 @@ TestCase {
         property string now_title: "Inspection fixture"
         property int requests: 0
         function channel_snapshot() { requests++; return JSON.stringify(test.state) }
+        function piano_roll() {
+            return JSON.stringify({position: 4, lanes: [{id: 0, name: "Pulse 1", hue: 200}, {id: 1, name: "Triangle", hue: 337}],
+                bars: [{lane: 0, key: 60, start: 1, end: 3, velocity: 1}, {lane: 1, key: 43, start: 2, end: 4, velocity: 0.5}]})
+        }
         function play_pause() { test.state = Object.assign({}, test.state, {playing:!test.state.playing}) }
         property int barRequests: 0
         property int mmlCurrent: 1
@@ -109,7 +113,7 @@ TestCase {
     function test_views_are_tabs_and_show_mode_opens_one() {
         const tabs = findChild(inspector, "channelInspectorMode")
         verify(tabs !== null && tabs.visible)
-        compare(tabs.count, 4)
+        compare(tabs.count, 5)
         compare(tabs.currentIndex, 2)
         tabs.itemAt(3).clicked()
         compare(inspector.mode, 3)
@@ -119,6 +123,26 @@ TestCase {
         tryCompare(inspector, "visible", true)
         compare(inspector.mode, 1)
         compare(tabs.currentIndex, 1)
+    }
+
+    function test_piano_roll_draws_each_channel_in_its_color() {
+        inspector.mode = 4
+        inspector.refresh()
+        const roll = findChild(inspector, "pianoRoll")
+        verify(roll.visible)
+        compare(inspector.roll.bars.length, 2)
+        compare(findChild(inspector, "channelKeyboards").visible, false)
+        waitForRendering(roll)
+        const image = grabImage(roll)
+        // The Pulse 1 bar is light blue, past the key labels and before now.
+        let found = false
+        for (let x = 40; x < roll.width && !found; x += 4)
+            for (let y = 0; y < roll.height && !found; y += 2) {
+                const pixel = image.pixel(x, y)
+                found = pixel.b > 0.6 && pixel.r < 0.5
+            }
+        verify(found, "a blue bar is drawn")
+        inspector.mode = 2
     }
 
     function test_mml_guide_opens_with_chapters() {
@@ -279,7 +303,9 @@ TestCase {
         keyboards.contentY = 0
         wait(40)
         mouseWheel(keyboards, 400, 100, 0, -120, Qt.NoButton, Qt.NoModifier)
-        verify(keyboards.contentY >= 40, "scroll input must move on the input event")
+        // The wheel eases in, as Chrome's does, so it starts moving at once
+        // without jumping.
+        tryVerify(() => keyboards.contentY > 0, 50, "scroll input must start moving at once")
         tryVerify(() => keyboards.contentY >= 119, 250)
         keyboards.contentY = 0
     }

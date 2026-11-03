@@ -2157,6 +2157,7 @@ ApplicationWindow {
             Action { text: qsTr("Channel Keyboards"); icon.name: "input-keyboard"; onTriggered: channelInspector.showMode(0) }
             Action { text: qsTr("Channel Tracker"); icon.name: "view-list-text"; onTriggered: channelInspector.showMode(1) }
             Action { text: qsTr("MML Score"); icon.name: "text-x-generic"; onTriggered: channelInspector.showMode(3) }
+            Action { text: qsTr("Piano Roll"); icon.name: "view-media-equalizer"; onTriggered: channelInspector.showMode(4) }
         }
 
         Menu {

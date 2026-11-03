@@ -2698,11 +2698,11 @@ impl Ui {
                 };
             }
             (MenuPage::View, 7) => self.show_artwork(),
-            (MenuPage::View, 8..=11) => {
+            (MenuPage::View, 8..=12) => {
                 self.modal = None;
                 self.visualizer_open = false;
                 // Each Channel Inspector view has its own entry.
-                self.inspector.show([3, 1, 2, 4][index - 8]);
+                self.inspector.show([3, 1, 2, 4, 5][index - 8]);
             }
             (MenuPage::Playback, 0) => self.play_pause(),
             (MenuPage::Playback, 1) => {
@@ -7424,7 +7424,7 @@ impl Ui {
         if self.inspector.open {
             if button == 64 || button == 65 { self.inspector.wheel(button == 65); }
             if !release && button == 0 && y == 1 {
-                self.inspector.key(if x < 14 {Key::Char('1')} else if x < 26 {Key::Char('2')} else if x < 36 {Key::Char('3')} else if x < 44 {Key::Char('4')} else if x < 56 {Key::Char('d')} else if x < 73 {Key::Char('f')} else {Key::Esc});
+                self.inspector.key(if x < 14 {Key::Char('1')} else if x < 26 {Key::Char('2')} else if x < 36 {Key::Char('3')} else if x < 44 {Key::Char('4')} else if x < 53 {Key::Char('5')} else if x < 65 {Key::Char('d')} else if x < 82 {Key::Char('f')} else {Key::Esc});
             }
             return;
         }
@@ -11073,7 +11073,7 @@ const REMOTE_MENU: [&str; 9] = [
     "Queue Current Folder",
     "Use Local Library",
 ];
-const VIEW_MENU: [&str; 12] = [
+const VIEW_MENU: [&str; 13] = [
     "Show/Hide Files and Playlists",
     "Track Info…",
     "Lyrics…",
@@ -11086,6 +11086,7 @@ const VIEW_MENU: [&str; 12] = [
     "Channel Keyboards…",
     "Channel Tracker…",
     "MML Score…",
+    "Piano Roll…",
 ];
 const PLAYBACK_MENU: [&str; 14] = [
     "Play/Pause",

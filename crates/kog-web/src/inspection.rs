@@ -1,6 +1,7 @@
 //! Musical channel inspector. Cached windows are selected against the browser
 //! audio clock; the encoder's current position never drives the highlighted row.
 use super::*;
+use kog_inspection::piano_roll::PianoRoll;
 use kog_inspection::{
     Channel, Snapshot, Window as ChannelWindow, missing_window_position, note_name,
 };
@@ -14,11 +15,12 @@ struct Reply {
 }
 
 /// The inspector's views, as mode values and labels.
-pub const VIEWS: [(&str, &str); 4] = [
+pub const VIEWS: [(&str, &str); 5] = [
     ("both", "Keyboards + tracker"),
     ("keyboards", "Keyboards"),
     ("tracker", "Tracker"),
     ("mml", "MML score"),
+    ("roll", "Piano roll"),
 ];
 
 /// Semitones off a key before the keyboard marks a bend. Chips with period
@@ -34,7 +36,7 @@ pub fn Inspector(
     close: Callback<()>,
     toggle_play: Callback<()>,
     authorization: Signal<Option<String>>,
-    /// Which view is showing: "both", "keyboards", "tracker" or "mml".
+    /// Which view is showing: "both", "keyboards", "tracker", "mml" or "roll".
     mode: RwSignal<String>,
 ) -> impl IntoView {
     let state = RwSignal::new(Snapshot::default());
@@ -48,11 +50,14 @@ pub fn Inspector(
     let last_request = Rc::new(Cell::new(0.0));
     let last_data_position = Cell::new(f64::NEG_INFINITY);
     let request_generation = Rc::new(Cell::new(0u64));
+    let roll = Rc::new(RefCell::new(PianoRoll::default()));
+    let roll_canvas = NodeRef::<leptos::html::Canvas>::new();
     let tick = Closure::<dyn FnMut()>::new(move || {
         if !open.get_untracked() {
             return;
         }
         if stopped.get_untracked() {
+            roll.borrow_mut().clear();
             state.set(Snapshot::default());
             message.set("Play a track to inspect its channels.".into());
             return;
@@ -125,6 +130,17 @@ pub fn Inspector(
             }
             missing_window_position(&windows, position, 2.0)
         };
+        if mode.get_untracked() == "roll" {
+            let mut roll = roll.borrow_mut();
+            state.with_untracked(|snapshot| {
+                if !snapshot.seeking {
+                    roll.update(snapshot.position, &snapshot.channels);
+                }
+            });
+            if let Some(canvas) = roll_canvas.get_untracked() {
+                draw_roll(&canvas, &roll);
+            }
+        }
         let Some(requested) = requested else { return };
         if pending.get() || js_sys::Date::now() - last_request.get() < 400.0 {
             return;
@@ -285,6 +301,9 @@ pub fn Inspector(
                 <p class="channel-description">{move || message.get()}</p>
                 <Show when=move || mode.get() == "mml">
                     <super::mml::MmlView audio=audio follow=follow_read authorization=authorization/>
+                </Show>
+                <Show when=move || mode.get() == "roll">
+                    <canvas class="piano-roll" node_ref=roll_canvas></canvas>
                 </Show>
                 <Show when=move || matches!(mode.get().as_str(), "both" | "keyboards")>
                     <div class="channel-keyboards">
@@ -448,5 +467,74 @@ fn draw_keyboard(
                 white += 1;
             }
         }
+    }
+}
+
+/// Seconds of the piano roll in view; now is the right edge.
+const ROLL_SECONDS: f64 = 8.0;
+
+/// The piano roll as the desktop draws it: each channel's notes as bars in its
+/// own color, octaves marked down the left, the newest notes at the right.
+fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll) {
+    let ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio());
+    let (width, height) = (f64::from(canvas.client_width()), f64::from(canvas.client_height()));
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let (pixel_width, pixel_height) = ((width * ratio) as u32, (height * ratio) as u32);
+    if canvas.width() != pixel_width || canvas.height() != pixel_height {
+        canvas.set_width(pixel_width);
+        canvas.set_height(pixel_height);
+    }
+    let Some(ctx) = canvas
+        .get_context("2d")
+        .ok()
+        .flatten()
+        .and_then(|c| c.dyn_into::<web_sys::CanvasRenderingContext2d>().ok())
+    else {
+        return;
+    };
+    let _ = ctx.set_transform(ratio, 0.0, 0.0, ratio, 0.0, 0.0);
+    ctx.set_fill_style_str("#0f171c");
+    ctx.fill_rect(0.0, 0.0, width, height);
+    let now = roll.position;
+    let since = now - ROLL_SECONDS;
+    let (low, high) = roll.key_range(since);
+    let (low, high) = (f64::from(low), f64::from(high));
+    let left = 34.0;
+    let row = height / (high - low + 1.0);
+    let y = |key: f64| height - (key - low + 1.0) * row;
+    let x = |time: f64| left + (width - left) * (1.0 - (now - time) / ROLL_SECONDS);
+    ctx.set_font("10px ui-monospace, monospace");
+    let mut key = low.ceil();
+    while key <= high {
+        let pitch = (key as i32).rem_euclid(12);
+        if [1, 3, 6, 8, 10].contains(&pitch) {
+            ctx.set_fill_style_str("#121d23");
+            ctx.fill_rect(left, y(key), width - left, row);
+        }
+        if pitch == 0 {
+            ctx.set_fill_style_str("#2a3a44");
+            ctx.fill_rect(left, y(key) + row - 1.0, width - left, 1.0);
+            ctx.set_fill_style_str("#6f8794");
+            let _ = ctx.fill_text(&format!("C{}", key as i32 / 12 - 1), 4.0, y(key) + row - 2.0);
+        }
+        key += 1.0;
+    }
+    for bar in roll.bars.iter().filter(|bar| bar.end >= since) {
+        let Some(lane) = roll.lanes.get(bar.lane) else { continue };
+        let start = x(bar.start).max(left);
+        let alpha = 0.45 + 0.55 * f64::from(bar.velocity.min(1.0));
+        ctx.set_fill_style_str(&format!("hsla({:.0}, 75%, 60%, {alpha:.2})", lane.hue));
+        ctx.fill_rect(start, y(f64::from(bar.key)) + 1.0, (x(bar.end) - start).max(2.0), (row - 2.0).max(2.0));
+    }
+    // Which color is which channel.
+    let mut legend = left + 8.0;
+    for lane in &roll.lanes {
+        ctx.set_fill_style_str(&format!("hsl({:.0}, 75%, 60%)", lane.hue));
+        ctx.fill_rect(legend, 8.0, 10.0, 10.0);
+        ctx.set_fill_style_str("#dce3e8");
+        let _ = ctx.fill_text(&lane.name, legend + 14.0, 17.0);
+        legend += 24.0 + ctx.measure_text(&lane.name).map_or(40.0, |m| m.width());
     }
 }

@@ -1,6 +1,7 @@
 //! Platform-neutral channel inspection data and playback-clock selection.
 pub mod guide;
 pub mod mml;
+pub mod piano_roll;
 
 use serde::{Deserialize, Serialize};
 

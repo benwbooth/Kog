@@ -355,6 +355,8 @@ pub mod qobject {
         #[qinvokable]
         fn channel_snapshot(self: &AppController, include_tracker: bool) -> QString;
         #[qinvokable]
+        fn piano_roll(self: &AppController) -> QString;
+        #[qinvokable]
         fn mml_state(self: Pin<&mut AppController>) -> QString;
         #[qinvokable]
         fn mml_bar(self: &AppController, index: i32) -> QString;
@@ -1984,6 +1986,8 @@ pub struct AppControllerRust {
     /// Which tab `workspace_tracks` belongs to. Other open tabs keep their
     /// metadata here, so switching back shows them without reloading.
     workspace_tracks_key: String,
+    /// The inspector's piano roll, built up from each snapshot it polls.
+    piano_roll: std::cell::RefCell<kog_audio::inspection::piano_roll::PianoRoll>,
     parked_workspace_tracks: HashMap<String, crate::workspace_tracks::WorkspaceTracks>,
     /// The background tabs (and their sizes) last given to the loaders.
     tabs_behind_loaded: Vec<(String, usize)>,
@@ -2238,6 +2242,7 @@ impl Default for AppControllerRust {
             visible_indices: Vec::new(),
             workspace_tracks: crate::workspace_tracks::WorkspaceTracks::default(),
             workspace_tracks_key: String::new(),
+            piano_roll: Default::default(),
             parked_workspace_tracks: HashMap::new(),
             tabs_behind_loaded: Vec::new(),
             sort_column: PlaylistSortColumn::Index,
@@ -5716,6 +5721,21 @@ impl qobject::AppController {
             snapshot.current_row = None;
         }
         QString::from(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
+    }
+
+    /// The piano roll with the notes sounding now added, as JSON.
+    pub fn piano_roll(&self) -> QString {
+        let state = self.rust();
+        let mut roll = state.piano_roll.borrow_mut();
+        if state.playback.state() == PlaybackState::Stopped {
+            roll.clear();
+        } else {
+            let snapshot = state.playback.channel_snapshot();
+            if !snapshot.seeking {
+                roll.update(snapshot.position, &snapshot.channels);
+            }
+        }
+        QString::from(serde_json::to_string(&*roll).unwrap_or_else(|_| "{}".into()))
     }
 
     /// The playing song's MML score state; recording starts on first use.

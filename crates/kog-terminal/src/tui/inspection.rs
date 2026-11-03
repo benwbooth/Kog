@@ -1,4 +1,5 @@
 use super::{Key, Surface, cell_width, paint, truncate};
+use kog_audio::inspection::piano_roll::{PianoRoll, lane_hue};
 use kog_audio::inspection::{Channel, Snapshot, note_name};
 
 pub(super) struct View {
@@ -12,6 +13,7 @@ pub(super) struct View {
     scroll: usize,
     pub mml: super::mml::Mml,
     guide: super::guide::Guide,
+    roll: PianoRoll,
 }
 impl Default for View {
     fn default() -> Self {
@@ -26,11 +28,12 @@ impl Default for View {
             scroll: 0,
             mml: super::mml::Mml::default(),
             guide: super::guide::Guide::default(),
+            roll: PianoRoll::default(),
         }
     }
 }
 impl View {
-    /// Open on one view: 1 keyboards, 2 tracker, 3 both, 4 MML.
+    /// Open on one view: 1 keyboards, 2 tracker, 3 both, 4 MML, 5 piano roll.
     pub fn show(&mut self, mode: u8) {
         self.mode = mode;
         self.open = true;
@@ -48,6 +51,7 @@ impl View {
             Key::Char('2') => self.mode = 2,
             Key::Char('3') => self.mode = 3,
             Key::Char('4') => self.mode = 4,
+            Key::Char('5') => self.mode = 5,
             Key::Char('f') if self.mode == 4 => self.mml.follow = !self.mml.follow,
             Key::Char('+') | Key::Char('=') if self.mode == 4 => self.mml.change_bars(true),
             Key::Char('-') if self.mode == 4 => self.mml.change_bars(false),
@@ -139,7 +143,7 @@ impl View {
             2,
             2,
             &format!(
-                "[1 Keyboards] [2 Tracker] [3 Both] [4 MML] [D Details] [F Follow: {}] [Esc Close]",
+                "[1 Keyboards] [2 Tracker] [3 Both] [4 MML] [5 Roll] [D Details] [F Follow: {}] [Esc Close]",
                 if (self.mode == 4 && self.mml.follow) || (self.mode != 4 && self.follow) { "on" } else { "off" }
             ),
             width - 3,
@@ -170,6 +174,22 @@ impl View {
                 } else {
                     format!("{} · G guide · Y copy · E export · F follow", self.mml.notice)
                 },
+                width - 3,
+                Surface::Muted,
+                false,
+            );
+            return;
+        }
+        if self.mode == 5 {
+            if !state.seeking {
+                self.roll.update(state.position, &state.channels);
+            }
+            draw_roll(out, &self.roll, (2, 4, width - 3, height.saturating_sub(4)));
+            paint(
+                out,
+                height,
+                2,
+                "Each channel's notes in its own color · newest at the right · Space play/pause",
                 width - 3,
                 Surface::Muted,
                 false,
@@ -541,4 +561,117 @@ fn level_meter(level: f32, cells: usize) -> String {
         "░".repeat(cells - filled),
         level * 100.0
     )
+}
+
+/// Seconds of the piano roll across the screen; now is the right edge.
+const ROLL_SECONDS: f64 = 8.0;
+
+/// The piano roll: one row per key (or several keys when the screen is short),
+/// each channel's notes as blocks in its own color, octaves labeled at left.
+fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usize)) {
+    let (x, y, width, height) = area;
+    let label = 4;
+    if width <= label + 4 || height < 3 {
+        return;
+    }
+    let (columns, rows) = (width - label, height);
+    let now = roll.position;
+    let (low, high) = roll.key_range(now - ROLL_SECONDS);
+    let keys = f64::from(high - low + 1.0);
+    let row_of = |key: f32| ((f64::from(high - key) / keys) * rows as f64).floor().clamp(0.0, rows as f64 - 1.0) as usize;
+    let column_of = |time: f64| (((time - (now - ROLL_SECONDS)) / ROLL_SECONDS) * columns as f64).floor();
+    let mut grid = vec![None; columns * rows];
+    for bar in roll.bars.iter().filter(|bar| bar.end >= now - ROLL_SECONDS) {
+        let first = column_of(bar.start).max(0.0) as usize;
+        let last = (column_of(bar.end).min(columns as f64 - 1.0) as usize).max(first);
+        let row = row_of(bar.key);
+        for column in first..=last.min(columns - 1) {
+            grid[row * columns + column] = Some(bar.lane);
+        }
+    }
+    for row in 0..rows {
+        // The row holding a C gets the octave's label and a lighter ground.
+        let octave = (low.ceil() as i32..=high as i32).find(|key| key.rem_euclid(12) == 0 && row_of(*key as f32) == row);
+        let ground = if octave.is_some() { "26;38;46" } else { "15;23;28" };
+        let mut line = format!(
+            "\x1b[{};{}H\x1b[38;2;111;135;148;48;2;15;23;28m{:<label$}",
+            y + row,
+            x,
+            octave.map_or(String::new(), |key| format!("C{}", key / 12 - 1)),
+        );
+        let mut column = 0;
+        while column < columns {
+            let lane = grid[row * columns + column];
+            let run = grid[row * columns + column..row * columns + columns]
+                .iter()
+                .take_while(|cell| **cell == lane)
+                .count();
+            match lane {
+                Some(lane) => {
+                    let hue = roll.lanes.get(lane).map_or(lane_hue(lane), |lane| lane.hue);
+                    let (r, g, b) = hsl(hue, 0.75, 0.6);
+                    line.push_str(&format!("\x1b[38;2;{r};{g};{b};48;2;{ground}m{}", "█".repeat(run)));
+                }
+                None => line.push_str(&format!("\x1b[48;2;{ground}m{}", " ".repeat(run))),
+            }
+            column += run;
+        }
+        line.push_str("\x1b[0m");
+        out.push_str(&line);
+    }
+    // Which color is which channel, along the top.
+    let mut legend = x + label;
+    for lane in &roll.lanes {
+        let (r, g, b) = hsl(lane.hue, 0.75, 0.6);
+        let name = truncate(&lane.name, 16);
+        if legend + cell_width(&name) + 3 > x + width {
+            break;
+        }
+        out.push_str(&format!("\x1b[{y};{legend}H\x1b[38;2;{r};{g};{b};48;2;15;23;28m■ \x1b[38;2;220;227;232m{name}\x1b[0m"));
+        legend += cell_width(&name) + 3;
+    }
+}
+
+fn hsl(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let sector = hue / 60.0;
+    let second = chroma * (1.0 - (sector % 2.0 - 1.0).abs());
+    let (r, g, b) = match sector as u32 {
+        0 => (chroma, second, 0.0),
+        1 => (second, chroma, 0.0),
+        2 => (0.0, chroma, second),
+        3 => (0.0, second, chroma),
+        4 => (second, 0.0, chroma),
+        _ => (chroma, 0.0, second),
+    };
+    let base = lightness - chroma / 2.0;
+    let byte = |value: f32| ((value + base) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (byte(r), byte(g), byte(b))
+}
+
+#[cfg(test)]
+mod roll_tests {
+    use super::*;
+    use kog_audio::inspection::Note;
+
+    #[test]
+    fn the_piano_roll_draws_each_channel_in_its_color_with_octave_labels() {
+        let mut roll = PianoRoll::default();
+        let pulse = |key| Channel {
+            id: 0,
+            name: "Pulse 1".into(),
+            active: true,
+            notes: vec![Note { key, velocity: 1.0, held: true }],
+            ..Channel::default()
+        };
+        roll.update(1.0, &[pulse(60.0)]);
+        roll.update(3.0, &[pulse(60.0)]);
+        let mut out = String::new();
+        draw_roll(&mut out, &roll, (2, 4, 80, 24));
+        let (r, g, b) = hsl(roll.lanes[0].hue, 0.75, 0.6);
+        assert!(out.contains(&format!("\x1b[38;2;{r};{g};{b};")), "the bar uses the lane's color");
+        assert!(out.contains('█'));
+        assert!(out.contains("C4"));
+        assert!(out.contains("Pulse 1"));
+    }
 }
