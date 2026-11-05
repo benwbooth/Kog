@@ -4275,9 +4275,6 @@ button.primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--highlight) 45%, transparent);
 }
 
-* {
-  scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
-}
 
 /* ------------------------------------------------- Desktop look, as in Qt
  *
