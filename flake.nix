@@ -120,7 +120,7 @@
                 cp index.html style.css manifest.webmanifest $out/
                 cp -r icons $out/icons
                 mkdir -p $out/fonts
-                cp ../../qml/fonts/spleen-6x12.otf ../../qml/fonts/UbuntuSans-*.ttf $out/fonts/
+                cp ../../qml/fonts/spleen-6x12.otf ../../qml/fonts/Ubuntu-*.ttf $out/fonts/
                 # Match build.sh: the server serves precompressed assets on
                 # mobile, while rewriting index.html and kog_web.js itself.
                 find "$out" -type f ! -name '*.gz' ! -name 'index.html' ! -name 'kog_web.js' -exec sh -c \

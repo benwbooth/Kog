@@ -188,10 +188,10 @@ Rectangle {
     // each column's maximum), so new rows aren't cut off. Their details can
     // arrive a little after the rows, hence a short window rather than once.
     property double growUntil: 0
-    // Names moved to Ubuntu Sans at 12px, wider than widths fitted to the old
+    // Names moved to Ubuntu at 12px, wider than widths fitted to the old
     // font. Each text column grows to its content once, on the first songs
     // after that change; widths narrowed by hand later stay as they are.
-    readonly property string fontRefitKey: "qml/PlaylistHeader/ubuntuSansRefit"
+    readonly property string fontRefitKey: "qml/PlaylistHeader/ubuntuRefit"
     property bool fontRefitPending: false
     function growToContent() {
         const updated = columns.map(copyColumn)

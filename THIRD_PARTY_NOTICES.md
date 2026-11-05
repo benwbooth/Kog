@@ -102,14 +102,13 @@ unmodified. The Channel Inspector's tracker view uses it on every frontend.
 It is BSD-2-Clause licensed; the license is in
 `LICENSES/Spleen-BSD-2-Clause.txt`.
 
-## Ubuntu Sans
+## Ubuntu
 
-`qml/fonts/UbuntuSans-Regular.ttf`, `UbuntuSans-Medium.ttf` and
-`UbuntuSans-Bold.ttf` are the static instances of
-[Ubuntu Sans](https://github.com/canonical/Ubuntu-Sans-fonts) version 1.006,
-unmodified. The desktop and web players use them as their interface typeface.
-They are licensed under the Ubuntu Font Licence 1.0; the licence is in
-`LICENSES/Ubuntu-Font-Licence-1.0.txt`.
+`qml/fonts/Ubuntu-Light.ttf` is the Ubuntu Light font as shipped in egui's
+`epaint_default_fonts` 0.37.0, and `qml/fonts/Ubuntu-Bold.ttf` is Ubuntu Bold
+from the Ubuntu Font Family 0.83, both unmodified. The desktop and web players
+use them as their interface typeface. They are licensed under the Ubuntu Font
+Licence 1.0; the licence is in `LICENSES/Ubuntu-Font-Licence-1.0.txt`.
 
 ## Nuked SC-55
 

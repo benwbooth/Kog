@@ -150,17 +150,18 @@ void kogApplyEarshotColors(QApplication &application)
     }
     QApplication::setPalette(kogEarshotPalette(colors));
 }
-// Ubuntu Sans, bundled with the QML, as the interface typeface at the
-// desktop's size. KOG_FONT=system keeps the desktop's own font.
+// Ubuntu Light, bundled with the QML, as the interface typeface at the
+// desktop's size, with Ubuntu Bold for bold text: the font of the Earshot-look
+// demo. KOG_FONT=system keeps the desktop's own font.
 void kogApplyInterfaceFont()
 {
     if (qEnvironmentVariable("KOG_FONT") == QStringLiteral("system")) {
         return;
     }
     QString family;
-    for (const auto *weight : { "Regular", "Medium", "Bold" }) {
+    for (const auto *weight : { "Light", "Bold" }) {
         const int id = QFontDatabase::addApplicationFont(
-            QStringLiteral(":/qt/qml/org/kog/player/qml/fonts/UbuntuSans-%1.ttf")
+            QStringLiteral(":/qt/qml/org/kog/player/qml/fonts/Ubuntu-%1.ttf")
                 .arg(QLatin1StringView(weight)));
         const QStringList families = QFontDatabase::applicationFontFamilies(id);
         if (family.isEmpty() && !families.isEmpty()) {
@@ -172,6 +173,7 @@ void kogApplyInterfaceFont()
     }
     QFont font = QGuiApplication::font();
     font.setFamilies({ family });
+    font.setWeight(QFont::Light);
     QGuiApplication::setFont(font);
 }
 } // namespace
