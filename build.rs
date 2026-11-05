@@ -171,7 +171,7 @@ fn main() {
         "qml/icons/window-close.svg",
         "qml/icons/window-close-light.svg",
         "qml/fonts/spleen-6x12.otf",
-        "qml/fonts/Ubuntu-Light.ttf",
+        "qml/fonts/Ubuntu-Regular.ttf",
         "qml/fonts/Ubuntu-Bold.ttf",
     ])
     .files([

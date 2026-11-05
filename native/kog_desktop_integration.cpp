@@ -150,16 +150,17 @@ void kogApplyEarshotColors(QApplication &application)
     }
     QApplication::setPalette(kogEarshotPalette(colors));
 }
-// Ubuntu Light, bundled with the QML, as the interface typeface at the
-// desktop's size, with Ubuntu Bold for bold text: the font of the Earshot-look
-// demo. KOG_FONT=system keeps the desktop's own font.
+// Ubuntu, bundled with the QML, as the interface typeface at the desktop's
+// size, with Ubuntu Bold for bold text: the font of the Earshot-look demo.
+// egui draws its Ubuntu Light heavier than Qt does, so Regular matches the
+// demo's weight and brightness here. KOG_FONT=system keeps the desktop's own font.
 void kogApplyInterfaceFont()
 {
     if (qEnvironmentVariable("KOG_FONT") == QStringLiteral("system")) {
         return;
     }
     QString family;
-    for (const auto *weight : { "Light", "Bold" }) {
+    for (const auto *weight : { "Regular", "Bold" }) {
         const int id = QFontDatabase::addApplicationFont(
             QStringLiteral(":/qt/qml/org/kog/player/qml/fonts/Ubuntu-%1.ttf")
                 .arg(QLatin1StringView(weight)));
@@ -173,7 +174,6 @@ void kogApplyInterfaceFont()
     }
     QFont font = QGuiApplication::font();
     font.setFamilies({ family });
-    font.setWeight(QFont::Light);
     // egui, which draws the demo, places glyphs without hinting; unhinted
     // text keeps the same soft, round shapes here instead of snapping to the
     // pixel grid.

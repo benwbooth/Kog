@@ -104,9 +104,8 @@ It is BSD-2-Clause licensed; the license is in
 
 ## Ubuntu
 
-`qml/fonts/Ubuntu-Light.ttf` is the Ubuntu Light font as shipped in egui's
-`epaint_default_fonts` 0.37.0, and `qml/fonts/Ubuntu-Bold.ttf` is Ubuntu Bold
-from the Ubuntu Font Family 0.83, both unmodified. The desktop and web players
+`qml/fonts/Ubuntu-Regular.ttf` and `qml/fonts/Ubuntu-Bold.ttf` are Ubuntu
+Regular and Bold from the Ubuntu Font Family 0.83, unmodified. The desktop and web players
 use them as their interface typeface. They are licensed under the Ubuntu Font
 Licence 1.0; the licence is in `LICENSES/Ubuntu-Font-Licence-1.0.txt`.
 
