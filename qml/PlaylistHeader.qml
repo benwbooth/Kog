@@ -50,7 +50,9 @@ Rectangle {
     signal sortRequested(string column)
     signal columnLayoutChanged(string layout)
 
-    implicitHeight: 30
+    // The header is an island: a rounded box with a little room above and
+    // below, apart from the rows.
+    implicitHeight: 36
     implicitWidth: totalWidth
     // The bar ends with the last column; past it the list shows through.
     color: "transparent"
@@ -58,9 +60,11 @@ Rectangle {
 
     Rectangle {
         z: -1
-        width: Math.min(root.width, root.totalWidth)
-        height: root.height
-        radius: 4
+        x: 4
+        y: 4
+        width: Math.min(root.width, root.totalWidth) - 4
+        height: root.height - 7
+        radius: 5
         color: root.theme.window
         border.color: root.theme.mid
     }
@@ -414,6 +418,7 @@ Rectangle {
 
         width: root.effectiveColumnWidth(column)
         height: root.height
+        radius: 4
         color: headerHover.hovered ? root.theme.button : "transparent"
         Accessible.role: Accessible.Button
         Accessible.name: qsTr("Sort by %1").arg(column.menuLabel)
@@ -430,14 +435,16 @@ Rectangle {
             anchors.fill: parent
             anchors.leftMargin: 7
             anchors.rightMargin: 7
-            text: cell.column.label + (root.sortColumn === cell.column.id
+            // The star and status columns are marked by small glyphs.
+            text: (cell.column.id === "star" ? "★"
+                    : cell.column.id === "status" ? "●" : cell.column.label)
+                + (root.sortColumn === cell.column.id
                 ? (root.sortAscending ? "  ▲" : "  ▼")
                 : "")
             // Quiet labels; the sorted column stands out in full colour.
             color: root.theme.buttonText
             opacity: root.sortColumn === cell.column.id ? 1 : 0.65
-            font.pixelSize: 11
-            font.bold: root.sortColumn === cell.column.id
+            font.pixelSize: cell.column.id === "status" ? 9 : 11
             horizontalAlignment: cell.column.alignment
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
@@ -463,6 +470,8 @@ Rectangle {
 
     Row {
         anchors.fill: parent
+        anchors.topMargin: 4
+        anchors.bottomMargin: 3
 
         Repeater {
             model: root.visibleColumns

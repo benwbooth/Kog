@@ -32,6 +32,12 @@ Item {
         && app.playback_state === "playing"
     readonly property bool isActiveTrack: isCurrentTrack
         && app.playback_state !== "stopped"
+    // Earshot's muted text: two thirds of the way from the background to the
+    // text colour, for the number columns.
+    readonly property color mutedText: Qt.rgba(
+        theme.base.r + (theme.text.r - theme.base.r) * 0.66,
+        theme.base.g + (theme.text.g - theme.base.g) * 0.66,
+        theme.base.b + (theme.text.b - theme.base.b) * 0.66, 1)
 
     signal pressed(int rowIndex, int modifiers, int button)
     signal activated(int rowIndex)
@@ -233,7 +239,11 @@ Item {
                 ? root.theme.highlightedText
                 : (root.isMissing ? root.theme.placeholderText
                     : (root.isActiveTrack && cell.column.id === "title"
-                        ? root.theme.accent : root.theme.text))
+                        ? root.theme.accent
+                        // Numbers (index, length, size, year, track) are
+                        // quieter than the names beside them.
+                        : (cell.column.alignment === Text.AlignRight
+                            ? root.mutedText : root.theme.text)))
             font.pixelSize: 11
             horizontalAlignment: cell.column.alignment
             verticalAlignment: Text.AlignVCenter

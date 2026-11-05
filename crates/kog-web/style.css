@@ -3901,11 +3901,29 @@ button.primary:hover:not(:disabled) {
     var(--base);
 }
 
+/* The column header is an island: a rounded box with a little room above
+ * and below, apart from the rows. */
 .columns {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  height: calc(var(--row-height) + 8px);
+  padding: 4px 0;
+  background: var(--base);
+  border: 0;
   color: var(--muted);
+}
+
+.columns::before {
+  content: "";
+  position: absolute;
+  inset: 4px 0 4px 4px;
+  z-index: -1;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  pointer-events: none;
+}
+
+.columns .col-sort {
+  border-radius: 4px;
 }
 
 .columns .col-sort:hover {
@@ -4071,6 +4089,16 @@ button.primary:hover:not(:disabled) {
   transition: transform 120ms ease;
 }
 
+.transport-right .volume::-webkit-slider-thumb {
+  border-color: var(--border);
+  background: var(--alternate);
+}
+
+.transport-right .volume::-moz-range-thumb {
+  border-color: var(--border);
+  background: var(--alternate);
+}
+
 .seek-row .seek:hover::-webkit-slider-thumb,
 .transport-right .volume:hover::-webkit-slider-thumb {
   transform: scale(1.08);
@@ -4167,8 +4195,19 @@ button.primary:hover:not(:disabled) {
   border-color: var(--border);
 }
 
+.now-text .title {
+  font-size: 14px;
+  font-weight: 400;
+}
+
 .now-text .subtitle {
   color: var(--muted);
+}
+
+/* Search fields take the field colour with a hairline, as in Earshot. */
+.toolbar .search,
+.tree-search {
+  border-color: var(--border);
 }
 
 .context-menu {

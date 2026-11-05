@@ -5,6 +5,7 @@ import QtQuick.Controls
 import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
 import QtQml.Models
+import QtCore as QtCore
 import Qt.labs.platform as Platform
 
 import org.kog.player 1.0
@@ -141,6 +142,20 @@ ApplicationWindow {
     readonly property real baseLuminance: 0.2126 * palette.base.r
         + 0.7152 * palette.base.g
         + 0.0722 * palette.base.b
+    // Earshot's muted text: two thirds of the way from the background to the
+    // text colour, for secondary lines and numbers.
+    readonly property color mutedText: Qt.rgba(
+        palette.base.r + (palette.text.r - palette.base.r) * 0.66,
+        palette.base.g + (palette.text.g - palette.base.g) * 0.66,
+        palette.base.b + (palette.text.b - palette.base.b) * 0.66, 1)
+    // The music folder with the home folder shortened to ~, as shells show it.
+    function homeRelative(path) {
+        const home = String(QtCore.StandardPaths.writableLocation(QtCore.StandardPaths.HomeLocation))
+            .replace(/^file:\/\//, "")
+        if (home.length > 1 && (path === home || path.startsWith(home + "/")))
+            return "~" + path.slice(home.length)
+        return path
+    }
     readonly property color toolbarSurface: baseLuminance < 0.5
         ? Qt.lighter(palette.base, 1.35)
         : palette.window
@@ -259,6 +274,8 @@ ApplicationWindow {
     component KogSlider: Slider {
         id: kogSlider
         readonly property bool dark: root.baseLuminance < 0.5
+        property color knobColor: dark ? "#ffffff" : root.palette.base
+        property bool knobBorder: !dark
         background: Rectangle {
             x: kogSlider.leftPadding
             y: kogSlider.topPadding + kogSlider.availableHeight / 2 - height / 2
@@ -285,8 +302,8 @@ ApplicationWindow {
             implicitHeight: 14
             radius: 7
             visible: kogSlider.enabled
-            color: kogSlider.dark ? "#ffffff" : root.palette.base
-            border.width: kogSlider.dark ? 0 : 1
+            color: kogSlider.knobColor
+            border.width: kogSlider.knobBorder ? 1 : 0
             border.color: root.palette.mid
             scale: kogSlider.pressed ? 1.15 : (kogSlider.hovered ? 1.08 : 1)
             Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
@@ -2409,7 +2426,7 @@ ApplicationWindow {
                     width: Math.max(140, Math.min(parent.width - 24, root.compactToolbar ? 340 : 460))
                     height: 34
                     radius: 17
-                    color: root.palette.base
+                    color: root.palette.alternateBase
                     border.width: 1
                     border.color: searchField.activeFocus ? root.palette.highlight : root.palette.mid
 
@@ -2585,8 +2602,7 @@ ApplicationWindow {
                     Label {
                         Layout.fillWidth: true
                         text: playbackTitle.text
-                        font.pixelSize: 13
-                        font.weight: Font.DemiBold
+                        font.pixelSize: 14
                         color: root.palette.text
                         elide: Text.ElideRight
                     }
@@ -2595,7 +2611,7 @@ ApplicationWindow {
                         visible: !root.compactToolbar
                         text: root.footer.trackSubtitle
                         font.pixelSize: 11
-                        color: root.palette.placeholderText
+                        color: root.mutedText
                         elide: Text.ElideRight
                     }
                 }
@@ -2755,7 +2771,7 @@ ApplicationWindow {
                     Label {
                         Layout.preferredWidth: 48
                         text: root.timeLabel(appController.duration_seconds)
-                        color: root.palette.placeholderText
+                        color: root.palette.text
                         font.pixelSize: 11
                     }
                 }
@@ -2843,6 +2859,8 @@ ApplicationWindow {
                     }
                     KogSlider {
                         id: volumeSlider
+                        knobColor: root.palette.button
+                        knobBorder: true
                         Layout.preferredWidth: root.compactToolbar ? 80 : 140
                         Layout.alignment: Qt.AlignVCenter
                         from: 0
@@ -2948,7 +2966,7 @@ ApplicationWindow {
                             Label {
                                 id: treeRootLabel
                                 Layout.fillWidth: true
-                                text: appController.directory_path
+                                text: root.homeRelative(appController.directory_path)
                                 font.bold: true
                                 elide: Text.ElideMiddle
                                 Accessible.name: qsTr("Music folder: %1").arg(text)
@@ -2976,7 +2994,7 @@ ApplicationWindow {
                     Layout.bottomMargin: 6
                     Layout.preferredHeight: 34
                     radius: 17
-                    color: root.palette.base
+                    color: root.palette.alternateBase
                     border.width: 1
                     border.color: treeSearchField.activeFocus ? root.palette.highlight : root.palette.mid
 
@@ -3501,6 +3519,13 @@ ApplicationWindow {
                     visible: root.treeSectionExpanded && root.playlistsSectionExpanded
                     color: playlistsResize.containsMouse || playlistsResize.pressed
                         ? root.palette.highlight : "transparent"
+                    // A hairline between Files and Playlists, as in Earshot.
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width
+                        height: 1
+                        color: root.palette.mid
+                    }
                     MouseArea {
                         id: playlistsResize
                         anchors.fill: parent
