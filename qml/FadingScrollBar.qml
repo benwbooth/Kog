@@ -26,7 +26,7 @@ ScrollBar {
     // Quick to appear, slow to fade away.
     Behavior on opacity {
         NumberAnimation {
-            duration: opacity < 0.5 ? 150 : 700
+            duration: opacity < 0.5 ? 350 : 1200
             easing.type: Easing.OutCubic
         }
     }
