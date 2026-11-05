@@ -3930,7 +3930,8 @@ ApplicationWindow {
                     id: playlistHeaderViewport
                     visible: root.playlistWorkspace.active === "queue"
                     Layout.fillWidth: true
-                    Layout.rightMargin: playlistView.verticalScrollGutter
+                    // Runs over the scroll bar's gutter too, so the header
+                    // island is not cut short of the pane's edge there.
                     Layout.preferredHeight: playlistHeader.implicitHeight
                     clip: true
 
@@ -3940,6 +3941,7 @@ ApplicationWindow {
                         width: Math.max(playlistHeaderViewport.width, totalWidth)
                         height: implicitHeight
                         availableWidth: playlistHeaderViewport.width
+                            - playlistView.verticalScrollGutter
                         theme: root.themePalette
                         app: appController
                         savedLayout: appController.playlist_column_layout

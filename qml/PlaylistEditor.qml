@@ -216,7 +216,8 @@ FocusScope {
             id: headerViewport
             visible: !editor.compact
             Layout.fillWidth: true
-            Layout.rightMargin: list.verticalScrollGutter
+            // Runs over the scroll bar's gutter too, so the header island
+            // is not cut short of the pane's edge there.
             Layout.preferredHeight: header.implicitHeight
             clip: true
             PlaylistHeader {
@@ -225,7 +226,7 @@ FocusScope {
                 x: -list.contentX
                 width: Math.max(headerViewport.width, totalWidth)
                 height: implicitHeight
-                availableWidth: headerViewport.width
+                availableWidth: headerViewport.width - list.verticalScrollGutter
                 theme: editor.theme
                 app: rowData
                 cacheKey: editor.activeKey
