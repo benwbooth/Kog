@@ -150,6 +150,21 @@ ApplicationWindow {
         palette.base.r + (palette.text.r - palette.base.r) * 0.66,
         palette.base.g + (palette.text.g - palette.base.g) * 0.66,
         palette.base.b + (palette.text.b - palette.base.b) * 0.66, 1)
+    // The colours handed to the playlist rows, header, tabs and sidebar rows,
+    // as a fresh object whenever the palette changes. They hold it in a `var`
+    // property, which does not see the palette's own colours change, so a
+    // switch between light and dark left them drawing in the old colours.
+    readonly property var themePalette: ({
+        window: palette.window, windowText: palette.windowText,
+        base: palette.base, alternateBase: palette.alternateBase,
+        text: palette.text, button: palette.button, buttonText: palette.buttonText,
+        highlight: palette.highlight, highlightedText: palette.highlightedText,
+        placeholderText: palette.placeholderText, accent: palette.accent,
+        mid: palette.mid, midlight: palette.midlight, light: palette.light,
+        dark: palette.dark, shadow: palette.shadow, link: palette.link,
+        brightText: palette.brightText,
+        toolTipBase: palette.toolTipBase, toolTipText: palette.toolTipText
+    })
     // Earshot's text-field fill: a little lighter than the striped rows in
     // dark mode, the plain base colour in light mode.
     readonly property color fieldColor: baseLuminance < 0.5 ? "#0e1016" : palette.base
@@ -3731,7 +3746,7 @@ ApplicationWindow {
                             width: playlistsList.width
                                 - (playlistsScrollBar.visible ? playlistsScrollBar.implicitWidth + 2 : 0)
                             height: playlistsList.rowPitch - playlistsList.spacing
-                            theme: root.palette
+                            theme: root.themePalette
                             selected: root.isPlaylistSelected(pid)
                             renaming: root.renamingPlaylistId === pid
                             canAppend: root.canAppendToTab(root.playlistWorkspace.active)
@@ -3889,7 +3904,7 @@ ApplicationWindow {
                             visible: live
                             app: appController
                             workspaceState: root.playlistWorkspace
-                            theme: root.palette
+                            theme: root.themePalette
                             queueSelection: root.selectedRows
                             searchModel: fileTreeModel
                             searchQuery: root.playlistHighlightQuery
@@ -3912,7 +3927,7 @@ ApplicationWindow {
                         width: Math.max(playlistHeaderViewport.width, totalWidth)
                         height: implicitHeight
                         availableWidth: playlistHeaderViewport.width
-                        theme: root.palette
+                        theme: root.themePalette
                         app: appController
                         savedLayout: appController.playlist_column_layout
                         sortColumn: appController.playlist_sort_column
@@ -3984,7 +3999,7 @@ ApplicationWindow {
                         columns: playlistHeader
                         searchModel: fileTreeModel
                         searchQuery: root.playlistHighlightQuery
-                        theme: root.palette
+                        theme: root.themePalette
                         rowIndex: index
                         selected: root.isPlaylistRowSelected(index)
                         onOpenVisualizer: visualizerWindow.openWaveform()
