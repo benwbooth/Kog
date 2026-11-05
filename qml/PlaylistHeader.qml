@@ -69,12 +69,15 @@ Rectangle {
         border.color: root.theme.mid
     }
 
+    // The rows' name columns are 12px (numbers 11px); measure at the larger.
     FontMetrics {
         id: columnFontMetrics
-        font.pixelSize: 11
+        font.family: Qt.application.font.family
+        font.pixelSize: 12
     }
     FontMetrics {
         id: headerFontMetrics
+        font.family: Qt.application.font.family
         font.pixelSize: 11
         font.bold: true
     }
@@ -178,13 +181,18 @@ Rectangle {
         fitted = next
         if (cacheKey.length > 0)
             fittedCache[cacheKey] = next
-        if (Date.now() < growUntil)
+        if (Date.now() < growUntil || fontRefitPending)
             growToContent()
     }
     // Songs just loaded or added: widen text columns to their content (up to
     // each column's maximum), so new rows aren't cut off. Their details can
     // arrive a little after the rows, hence a short window rather than once.
     property double growUntil: 0
+    // Names moved to Ubuntu Sans at 12px, wider than widths fitted to the old
+    // font. Each text column grows to its content once, on the first songs
+    // after that change; widths narrowed by hand later stay as they are.
+    readonly property string fontRefitKey: "qml/PlaylistHeader/ubuntuSansRefit"
+    property bool fontRefitPending: false
     function growToContent() {
         const updated = columns.map(copyColumn)
         let changed = false
@@ -201,6 +209,10 @@ Rectangle {
         if (changed) {
             columns = updated
             persistLayout()
+        }
+        if (fontRefitPending && root.app.playlist_count > 0) {
+            fontRefitPending = false
+            root.app.save_ui_setting(fontRefitKey, "true")
         }
     }
     // The revision moves with every session update (playback progress
@@ -407,6 +419,10 @@ Rectangle {
     Component.onCompleted: {
         restoreLayout()
         layoutReady = true
+        // Only the play queue's header can store the flag; the tabs share
+        // its column layout, so its refit covers them too.
+        if (typeof root.app.load_ui_setting === "function")
+            fontRefitPending = root.app.load_ui_setting(fontRefitKey, "false") !== "true"
     }
     onSavedLayoutChanged: if (layoutReady && savedLayout !== encodedLayout())
         restoreLayout()

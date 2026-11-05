@@ -167,6 +167,9 @@ fn main() {
         "qml/icons/window-close.svg",
         "qml/icons/window-close-light.svg",
         "qml/fonts/spleen-6x12.otf",
+        "qml/fonts/UbuntuSans-Regular.ttf",
+        "qml/fonts/UbuntuSans-Medium.ttf",
+        "qml/fonts/UbuntuSans-Bold.ttf",
     ])
     .files([
         "src/app_controller.rs",

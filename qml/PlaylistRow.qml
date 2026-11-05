@@ -244,7 +244,7 @@ Item {
                         // quieter than the names beside them.
                         : (cell.column.alignment === Text.AlignRight
                             ? root.mutedText : root.theme.text)))
-            font.pixelSize: 11
+            font.pixelSize: cell.column.alignment === Text.AlignRight ? 11 : 12
             horizontalAlignment: cell.column.alignment
             verticalAlignment: Text.AlignVCenter
         }

@@ -37,6 +37,8 @@ cp "$here/manifest.webmanifest" "$out_dir/manifest.webmanifest"
 # The tracker's pixel font is shared with the Qt app.
 mkdir -p "$out_dir/fonts"
 cp "$here/../../qml/fonts/spleen-6x12.otf" "$out_dir/fonts/spleen-6x12.otf"
+# So is Ubuntu Sans, the interface typeface.
+cp "$here/../../qml/fonts/"UbuntuSans-*.ttf "$out_dir/fonts/"
 mkdir -p "$out_dir/icons"
 cp -r "$here/icons/." "$out_dir/icons/"
 

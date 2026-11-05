@@ -9,6 +9,7 @@
 #include <QtCore/QStandardPaths>
 #include "kog_settings.h"
 #include <QtGui/QCursor>
+#include <QtGui/QFontDatabase>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QIcon>
 #include <QtGui/QPalette>
@@ -149,6 +150,30 @@ void kogApplyEarshotColors(QApplication &application)
     }
     QApplication::setPalette(kogEarshotPalette(colors));
 }
+// Ubuntu Sans, bundled with the QML, as the interface typeface at the
+// desktop's size. KOG_FONT=system keeps the desktop's own font.
+void kogApplyInterfaceFont()
+{
+    if (qEnvironmentVariable("KOG_FONT") == QStringLiteral("system")) {
+        return;
+    }
+    QString family;
+    for (const auto *weight : { "Regular", "Medium", "Bold" }) {
+        const int id = QFontDatabase::addApplicationFont(
+            QStringLiteral(":/qt/qml/org/kog/player/qml/fonts/UbuntuSans-%1.ttf")
+                .arg(QLatin1StringView(weight)));
+        const QStringList families = QFontDatabase::applicationFontFamilies(id);
+        if (family.isEmpty() && !families.isEmpty()) {
+            family = families.first();
+        }
+    }
+    if (family.isEmpty()) {
+        return;
+    }
+    QFont font = QGuiApplication::font();
+    font.setFamilies({ family });
+    QGuiApplication::setFont(font);
+}
 } // namespace
 
 KogAppearance::KogAppearance(QObject *parent) : QObject(parent) {}
@@ -194,6 +219,7 @@ std::unique_ptr<QApplication> kogApplicationNew()
                                             });
     application->setOrganizationName(QStringLiteral("Kog"));
     kogApplyEarshotColors(*application);
+    kogApplyInterfaceFont();
     // Follow the desktop between Earshot's dark and light variants.
     QObject::connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
                      application.get(), [app = application.get()] { kogApplyEarshotColors(*app); });

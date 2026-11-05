@@ -102,6 +102,15 @@ unmodified. The Channel Inspector's tracker view uses it on every frontend.
 It is BSD-2-Clause licensed; the license is in
 `LICENSES/Spleen-BSD-2-Clause.txt`.
 
+## Ubuntu Sans
+
+`qml/fonts/UbuntuSans-Regular.ttf`, `UbuntuSans-Medium.ttf` and
+`UbuntuSans-Bold.ttf` are the static instances of
+[Ubuntu Sans](https://github.com/canonical/Ubuntu-Sans-fonts) version 1.006,
+unmodified. The desktop and web players use them as their interface typeface.
+They are licensed under the Ubuntu Font Licence 1.0; the licence is in
+`LICENSES/Ubuntu-Font-Licence-1.0.txt`.
+
 ## Nuked SC-55
 
 The `native/nuked-sc55` Git submodule is J.C. Moyer's reusable backend fork of

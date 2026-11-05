@@ -787,6 +787,7 @@ fn content_type_for(path: &str) -> &'static str {
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         Some("otf") => "font/otf",
+        Some("ttf") => "font/ttf",
         _ => "application/octet-stream",
     }
 }
