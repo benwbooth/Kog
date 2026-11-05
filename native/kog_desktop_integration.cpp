@@ -178,6 +178,9 @@ void kogApplyInterfaceFont()
     // text keeps the same soft, round shapes here instead of snapping to the
     // pixel grid.
     font.setHintingPreference(QFont::PreferNoHinting);
+    // Grey-scale edges as egui draws them: coloured sub-pixel fringes look
+    // rough on dark backgrounds, above all at fractional display scales.
+    font.setStyleStrategy(QFont::StyleStrategy(QFont::PreferAntialias | QFont::NoSubpixelAntialias));
     QGuiApplication::setFont(font);
 }
 } // namespace

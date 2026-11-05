@@ -37,6 +37,24 @@ fn configure_platform_theme() {
     }
 }
 
+/// Text drawn the way egui draws the Earshot-look demo: each glyph rasterised
+/// at the screen's real pixel size with grey-scale edges. Qt Quick otherwise
+/// scales distance-field glyphs with coloured sub-pixel fringes, which look
+/// soft and rough on dark backgrounds at fractional display scales. Explicit
+/// settings in the environment win.
+fn configure_text_rendering() {
+    for (name, value) in [
+        ("QML_DISABLE_DISTANCEFIELD", "1"),
+        ("QSG_DISTANCEFIELD_ANTIALIASING", "gray"),
+    ] {
+        if std::env::var_os(name).is_none() {
+            // SAFETY: this runs before Qt, Rodio, or any other worker threads
+            // are created, so no concurrent environment access is possible.
+            unsafe { std::env::set_var(name, value) };
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Gui,
@@ -115,6 +133,7 @@ fn main() {
         Mode::Gui => {}
     }
     configure_platform_theme();
+    configure_text_rendering();
     let mut application = desktop_integration::DesktopApplication::new();
 
     QGuiApplication::set_desktop_file_name(&QString::from("org.kog.player"));

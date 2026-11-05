@@ -2739,6 +2739,7 @@ ApplicationWindow {
                         Layout.preferredWidth: 34
                         Layout.preferredHeight: 34
                         glyph: "⚄"
+                        iconName: "media-playlist-random"
                         toolTip: qsTr("Random Radio")
                         checkable: true
                         checked: appController.radio_active
@@ -2959,6 +2960,7 @@ ApplicationWindow {
                                 Layout.preferredWidth: 30
                                 Layout.preferredHeight: 30
                                 glyph: "↻"
+                                iconName: "view-refresh"
                                 toolTip: qsTr("Refresh file tree")
                                 onClicked: fileTreeModel.refresh_tree()
                             }
