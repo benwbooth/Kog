@@ -2471,7 +2471,8 @@ ApplicationWindow {
                     radius: 17
                     color: root.fieldColor
                     border.width: 1
-                    border.color: searchField.activeFocus ? root.palette.highlight : root.palette.mid
+                    border.color: searchField.activeFocus ? root.palette.highlight
+                        : Qt.lighter(root.palette.mid, root.baseLuminance < 0.5 ? 1.7 : 0.9)
 
                     RowLayout {
                         anchors.fill: parent
@@ -3054,7 +3055,8 @@ ApplicationWindow {
                     radius: 17
                     color: root.fieldColor
                     border.width: 1
-                    border.color: treeSearchField.activeFocus ? root.palette.highlight : root.palette.mid
+                    border.color: treeSearchField.activeFocus ? root.palette.highlight
+                        : Qt.lighter(root.palette.mid, root.baseLuminance < 0.5 ? 1.7 : 0.9)
 
                     RowLayout {
                         anchors.fill: parent

@@ -58,18 +58,52 @@ Rectangle {
     color: "transparent"
     clip: true
 
+    readonly property color baseColor: theme.base
+    readonly property bool darkTheme: 0.2126 * baseColor.r + 0.7152 * baseColor.g
+        + 0.0722 * baseColor.b < 0.5
+
+    // The island's depth: a soft shadow under it, a gradient lit from above
+    // and a faint highlight along its top edge.
+    Repeater {
+        model: [{ dy: 3, spread: 2, alpha: 0.18 }, { dy: 2, spread: 1, alpha: 0.28 },
+            { dy: 1, spread: 0, alpha: 0.4 }]
+        Rectangle {
+            required property var modelData
+            z: -2
+            x: 4 - modelData.spread
+            y: 4 + modelData.dy - modelData.spread
+            width: island.width + 2 * modelData.spread
+            height: island.height + 2 * modelData.spread
+            radius: island.radius + modelData.spread
+            color: root.darkTheme ? Qt.rgba(0, 0, 0, modelData.alpha)
+                : Qt.rgba(0.08, 0.12, 0.24, modelData.alpha * 0.35)
+        }
+    }
+
     Rectangle {
+        id: island
         z: -1
         x: 4
         y: 4
         width: Math.min(root.width, root.totalWidth) - 4
-        height: root.height - 7
+        height: root.height - 8
         radius: 5
-        color: root.theme.window
+        gradient: Gradient {
+            GradientStop { position: 0; color: root.darkTheme ? "#1d2333" : "#ffffff" }
+            GradientStop { position: 1; color: root.darkTheme ? "#05060a" : "#e8ebf3" }
+        }
         // A hairline at a fractional display scale is spread over two device
-        // pixels and fades; a little lighter, it reads as the demo's crisp
-        // outline against the glow.
+        // pixels and fades; a little lighter, it reads as a crisp outline
+        // against the glow.
         border.color: Qt.lighter(root.theme.mid, 1.4)
+
+        Rectangle {
+            x: island.radius
+            y: 1
+            width: island.width - 2 * island.radius
+            height: 1
+            color: root.darkTheme ? Qt.rgba(1, 1, 1, 0.09) : Qt.rgba(1, 1, 1, 0.9)
+        }
     }
 
     // The rows' name columns are 12px (numbers 11px); measure at the larger.

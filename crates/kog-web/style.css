@@ -29,6 +29,12 @@
   --selection: #2f7de1;
   /* Alternate rows: opaque, so the playlist's glow shows only between them. */
   --stripe: #0a0b0f;
+  --island-top: #1d2333;
+  --island-bottom: #05060a;
+  --island-highlight: rgba(255, 255, 255, 0.09);
+  --island-shadow: rgba(0, 0, 0, 0.7);
+  /* Text fields' resting outline, visible without focus. */
+  --field-border: #33394f;
   /* The playing row's meter bars: bright on black rows, deep on light. */
   --meter-lightness: 68%;
   --border: #1e2230;
@@ -77,6 +83,11 @@
     --highlight-text: #ffffff;
     --selection: #2a73d9;
     --stripe: #f2f2f8;
+    --island-top: #ffffff;
+    --island-bottom: #e8ebf3;
+    --island-highlight: rgba(255, 255, 255, 0.9);
+    --island-shadow: rgba(20, 30, 60, 0.12);
+    --field-border: #c9ccda;
     --meter-lightness: 50%;
     --border: #dddfea;
     --glow: rgba(47, 125, 225, 0.09);
@@ -99,6 +110,11 @@
   --highlight-text: #ffffff;
   --selection: #2a73d9;
   --stripe: #f2f2f8;
+  --island-top: #ffffff;
+  --island-bottom: #e8ebf3;
+  --island-highlight: rgba(255, 255, 255, 0.9);
+  --island-shadow: rgba(20, 30, 60, 0.12);
+  --field-border: #c9ccda;
   --meter-lightness: 50%;
   --border: #dddfea;
   --glow: rgba(47, 125, 225, 0.09);
@@ -3955,9 +3971,12 @@ button.primary:hover:not(:disabled) {
   position: absolute;
   inset: 4px 0 4px 4px;
   z-index: -1;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, var(--text) 12%);
   border-radius: 5px;
-  background: var(--surface);
+  /* Depth: lit from above, a faint highlight along the top edge and a soft
+   * shadow beneath. */
+  background: linear-gradient(180deg, var(--island-top), var(--island-bottom));
+  box-shadow: inset 0 1px 0 var(--island-highlight), 0 2px 5px var(--island-shadow);
   pointer-events: none;
 }
 
@@ -4253,10 +4272,11 @@ button.primary:hover:not(:disabled) {
   vertical-align: -7px;
 }
 
-/* Search fields take the field colour with a hairline, as in Earshot. */
+/* Search fields take the field colour with an outline that shows even
+ * without focus. */
 .toolbar .search,
 .tree-search {
-  border-color: var(--border);
+  border-color: var(--field-border);
 }
 
 .context-menu {
