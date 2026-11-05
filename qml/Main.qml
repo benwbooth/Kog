@@ -2649,8 +2649,13 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         spacing: 6
                         WaveformMeter {
-                            Layout.preferredWidth: 24
+                            // Its own height, whatever the title row would
+                            // squeeze it to, and a little wider so the
+                            // taller bars keep their proportions.
+                            Layout.preferredWidth: 30
+                            Layout.minimumWidth: 30
                             Layout.preferredHeight: 44
+                            Layout.minimumHeight: 44
                             visible: appController.playback_state === "playing"
                             app: appController
                             dark: root.baseLuminance < 0.5
