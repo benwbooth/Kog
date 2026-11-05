@@ -10,6 +10,7 @@ import QtCore as QtCore
 import Qt.labs.platform as Platform
 
 import org.kog.player 1.0
+import org.kog.native 1.0
 
 ApplicationWindow {
     id: root
@@ -2212,6 +2213,29 @@ ApplicationWindow {
             Action { text: qsTr("Show Lyrics"); icon.name: "view-media-lyrics"; shortcut: "Ctrl+Shift+L"; onTriggered: lyricsWindow.show() }
             Action { text: qsTr("Show Mini Player"); icon.name: "view-restore"; shortcut: "Ctrl+Shift+M"; onTriggered: root.showMiniPlayer() }
             Action { text: qsTr("Winamp Skins…"); icon.name: "preferences-desktop-theme"; onTriggered: skinBrowser.show() }
+            // The same choice as Preferences > General > Appearance.
+            Menu {
+                title: qsTr("Colors")
+                icon.name: "color-management"
+                Action {
+                    text: qsTr("Follow the System")
+                    checkable: true
+                    checked: KogAppearance.mode === "system"
+                    onTriggered: KogAppearance.mode = "system"
+                }
+                Action {
+                    text: qsTr("Light")
+                    checkable: true
+                    checked: KogAppearance.mode === "light"
+                    onTriggered: KogAppearance.mode = "light"
+                }
+                Action {
+                    text: qsTr("Dark")
+                    checkable: true
+                    checked: KogAppearance.mode === "dark"
+                    onTriggered: KogAppearance.mode = "dark"
+                }
+            }
             Action { text: qsTr("Visualizer"); icon.name: "view-media-visualization"; shortcut: "Ctrl+Shift+V"; onTriggered: visualizerWindow.visible ? visualizerWindow.hide() : visualizerWindow.show() }
             MenuSeparator {}
             // Each Channel Inspector view has its own entry.

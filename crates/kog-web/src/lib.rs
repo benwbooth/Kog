@@ -9077,6 +9077,24 @@ fn App() -> impl IntoView {
                             <button class="menu-item" role="menuitem" on:click=move |_| {
                                 set_menu_open.set(false); set_visualizer_open.set(true);
                             }>"Visualizer"</button>
+                            // The same choice as Preferences' Colors.
+                            <menu::Submenu label="Colors" depth=2>
+                                {[("system", "Follow the System"), ("light", "Light"), ("dark", "Dark")]
+                                    .into_iter()
+                                    .map(|(mode, label)| view! {
+                                        <button class="menu-item" role="menuitemradio"
+                                            aria-checked=move || (theme.get() == mode).to_string()
+                                            on:click=move |_| {
+                                                store("kog.theme", mode);
+                                                apply_theme(mode);
+                                                set_theme.set(mode.to_owned());
+                                                set_menu_open.set(false);
+                                            }>
+                                            <span class="menu-check" aria-hidden="true">{move || if theme.get() == mode { "●" } else { "" }}</span>{label}
+                                        </button>
+                                    })
+                                    .collect_view()}
+                            </menu::Submenu>
                             // Each Channel Inspector view has its own entry.
                             <button class="menu-item" role="menuitem" on:click=move |_| {set_menu_open.set(false);inspector_mode.set("both".into());set_inspector_open.set(true);}>"Channel Keyboards + Tracker"</button>
                             <button class="menu-item" role="menuitem" on:click=move |_| {set_menu_open.set(false);inspector_mode.set("keyboards".into());set_inspector_open.set(true);}>"Channel Keyboards"</button>
