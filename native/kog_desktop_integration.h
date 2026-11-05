@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QtCore/QObject>
 #include <QtCore/QString>
 #include <QtWidgets/QApplication>
 
@@ -21,3 +22,17 @@ void kogApplicationSetVersion(QApplication &application, const QString &version)
 int kogApplicationExec(QApplication &application);
 void kogApplyApplicationIcon();
 void kogRestoreMainWindow();
+
+// The appearance choice in Preferences: "system" follows the desktop between
+// Earshot's light and dark palettes, "light" and "dark" keep one of them.
+// Registered for QML as the org.kog.native KogAppearance singleton.
+class KogAppearance : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
+public:
+    explicit KogAppearance(QObject *parent = nullptr);
+    QString mode() const;
+    void setMode(const QString &mode);
+signals:
+    void modeChanged();
+};

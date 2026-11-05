@@ -174,6 +174,7 @@ fn main() {
         "src/file_tree_model.rs",
         "src/skin_library.rs",
     ])
+    .cpp_file("native/kog_desktop_integration.h")
     .cpp_file("native/kog_desktop_integration.cpp")
     .cpp_file("native/kog_single_instance.cpp")
     .cpp_file("native/kog_window_state.cpp")

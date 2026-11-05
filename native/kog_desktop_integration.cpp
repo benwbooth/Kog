@@ -14,6 +14,7 @@
 #include <QtGui/QPalette>
 #include <QtGui/QStyleHints>
 #include <QtGui/QWindow>
+#include <QtQml/qqml.h>
 
 #include <array>
 
@@ -111,13 +112,26 @@ QString kogEarshotColorScheme(const KogColors &c)
         + group(QStringLiteral("Complementary"), c.dark, c.window, QColor(0xf2, 0xf3, 0xf7));
 }
 
+QString kogAppearanceMode()
+{
+    const QString mode = KogSettings(QStringLiteral("Appearance"))
+                             .value(QStringLiteral("colorScheme"), QStringLiteral("system"))
+                             .toString();
+    return mode == QStringLiteral("light") || mode == QStringLiteral("dark")
+        ? mode : QStringLiteral("system");
+}
+
 void kogApplyEarshotColors(QApplication &application)
 {
     // KOG_COLORS=system keeps the desktop's own colour scheme.
     if (qEnvironmentVariable("KOG_COLORS") == QStringLiteral("system")) {
         return;
     }
-    const bool light = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light;
+    // Light or dark as chosen in Preferences, else as the desktop is.
+    const QString mode = kogAppearanceMode();
+    const bool light = mode == QStringLiteral("system")
+        ? QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light
+        : mode == QStringLiteral("light");
     const KogColors &colors = kogEarshotColors(light);
 
     const QString directory = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
@@ -136,6 +150,22 @@ void kogApplyEarshotColors(QApplication &application)
     QApplication::setPalette(kogEarshotPalette(colors));
 }
 } // namespace
+
+KogAppearance::KogAppearance(QObject *parent) : QObject(parent) {}
+
+QString KogAppearance::mode() const { return kogAppearanceMode(); }
+
+void KogAppearance::setMode(const QString &mode)
+{
+    if (mode == kogAppearanceMode()) {
+        return;
+    }
+    KogSettings(QStringLiteral("Appearance")).setValue(QStringLiteral("colorScheme"), mode);
+    if (auto *application = qobject_cast<QApplication *>(QCoreApplication::instance())) {
+        kogApplyEarshotColors(*application);
+    }
+    emit modeChanged();
+}
 
 std::unique_ptr<QApplication> kogApplicationNew()
 {
@@ -158,6 +188,10 @@ std::unique_ptr<QApplication> kogApplicationNew()
 #endif
     auto application = std::make_unique<QApplication>(argumentCount, arguments.data());
     kogRegisterModernSkinTypes();
+    qmlRegisterSingletonType<KogAppearance>("org.kog.native", 1, 0, "KogAppearance",
+                                            [](QQmlEngine *, QJSEngine *) -> QObject * {
+                                                return new KogAppearance;
+                                            });
     application->setOrganizationName(QStringLiteral("Kog"));
     kogApplyEarshotColors(*application);
     // Follow the desktop between Earshot's dark and light variants.

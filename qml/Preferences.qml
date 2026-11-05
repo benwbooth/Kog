@@ -5,6 +5,7 @@ import QtQuick.Controls
 import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
 import Qt.labs.platform as Platform
+import org.kog.native 1.0
 
 Window {
     id: root
@@ -518,10 +519,20 @@ Window {
                         title: qsTr("Appearance")
                         Layout.fillWidth: true
 
-                        PreferenceLabel {
+                        RowLayout {
                             anchors.fill: parent
-                            text: qsTr("Kog follows the current Qt platform theme, color scheme, fonts, controls, and icon theme.")
-                            wrapMode: Text.Wrap
+                            PreferenceLabel { text: qsTr("Colors:") }
+                            ComboBox {
+                                readonly property var choices: ["system", "light", "dark"]
+                                Layout.fillWidth: true
+                                model: [
+                                    qsTr("Follow the system"),
+                                    qsTr("Light"),
+                                    qsTr("Dark")
+                                ]
+                                currentIndex: Math.max(0, choices.indexOf(KogAppearance.mode))
+                                onActivated: KogAppearance.mode = choices[currentIndex]
+                            }
                         }
                     }
 

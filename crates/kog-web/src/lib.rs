@@ -1099,6 +1099,22 @@ fn load(key: &str) -> Option<String> {
     storage()?.get_item(key).ok()?
 }
 
+/// Light or dark colours as chosen in Preferences ("light" or "dark"), or
+/// after the system for anything else.
+fn apply_theme(mode: &str) {
+    let Some(root) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+    else {
+        return;
+    };
+    if mode == "light" || mode == "dark" {
+        let _ = root.set_attribute("data-theme", mode);
+    } else {
+        let _ = root.remove_attribute("data-theme");
+    }
+}
+
 /// Yield to the event loop for `ms` milliseconds (waiting on lazy tree loads).
 fn sleep_ms(ms: i32) -> wasm_bindgen_futures::JsFuture {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
@@ -2026,6 +2042,7 @@ fn draw_web_visualizer(
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
+    apply_theme(&load("kog.theme").unwrap_or_default());
     leptos::mount::mount_to_body(App);
 }
 
@@ -2190,6 +2207,7 @@ fn App() -> impl IntoView {
     let (user, set_user) = signal(String::new());
     let (password, set_password) = signal(String::new());
     let (use_basic, set_use_basic) = signal(false);
+    let (theme, set_theme) = signal(load("kog.theme").unwrap_or_else(|| "system".to_owned()));
     let (codec, set_codec) = signal(load("kog.codec").unwrap_or_else(|| "aac".to_owned()));
     let (connected, set_connected) = signal(false);
     let (message, set_message) = signal(String::new());
@@ -8125,6 +8143,22 @@ fn App() -> impl IntoView {
                                 />
                             </label>
                         </Show>
+                        <label>
+                            "Colors"
+                            <select
+                                prop:value=move || theme.get()
+                                on:change=move |event| {
+                                    let value = event_target_value(&event);
+                                    store("kog.theme", &value);
+                                    apply_theme(&value);
+                                    set_theme.set(value);
+                                }
+                            >
+                                <option value="system">"Follow the system"</option>
+                                <option value="light">"Light"</option>
+                                <option value="dark">"Dark"</option>
+                            </select>
+                        </label>
                         <Show when=move || connected.get() fallback=|| ()>
                             <label>
                                 "MIDI synth"
