@@ -4267,9 +4267,9 @@ button.primary:hover:not(:disabled) {
 .now-text .title .now-meter {
   display: inline-block;
   width: 24px;
-  height: 24px;
+  height: 48px;
   margin-right: 6px;
-  vertical-align: -7px;
+  vertical-align: middle;
 }
 
 /* Search fields take the field colour with an outline that shows even

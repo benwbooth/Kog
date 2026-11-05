@@ -2650,7 +2650,7 @@ ApplicationWindow {
                         spacing: 6
                         WaveformMeter {
                             Layout.preferredWidth: 24
-                            Layout.preferredHeight: 22
+                            Layout.preferredHeight: 44
                             visible: appController.playback_state === "playing"
                             app: appController
                             dark: root.baseLuminance < 0.5

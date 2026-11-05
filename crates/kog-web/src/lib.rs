@@ -2153,12 +2153,21 @@ fn request_level_timeline(timeline: &Rc<RefCell<LevelTimeline>>, stream: &str, p
 /// cell's right edge (the desktop table); otherwise it sits in the flow (the
 /// mobile song card).
 #[component]
-fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
+fn RowMeter(
+    levels: ReadSignal<[f32; 6]>,
+    pinned: bool,
+    /// The meter's height in pixels: a row's, or taller beside the
+    /// now-playing title.
+    #[prop(default = 24.0)]
+    height: f32,
+) -> impl IntoView {
+    let style = if pinned {
+        format!("position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: {height}px; box-sizing: border-box; border-radius: 4px; pointer-events: none;")
+    } else {
+        format!("position: relative; top: auto; right: auto; transform: none; display: block; width: 24px; height: {height}px; box-sizing: border-box; border-radius: 4px; pointer-events: none;")
+    };
     view! {
-        <span
-            class="row-meter"
-            style=if pinned { "position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; box-sizing: border-box; border-radius: 4px; pointer-events: none;" } else { "position: relative; top: auto; right: auto; transform: none; display: block; width: 24px; height: 24px; box-sizing: border-box; border-radius: 4px; pointer-events: none;" }
-        >
+        <span class="row-meter" style=style>
             <For
                 each=|| [0usize, 1, 2, 3, 4, 5]
                 key=|band| *band
@@ -2174,16 +2183,17 @@ fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
                         // Straight on the row: --meter-lightness keeps the bars
                         // bright on black rows and deep on light ones.
                         let fill = format!("hsl({:.0}, 95%, var(--meter-lightness))", 262.0 - 50.0 * level);
-                        // The bars' 20x24 area, laid out as iOS does, as tall
-                        // as the meter: there is no box around them to inset.
+                        // The bars' area, 20px wide and as tall as the meter
+                        // (there is no box around them to inset), laid out as
+                        // iOS does.
                         const WIDTH: f32 = 20.0;
-                        const HEIGHT: f32 = 24.0;
+                        let area_height = height;
                         let slot = WIDTH / kog_playback_policy::waveform::BARS as f32;
                         let base = slot / 2.0;
                         let width = base * (1.0 + kog_playback_policy::waveform::WIDTH_GROWTH * level);
-                        let height = (level * HEIGHT).max(base);
+                        let height = (level * area_height).max(base);
                         let left = slot * (band as f32 + 0.5) - width / 2.0;
-                        let top = (HEIGHT - height) / 2.0;
+                        let top = (area_height - height) / 2.0;
                         format!(
                             "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; transition: left {ms}ms, top {ms}ms, width {ms}ms, height {ms}ms; transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);",
                             2.0 + left,
@@ -7792,7 +7802,7 @@ fn App() -> impl IntoView {
                             // the playing row.
                             <div class="title">
                                 <Show when=move || playing.get()>
-                                    <span class="now-meter"><RowMeter levels=audio_levels pinned=false/></span>
+                                    <span class="now-meter"><RowMeter levels=audio_levels pinned=false height=48.0/></span>
                                 </Show>
                                 {move || now_title()}
                             </div>
