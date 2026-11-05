@@ -3193,17 +3193,70 @@ ApplicationWindow {
                     opacity: 0.75
                 }
 
+                // Drawn like a tree row: a rounded hover pill, a small
+                // up-pointing triangle where folders have theirs, and a folder.
                 ItemDelegate {
                     id: parentDirectoryRow
 
                     Layout.fillWidth: true
-                    Layout.preferredHeight: visible ? 28 : 0
+                    Layout.preferredHeight: visible ? directoryTree.rowPitch : 0
                     visible: fileTreeModel.can_go_up
                     text: ".."
-                    icon.name: "go-up"
-                    icon.width: 18
-                    icon.height: 18
-                    leftPadding: 9
+                    leftPadding: 4
+                    rightPadding: 4
+                    topPadding: 0
+                    bottomPadding: 0
+                    background: Rectangle {
+                        anchors.fill: parent
+                        anchors.leftMargin: 4
+                        anchors.rightMargin: 4
+                        radius: 6
+                        color: parentDirectoryRow.down
+                            ? root.palette.highlight
+                            : (parentDirectoryRow.hovered ? root.palette.button : "transparent")
+                    }
+                    contentItem: RowLayout {
+                        spacing: 2
+                        Item {
+                            Layout.preferredWidth: 14
+                            Layout.preferredHeight: 14
+                            Canvas {
+                                anchors.centerIn: parent
+                                width: 8
+                                height: 8
+                                readonly property color fill: root.palette.placeholderText
+                                onFillChanged: requestPaint()
+                                onPaint: {
+                                    const context = getContext("2d")
+                                    context.reset()
+                                    context.fillStyle = fill
+                                    context.beginPath()
+                                    context.moveTo(0.5, 6.5)
+                                    context.lineTo(4, 1)
+                                    context.lineTo(7.5, 6.5)
+                                    context.closePath()
+                                    context.fill()
+                                }
+                            }
+                        }
+                        Image {
+                            Layout.preferredWidth: 16
+                            Layout.preferredHeight: 16
+                            source: Qt.resolvedUrl("icons/folder"
+                                + (root.baseLuminance < 0.5 ? "-light" : "") + ".svg")
+                            sourceSize.width: 16
+                            sourceSize.height: 16
+                            fillMode: Image.PreserveAspectFit
+                            mipmap: true
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            leftPadding: 2
+                            text: parentDirectoryRow.text
+                            color: root.palette.text
+                            elide: Text.ElideRight
+                        }
+                    }
                     Accessible.name: qsTr("Go to parent folder")
                     ToolTip.visible: hovered && fileTreeModel.parent_path.length > 0
                     ToolTip.delay: 700
