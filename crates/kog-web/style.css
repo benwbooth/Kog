@@ -4283,3 +4283,157 @@ button.primary:hover:not(:disabled) {
 * {
   scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
 }
+
+/* ------------------------------------------------- Desktop look, as in Qt
+ *
+ * The desktop browser layout follows the Qt player: playlist rows are pills
+ * inset from the pane's edges with a little space between them, names are
+ * 12px beside 11px numbers, the sidebar's playlists are unstriped, and the
+ * playlist tabs are flat pills floating on the blue glow. Phones keep their
+ * own layout.
+ */
+@media (min-width: 821px) and (pointer: fine), (min-width: 821px) and (pointer: none), (min-width: 1201px) {
+  .track,
+  .track.alternate,
+  .track:hover,
+  .track.selected,
+  .track.selected:hover,
+  .track.current,
+  .track.current:hover,
+  .track.current.alternate {
+    position: relative;
+    isolation: isolate;
+    background: transparent;
+    border-radius: 0;
+  }
+
+  .track::before {
+    content: "";
+    position: absolute;
+    inset: 2px 6px;
+    z-index: -1;
+    border-radius: 4px;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .track.alternate::before {
+    background: var(--stripe);
+  }
+
+  .track:hover::before {
+    background: var(--alternate);
+  }
+
+  .track.selected::before,
+  .track.selected:hover::before {
+    background: var(--selection);
+  }
+
+  .track .cell {
+    font-size: 12px;
+  }
+
+  .track .index-cell,
+  .track .duration-cell,
+  .track .filesizebytes-cell,
+  .track .filesize-cell,
+  .track .trackno-cell,
+  .track .playcount-cell,
+  .track .samplerate-cell,
+  .track .bitspersample-cell,
+  .track .bitrate-cell {
+    font-size: 11px;
+  }
+
+  /* The sidebar's playlists are a plain list, as in Qt. */
+  .tree-row.favorite-row,
+  .tree-row.playlist-row,
+  .tree-row.favorite-row:nth-child(even),
+  .tree-row.playlist-row:nth-child(even) {
+    background: transparent;
+  }
+
+  .tree-row.favorite-row:hover,
+  .tree-row.playlist-row:hover {
+    background: var(--alternate);
+  }
+
+  .tree-row.favorite-row.selected,
+  .tree-row.playlist-row.selected {
+    background: var(--selection);
+  }
+
+  /* Flat tabs on the glow: the open one a raised pill with an accent
+   * underline, the others muted until hovered. */
+  .playlist-tabs-bar {
+    background: transparent;
+    border-bottom: 0;
+  }
+
+  .playlist-tabs {
+    padding: 3px 6px 0;
+  }
+
+  .playlist-tab,
+  .playlist-tab.active {
+    margin: 0 0 2px;
+    border: 0;
+    border-radius: 6px;
+    box-shadow: none;
+    background: transparent;
+    color: var(--muted);
+  }
+
+  .playlist-tab:hover {
+    background: var(--stripe);
+    color: var(--text);
+  }
+
+  .playlist-tab.active {
+    background: var(--alternate);
+    color: var(--text);
+  }
+
+  .playlist-tab.active::after {
+    content: "";
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: -2px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--highlight);
+  }
+
+  .playlist-tab button {
+    min-height: 28px;
+    padding: 5px 12px;
+  }
+}
+
+/* Folders, and the parent-folder row, drawn as in Qt: Kog's outline folder
+ * in the row's text colour, the parent row with a small up triangle. */
+.tree-icon.dir,
+.tree-icon.up {
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 5a2 2 0 0 1 2-2h6l2 2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2zm2 2v12h16V7z'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 5a2 2 0 0 1 2-2h6l2 2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2zm2 2v12h16V7z'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  opacity: 0.9;
+}
+
+.tree-icon.up svg {
+  display: none;
+}
+
+.tree-row.parent-row .twisty::before {
+  content: "▴";
+  color: var(--faint);
+}
+
+/* One line, cut short with an ellipsis, as in Qt. */
+.now-text .title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
