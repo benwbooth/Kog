@@ -132,6 +132,13 @@ impl MmlView {
         })
     }
 
+    /// The recorded score so far and its revision (which changes with each
+    /// update while recording runs ahead of playback).
+    pub fn score(&mut self) -> Option<(&Score, u64)> {
+        self.poll();
+        self.score.as_ref().map(|score| (score, self.revision))
+    }
+
     /// The whole MML text, and whether recording is still adding to it.
     pub fn text(&mut self) -> Option<(String, bool)> {
         self.poll();

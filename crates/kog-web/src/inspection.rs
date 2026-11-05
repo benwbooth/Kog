@@ -56,6 +56,9 @@ pub fn Inspector(
     let roll_at = Rc::new(Cell::new(0.0));
     // One roll per channel, or every channel in one.
     let roll_separate = RwSignal::new(true);
+    // The server records the whole song ahead of playback (the MML score);
+    // the roll takes every channel's range from it, so it never resizes.
+    let roll_plan = Rc::new(RefCell::new(RollPlan::default()));
     // Redraw the roll every display frame, moving "now" on from the last
     // snapshot, so it scrolls smoothly; snapshots only come every 33 ms.
     {
@@ -159,6 +162,7 @@ pub fn Inspector(
             missing_window_position(&windows, position, 2.0)
         };
         if mode.get_untracked() == "roll" {
+            request_roll_plan(&roll_plan, &roll, &location, authorization.get_untracked());
             let mut roll = roll.borrow_mut();
             state.with_untracked(|snapshot| {
                 if !snapshot.seeking {
@@ -577,4 +581,73 @@ fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll, now: f64, se
             legend += 14.0 + ctx.measure_text(&lane.name).map_or(40.0, |m| m.width());
         }
     }
+}
+
+/// Where the piano roll's lookahead stands for the playing stream.
+#[derive(Default)]
+struct RollPlan {
+    stream: String,
+    revision: Option<u64>,
+    done: bool,
+    pending: bool,
+    requested_at: f64,
+}
+
+#[derive(Deserialize)]
+struct MmlReply {
+    status: String,
+    revision: u64,
+    document: Option<MmlText>,
+}
+
+#[derive(Deserialize)]
+struct MmlText {
+    text: String,
+}
+
+/// Fetch the song's recording as it grows (every 1.5 s until it is done) and
+/// plan the roll's lanes and ranges from it.
+fn request_roll_plan(plan: &Rc<RefCell<RollPlan>>, roll: &Rc<RefCell<PianoRoll>>, stream: &str, header: Option<String>) {
+    let Ok(url) = web_sys::Url::new(stream) else { return };
+    if !url.pathname().ends_with("/api/stream") {
+        return;
+    }
+    url.search_params().delete("start_ms");
+    let song = url.href();
+    let now = js_sys::Date::now();
+    {
+        let mut state = plan.borrow_mut();
+        if state.stream != song {
+            *state = RollPlan { stream: song.clone(), ..RollPlan::default() };
+            roll.borrow_mut().reset();
+        }
+        if state.done || state.pending || now - state.requested_at < 1_500.0 {
+            return;
+        }
+        state.pending = true;
+        state.requested_at = now;
+        url.set_pathname(&url.pathname().replace("/api/stream", "/api/mml"));
+        if let Some(have) = state.revision {
+            url.search_params().set("have", &have.to_string());
+        }
+    }
+    let (endpoint, plan, roll) = (url.href(), plan.clone(), roll.clone());
+    leptos::task::spawn_local(async move {
+        let mut request = Request::get(&endpoint);
+        if let Some(header) = header {
+            request = request.header("Authorization", &header);
+        }
+        let reply = match request.send().await {
+            Ok(response) if response.ok() => response.json::<MmlReply>().await.ok(),
+            _ => None,
+        };
+        let mut state = plan.borrow_mut();
+        state.pending = false;
+        let Some(reply) = reply.filter(|_| state.stream == song) else { return };
+        state.done = reply.status != "recording";
+        state.revision = Some(reply.revision);
+        if let Some(score) = reply.document.and_then(|document| kog_inspection::mml::parse(&document.text).ok()) {
+            roll.borrow_mut().plan(&score);
+        }
+    });
 }

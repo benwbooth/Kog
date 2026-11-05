@@ -17,6 +17,8 @@ pub(super) struct Mml {
     pending: Option<Receiver<Result>>,
     progress: Arc<Progress>,
     score: Option<Score>,
+    /// Bumped with each new recording update, for the piano roll's plan.
+    updates: u64,
     document: Option<std::result::Result<Document, String>>,
     /// Bars written on each track's line; `+` and `-` change it.
     pub bars: usize,
@@ -47,6 +49,13 @@ impl Mml {
         self.follow = true;
         self.notice.clear();
         self.pending = Some(start(Arc::clone(&self.progress)));
+    }
+
+    /// The song being recorded, its score so far and that score's update
+    /// count, for the piano roll to plan its ranges from.
+    pub fn recording(&mut self) -> (&str, Option<(&Score, u64)>) {
+        self.poll();
+        (&self.key, self.score.as_ref().map(|score| (score, self.updates)))
     }
 
     fn bars(&self) -> usize {
@@ -107,6 +116,7 @@ impl Mml {
                 Ok(Ok((score, done))) => {
                     self.document = Some(Ok(encode_lines(&score, self.bars())));
                     self.score = Some(score);
+                    self.updates += 1;
                     self.wrapped_for = 0;
                     if done {
                         self.pending = None;

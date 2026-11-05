@@ -4,6 +4,7 @@
 use serde::Serialize;
 
 use crate::Channel;
+use crate::mml::Score;
 
 /// Seconds of history kept; views show as much of it as fits.
 const HISTORY: f64 = 30.0;
@@ -42,6 +43,10 @@ pub struct PianoRoll {
     /// Bars still sounding at `position`, as indices into `bars`.
     #[serde(skip)]
     open: Vec<usize>,
+    /// Every channel and its range over the whole song, from a recording made
+    /// ahead of playback: the roll starts from these, so it never resizes.
+    #[serde(skip)]
+    plan: Vec<Lane>,
 }
 
 impl PianoRoll {
@@ -57,7 +62,13 @@ impl PianoRoll {
         let mut still_open = Vec::new();
         for channel in channels.iter().filter(|channel| channel.active) {
             let lane = match self.lanes.iter().position(|lane| lane.id == channel.id) {
-                Some(lane) => lane,
+                Some(lane) => {
+                    // A planned lane takes the channel's own name.
+                    if self.lanes[lane].name != channel.name && !channel.name.is_empty() {
+                        self.lanes[lane].name = channel.name.clone();
+                    }
+                    lane
+                }
                 None => {
                     let hue = lane_hue(self.lanes.len());
                     self.lanes.push(Lane { id: channel.id, name: channel.name.clone(), hue, low: f32::MAX, high: f32::MIN });
@@ -104,10 +115,72 @@ impl PianoRoll {
         }
     }
 
+    /// Take every channel's range from a recording of the song (it may still
+    /// be growing), so the bands and their ranges are set before notes play.
+    pub fn plan(&mut self, score: &Score) {
+        let mut plan: Vec<Lane> = Vec::new();
+        for note in score.piano_roll() {
+            let Some(cents) = note.cents else { continue };
+            let key = cents as f32 / 100.0;
+            let index = match plan.iter().position(|lane| lane.id == note.channel) {
+                Some(index) => index,
+                None => {
+                    let name = score
+                        .tracks
+                        .iter()
+                        .find(|track| track.channel == note.channel)
+                        .map(|track| track.name.clone())
+                        .unwrap_or_default();
+                    plan.push(Lane { id: note.channel, name, hue: 0.0, low: f32::MAX, high: f32::MIN });
+                    plan.len() - 1
+                }
+            };
+            let lane = &mut plan[index];
+            (lane.low, lane.high) = (lane.low.min(key), lane.high.max(key));
+        }
+        plan.sort_by_key(|lane| lane.id);
+        for (index, lane) in plan.iter_mut().enumerate() {
+            lane.hue = lane_hue(index);
+        }
+        self.plan = plan;
+        self.adopt_plan();
+    }
+
+    /// Lanes follow the plan's order and colors, keeping what they've seen.
+    fn adopt_plan(&mut self) {
+        if self.plan.is_empty() {
+            return;
+        }
+        let old = std::mem::take(&mut self.lanes);
+        let mut lanes = self.plan.clone();
+        for lane in &old {
+            match lanes.iter_mut().find(|planned| planned.id == lane.id) {
+                Some(planned) => (planned.low, planned.high) = (planned.low.min(lane.low), planned.high.max(lane.high)),
+                None => lanes.push(Lane { hue: lane_hue(lanes.len()), ..lane.clone() }),
+            }
+        }
+        // Bars point at lanes by index, which the plan may have reordered.
+        let moved: Vec<usize> = old
+            .iter()
+            .map(|lane| lanes.iter().position(|planned| planned.id == lane.id).unwrap_or(0))
+            .collect();
+        for bar in &mut self.bars {
+            bar.lane = moved[bar.lane];
+        }
+        self.lanes = lanes;
+    }
+
     pub fn clear(&mut self) {
         self.lanes.clear();
         self.bars.clear();
         self.open.clear();
+        self.adopt_plan();
+    }
+
+    /// A new song: forget its predecessor's plan too.
+    pub fn reset(&mut self) {
+        self.plan.clear();
+        self.clear();
     }
 
     /// The keys every channel has played this song, padded to at least two
@@ -175,6 +248,31 @@ mod tests {
         roll.update(1.2, &[channel(1, &[62.2])]);
         assert_eq!(roll.bars.len(), 3);
         assert_eq!(roll.bars[2].end, 1.2);
+    }
+
+    #[test]
+    fn a_recording_sets_every_lane_and_range_before_the_notes_play() {
+        use crate::mml::{Event, EventKind, Score, Track};
+        let note = |tick, key| Event { tick, kind: EventKind::Note { key, cents: 0, velocity: 100, legato: false, length: 96 } };
+        let score = Score {
+            tracks: vec![
+                Track { channel: 2, name: "Triangle".into(), events: vec![note(0, 40), note(96, 52)], ..Track::default() },
+                Track { channel: 0, name: "Pulse 1".into(), events: vec![note(0, 72), note(500, 84)], ..Track::default() },
+            ],
+            ..Score::default()
+        };
+        let mut roll = PianoRoll::default();
+        roll.update(0.0, &[channel(2, &[45.0])]);
+        roll.plan(&score);
+        assert_eq!(roll.lanes.iter().map(|lane| lane.id).collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!((roll.lanes[0].low, roll.lanes[0].high), (72.0, 84.0));
+        assert_eq!((roll.lanes[1].low, roll.lanes[1].high), (40.0, 52.0));
+        assert_eq!(roll.bars[0].lane, 1, "bars follow their lane to its planned place");
+        // A seek keeps the plan.
+        roll.update(30.0, &[]);
+        assert_eq!(roll.lanes.len(), 2);
+        roll.reset();
+        assert!(roll.lanes.is_empty());
     }
 
     #[test]

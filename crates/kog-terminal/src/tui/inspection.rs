@@ -15,6 +15,8 @@ pub(super) struct View {
     guide: super::guide::Guide,
     roll: PianoRoll,
     roll_separate: bool,
+    /// The song and recording update the roll's plan came from.
+    roll_plan: (String, u64),
 }
 impl Default for View {
     fn default() -> Self {
@@ -31,6 +33,7 @@ impl Default for View {
             guide: super::guide::Guide::default(),
             roll: PianoRoll::default(),
             roll_separate: true,
+            roll_plan: (String::new(), 0),
         }
     }
 }
@@ -109,8 +112,9 @@ impl View {
         }
     }
     /// The MML view records the whole song, so it is only started on demand.
+    /// The MML view, and the piano roll for its ranges, record the song.
     pub fn wants_mml(&self) -> bool {
-        self.open && self.mode == 4
+        self.open && (self.mode == 4 || self.mode == 5)
     }
     pub fn wheel(&mut self, down: bool) {
         self.key(if down { Key::Down } else { Key::Up });
@@ -184,6 +188,15 @@ impl View {
             return;
         }
         if self.mode == 5 {
+            let (song, recording) = self.mml.recording();
+            if song != self.roll_plan.0 {
+                self.roll_plan = (song.to_owned(), 0);
+                self.roll.reset();
+            }
+            if let Some((score, updates)) = recording.filter(|(_, updates)| *updates != self.roll_plan.1) {
+                self.roll_plan.1 = updates;
+                self.roll.plan(score);
+            }
             if !state.seeking {
                 self.roll.update(state.position, &state.channels);
             }

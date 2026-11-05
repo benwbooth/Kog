@@ -355,7 +355,7 @@ pub mod qobject {
         #[qinvokable]
         fn channel_snapshot(self: &AppController, include_tracker: bool) -> QString;
         #[qinvokable]
-        fn piano_roll(self: &AppController) -> QString;
+        fn piano_roll(self: Pin<&mut AppController>) -> QString;
         #[qinvokable]
         fn mml_state(self: Pin<&mut AppController>) -> QString;
         #[qinvokable]
@@ -1988,6 +1988,9 @@ pub struct AppControllerRust {
     workspace_tracks_key: String,
     /// The inspector's piano roll, built up from each snapshot it polls.
     piano_roll: std::cell::RefCell<kog_audio::inspection::piano_roll::PianoRoll>,
+    /// The song the roll shows, and the recording revision its plan came from.
+    piano_roll_song: String,
+    piano_roll_plan: u64,
     parked_workspace_tracks: HashMap<String, crate::workspace_tracks::WorkspaceTracks>,
     /// The background tabs (and their sizes) last given to the loaders.
     tabs_behind_loaded: Vec<(String, usize)>,
@@ -2243,6 +2246,8 @@ impl Default for AppControllerRust {
             workspace_tracks: crate::workspace_tracks::WorkspaceTracks::default(),
             workspace_tracks_key: String::new(),
             piano_roll: Default::default(),
+            piano_roll_song: String::new(),
+            piano_roll_plan: 0,
             parked_workspace_tracks: HashMap::new(),
             tabs_behind_loaded: Vec::new(),
             sort_column: PlaylistSortColumn::Index,
@@ -5723,11 +5728,42 @@ impl qobject::AppController {
         QString::from(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
     }
 
-    /// The piano roll with the notes sounding now added, as JSON.
-    pub fn piano_roll(&self) -> QString {
-        let state = self.rust();
+    /// The piano roll with the notes sounding now added, as JSON: the lanes
+    /// and the bars of the last ten seconds. The song is recorded ahead (the
+    /// MML score's recording), so every channel's range is known up front.
+    pub fn piano_roll(mut self: Pin<&mut Self>) -> QString {
+        let this = self.as_ref();
+        let state = this.rust();
+        let playing = state.playback.state() != PlaybackState::Stopped;
+        let track = usize::try_from(state.current_index)
+            .ok()
+            .filter(|_| playing)
+            .and_then(|index| state.tracks.get(index))
+            .cloned();
+        let title = state.now_title.to_string();
+        let settings = state.decoder_settings.clone();
+        let mut rust = self.as_mut().rust_mut();
+        let song = track.as_ref().map(|track| format!("{:?}", track.source)).unwrap_or_default();
+        if song != rust.piano_roll_song {
+            rust.piano_roll_song = song;
+            rust.piano_roll_plan = 0;
+            rust.piano_roll.get_mut().reset();
+        }
+        rust.mml.follow(track.as_ref().map(|track| &track.source), &title, &settings);
+        let planned = rust.piano_roll_plan;
+        let fresh = rust
+            .mml
+            .score()
+            .filter(|(_, revision)| *revision != planned)
+            .map(|(score, revision)| (score.clone(), revision));
+        if let Some((score, revision)) = fresh {
+            rust.piano_roll_plan = revision;
+            rust.piano_roll.get_mut().plan(&score);
+        }
+        let state = self.as_ref();
+        let state = state.rust();
         let mut roll = state.piano_roll.borrow_mut();
-        if state.playback.state() == PlaybackState::Stopped {
+        if !playing {
             roll.clear();
         } else {
             let snapshot = state.playback.channel_snapshot();
@@ -5735,7 +5771,13 @@ impl qobject::AppController {
                 roll.update(snapshot.position, &snapshot.channels);
             }
         }
-        QString::from(serde_json::to_string(&*roll).unwrap_or_else(|_| "{}".into()))
+        let since = roll.position - 10.0;
+        let view = serde_json::json!({
+            "position": roll.position,
+            "lanes": roll.lanes,
+            "bars": roll.bars.iter().filter(|bar| bar.end >= since).collect::<Vec<_>>(),
+        });
+        QString::from(view.to_string())
     }
 
     /// The playing song's MML score state; recording starts on first use.

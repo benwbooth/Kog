@@ -375,14 +375,23 @@ ApplicationWindow {
             function update() {
                 layout()
                 paintedAt = root.roll.position
-                clock = paintedAt
+                if (root.app.playback_state !== "playing") clock = paintedAt
                 rollBars.requestPaint()
             }
             onWidthChanged: update()
             onHeightChanged: update()
+            // The clock advances by each frame's own duration and eases toward
+            // the song position, which arrives in uneven steps from the audio
+            // output; a seek snaps it.
             FrameAnimation {
                 running: pianoRoll.visible && root.app.playback_state === "playing"
-                onTriggered: pianoRoll.clock = root.roll.position + Math.min(pianoRoll.lead, (Date.now() - root.rollReceived) / 1000)
+                onTriggered: {
+                    const target = root.roll.position + Math.min(pianoRoll.lead, (Date.now() - root.rollReceived) / 1000)
+                    let next = pianoRoll.clock + frameTime
+                    const error = target - next
+                    next = Math.abs(error) > 0.25 ? target : next + error * 0.08
+                    pianoRoll.clock = next
+                }
             }
             Canvas {
                 id: rollGrid
