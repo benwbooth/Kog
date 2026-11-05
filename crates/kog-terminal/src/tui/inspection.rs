@@ -566,69 +566,63 @@ fn level_meter(level: f32, cells: usize) -> String {
 /// Seconds of the piano roll across the screen; now is the right edge.
 const ROLL_SECONDS: f64 = 8.0;
 
-/// The piano roll: one row per key (or several keys when the screen is short),
-/// each channel's notes as blocks in its own color, octaves labeled at left.
+/// The piano roll: a roll per channel, stacked, each fitted to its own notes,
+/// with one row per key (or several when the band is short) and the
+/// channel's notes as blocks in its color. Now is the right edge.
 fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usize)) {
     let (x, y, width, height) = area;
     let label = 4;
-    if width <= label + 4 || height < 3 {
+    if width <= label + 4 || height < 2 || roll.lanes.is_empty() {
         return;
     }
-    let (columns, rows) = (width - label, height);
+    let columns = width - label;
     let now = roll.position;
-    let (low, high) = roll.key_range(now - ROLL_SECONDS);
-    let keys = f64::from(high - low + 1.0);
-    let row_of = |key: f32| ((f64::from(high - key) / keys) * rows as f64).floor().clamp(0.0, rows as f64 - 1.0) as usize;
-    let column_of = |time: f64| (((time - (now - ROLL_SECONDS)) / ROLL_SECONDS) * columns as f64).floor();
-    let mut grid = vec![None; columns * rows];
-    for bar in roll.bars.iter().filter(|bar| bar.end >= now - ROLL_SECONDS) {
-        let first = column_of(bar.start).max(0.0) as usize;
-        let last = (column_of(bar.end).min(columns as f64 - 1.0) as usize).max(first);
-        let row = row_of(bar.key);
-        for column in first..=last.min(columns - 1) {
-            grid[row * columns + column] = Some(bar.lane);
-        }
-    }
-    for row in 0..rows {
-        // The row holding a C gets the octave's label and a lighter ground.
-        let octave = (low.ceil() as i32..=high as i32).find(|key| key.rem_euclid(12) == 0 && row_of(*key as f32) == row);
-        let ground = if octave.is_some() { "26;38;46" } else { "15;23;28" };
-        let mut line = format!(
-            "\x1b[{};{}H\x1b[38;2;111;135;148;48;2;15;23;28m{:<label$}",
-            y + row,
-            x,
-            octave.map_or(String::new(), |key| format!("C{}", key / 12 - 1)),
-        );
-        let mut column = 0;
-        while column < columns {
-            let lane = grid[row * columns + column];
-            let run = grid[row * columns + column..row * columns + columns]
-                .iter()
-                .take_while(|cell| **cell == lane)
-                .count();
-            match lane {
-                Some(lane) => {
-                    let hue = roll.lanes.get(lane).map_or(lane_hue(lane), |lane| lane.hue);
-                    let (r, g, b) = hsl(hue, 0.75, 0.6);
-                    line.push_str(&format!("\x1b[38;2;{r};{g};{b};48;2;{ground}m{}", "█".repeat(run)));
-                }
-                None => line.push_str(&format!("\x1b[48;2;{ground}m{}", " ".repeat(run))),
+    let since = now - ROLL_SECONDS;
+    let lanes = roll.lanes.len().min(height);
+    let column_of = |time: f64| (((time - since) / ROLL_SECONDS) * columns as f64).floor();
+    for (index, lane) in roll.lanes.iter().enumerate().take(lanes) {
+        let top = index * height / lanes;
+        let rows = (index + 1) * height / lanes - top;
+        let (low, high) = roll.lane_key_range(index, since);
+        let keys = f64::from(high - low + 1.0);
+        let row_of = |key: f32| ((f64::from(high - key) / keys) * rows as f64).floor().clamp(0.0, rows as f64 - 1.0) as usize;
+        let mut grid = vec![false; columns * rows];
+        for bar in roll.bars.iter().filter(|bar| bar.lane == index && bar.end >= since) {
+            let first = column_of(bar.start).max(0.0) as usize;
+            let last = (column_of(bar.end).min(columns as f64 - 1.0) as usize).max(first);
+            let row = row_of(bar.key);
+            for column in first..=last.min(columns - 1) {
+                grid[row * columns + column] = true;
             }
-            column += run;
         }
-        line.push_str("\x1b[0m");
-        out.push_str(&line);
-    }
-    // Which color is which channel, along the top.
-    let mut legend = x + label;
-    for lane in &roll.lanes {
         let (r, g, b) = hsl(lane.hue, 0.75, 0.6);
-        let name = truncate(&lane.name, 16);
-        if legend + cell_width(&name) + 3 > x + width {
-            break;
+        for row in 0..rows {
+            // The first row names the channel; a row holding a C is labeled.
+            let octave = (low.ceil() as i32..=high as i32).find(|key| key.rem_euclid(12) == 0 && row_of(*key as f32) == row);
+            let ground = if row + 1 == rows && index + 1 < lanes { "30;44;52" } else { "15;23;28" };
+            let mut line = format!(
+                "\x1b[{};{}H\x1b[38;2;111;135;148;48;2;15;23;28m{:<label$}",
+                y + top + row,
+                x,
+                octave.map_or(String::new(), |key| format!("C{}", key / 12 - 1)),
+            );
+            let cells = &grid[row * columns..(row + 1) * columns];
+            let mut column = 0;
+            while column < columns {
+                let lit = cells[column];
+                let run = cells[column..].iter().take_while(|cell| **cell == lit).count();
+                if lit {
+                    line.push_str(&format!("\x1b[38;2;{r};{g};{b};48;2;{ground}m{}", "█".repeat(run)));
+                } else {
+                    line.push_str(&format!("\x1b[48;2;{ground}m{}", " ".repeat(run)));
+                }
+                column += run;
+            }
+            line.push_str("\x1b[0m");
+            out.push_str(&line);
         }
-        out.push_str(&format!("\x1b[{y};{legend}H\x1b[38;2;{r};{g};{b};48;2;15;23;28m■ \x1b[38;2;220;227;232m{name}\x1b[0m"));
-        legend += cell_width(&name) + 3;
+        let name = truncate(&lane.name, columns.saturating_sub(2));
+        out.push_str(&format!("\x1b[{};{}H\x1b[38;2;{r};{g};{b};48;2;15;23;28m{name}\x1b[0m", y + top, x + label + 1));
     }
 }
 

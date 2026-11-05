@@ -25,6 +25,7 @@ ApplicationWindow {
     // Piano roll: bars per channel note from the last half minute.
     property var roll: ({ position: 0, lanes: [], bars: [] })
     readonly property real rollSeconds: 8
+    property double rollReceived: 0
     property bool follow: true
     property int mode: 2
     readonly property var modeNames: [qsTr("Keyboards"), qsTr("Tracker"), qsTr("Keyboards + tracker"), qsTr("MML score"), qsTr("Piano roll")]
@@ -66,6 +67,7 @@ ApplicationWindow {
         if (mode === 4) {
             try {
                 roll = JSON.parse(app.piano_roll())
+                rollReceived = Date.now()
                 pianoRoll.requestPaint()
             } catch (_) { }
             return
@@ -322,56 +324,64 @@ ApplicationWindow {
             visible: root.mode === 4
             Layout.fillWidth: true
             Layout.fillHeight: true
+            renderTarget: Canvas.FramebufferObject
+            // Redrawn every frame, with "now" moved on from the last update by
+            // the time since, so it scrolls smoothly between snapshots.
+            FrameAnimation {
+                running: pianoRoll.visible && root.app.playback_state === "playing"
+                onTriggered: pianoRoll.requestPaint()
+            }
             onPaint: {
                 const ctx = getContext("2d")
                 ctx.fillStyle = "#0f171c"
                 ctx.fillRect(0, 0, width, height)
                 const roll = root.roll
-                const now = roll.position
+                const elapsed = Math.min(0.25, (Date.now() - root.rollReceived) / 1000)
+                const now = roll.position + (root.app.playback_state === "playing" ? elapsed : 0)
                 const since = now - root.rollSeconds
-                const shown = (roll.bars || []).filter(bar => bar.end >= since)
-                // Fit the keys in view, at least two octaves.
-                let low = 48, high = 72
-                if (shown.length) {
-                    low = Math.floor(Math.min(...shown.map(bar => bar.key))) - 1
-                    high = Math.ceil(Math.max(...shown.map(bar => bar.key))) + 1
-                    const middle = (low + high) / 2
-                    low = Math.min(low, middle - 12)
-                    high = Math.max(high, middle + 12)
-                }
+                const lanes = roll.lanes || []
+                if (!lanes.length) return
+                // One roll per channel, stacked, each fitted to its own notes.
+                const band = height / lanes.length
                 const left = 34
-                const rowHeight = height / (high - low + 1)
-                const y = key => height - (key - low + 1) * rowHeight
                 const x = time => left + (width - left) * (1 - (now - time) / root.rollSeconds)
                 ctx.font = "10px monospace"
-                for (let key = Math.ceil(low); key <= high; ++key) {
-                    const black = [1, 3, 6, 8, 10].indexOf(((key % 12) + 12) % 12) >= 0
-                    if (black) {
-                        ctx.fillStyle = "#121d23"
-                        ctx.fillRect(left, y(key), width - left, rowHeight)
+                lanes.forEach((lane, index) => {
+                    const shown = (roll.bars || []).filter(bar => bar.lane === index && bar.end >= since)
+                    let low = 54, high = 66
+                    if (shown.length) {
+                        low = Math.floor(Math.min(...shown.map(bar => bar.key))) - 1
+                        high = Math.ceil(Math.max(...shown.map(bar => bar.key))) + 1
+                        const middle = (low + high) / 2
+                        low = Math.min(low, middle - 6)
+                        high = Math.max(high, middle + 6)
                     }
-                    if (key % 12 === 0) {
-                        ctx.fillStyle = "#2a3a44"
-                        ctx.fillRect(left, y(key) + rowHeight - 1, width - left, 1)
-                        ctx.fillStyle = "#6f8794"
-                        ctx.fillText("C" + (key / 12 - 1), 4, y(key) + rowHeight - 2)
+                    const top = index * band
+                    const row = band / (high - low + 1)
+                    const y = key => top + band - (key - low + 1) * row
+                    for (let key = Math.ceil(low); key <= high; ++key) {
+                        if ([1, 3, 6, 8, 10].indexOf(((key % 12) + 12) % 12) >= 0) {
+                            ctx.fillStyle = "#121d23"
+                            ctx.fillRect(left, y(key), width - left, row)
+                        }
+                        if (key % 12 === 0 && row * 12 > 14) {
+                            ctx.fillStyle = "#6f8794"
+                            ctx.fillText("C" + (key / 12 - 1), 4, y(key) + row - 1)
+                        }
                     }
-                }
-                for (const bar of shown) {
-                    const lane = roll.lanes[bar.lane]
-                    const start = Math.max(left, x(bar.start))
-                    ctx.fillStyle = Qt.hsla(lane.hue / 360, 0.75, 0.6, 0.45 + 0.55 * Math.min(1, bar.velocity))
-                    ctx.fillRect(start, y(bar.key) + 1, Math.max(2, x(bar.end) - start), Math.max(2, rowHeight - 2))
-                }
-                // Which color is which channel.
-                let legend = left + 8
-                for (const lane of roll.lanes || []) {
-                    ctx.fillStyle = Qt.hsla(lane.hue / 360, 0.75, 0.6, 1)
-                    ctx.fillRect(legend, 8, 10, 10)
-                    ctx.fillStyle = "#dce3e8"
-                    ctx.fillText(lane.name, legend + 14, 17)
-                    legend += 24 + ctx.measureText(lane.name).width
-                }
+                    const color = Qt.hsla(lane.hue / 360, 0.75, 0.6, 1)
+                    for (const bar of shown) {
+                        const start = Math.max(left, x(bar.start))
+                        // A bar still sounding reaches the moving "now".
+                        const end = bar.end >= roll.position - 0.000001 ? now : bar.end
+                        ctx.fillStyle = Qt.hsla(lane.hue / 360, 0.75, 0.6, 0.45 + 0.55 * Math.min(1, bar.velocity))
+                        ctx.fillRect(start, y(bar.key) + 1, Math.max(2, x(end) - start), Math.max(2, row - 2))
+                    }
+                    ctx.fillStyle = "#2a3a44"
+                    ctx.fillRect(0, top + band - 1, width, 1)
+                    ctx.fillStyle = color
+                    ctx.fillText(lane.name, left + 6, top + 12)
+                })
             }
         }
         SplitView {

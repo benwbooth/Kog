@@ -106,18 +106,30 @@ impl PianoRoll {
     /// The keys the bars from `since` on span, padded to at least two octaves
     /// around their middle so a quiet passage doesn't fill the whole height.
     pub fn key_range(&self, since: f64) -> (f32, f32) {
-        let (low, high) = self
-            .bars
-            .iter()
-            .filter(|bar| bar.end >= since)
-            .fold((f32::MAX, f32::MIN), |(low, high), bar| (low.min(bar.key), high.max(bar.key)));
-        if low > high {
-            return (48.0, 72.0);
-        }
-        let (low, high) = (low.floor() - 1.0, high.ceil() + 1.0);
-        let middle = (low + high) / 2.0;
-        (low.min(middle - 12.0), high.max(middle + 12.0))
+        fit_keys(self.bars.iter().filter(|bar| bar.end >= since), 12.0)
     }
+
+    /// One lane's key range, for a roll per channel: at least an octave.
+    pub fn lane_key_range(&self, lane: usize, since: f64) -> (f32, f32) {
+        fit_keys(self.bars.iter().filter(|bar| bar.lane == lane && bar.end >= since), 6.0)
+    }
+
+    /// Where to draw "now" `elapsed` seconds after the last update while
+    /// playing, so a view redrawn every frame scrolls smoothly between
+    /// updates. Capped so a stalled decoder doesn't run the roll away.
+    pub fn now(&self, elapsed: f64, playing: bool) -> f64 {
+        if playing { self.position + elapsed.clamp(0.0, 0.25) } else { self.position }
+    }
+}
+
+fn fit_keys<'a>(bars: impl Iterator<Item = &'a Bar>, half_span: f32) -> (f32, f32) {
+    let (low, high) = bars.fold((f32::MAX, f32::MIN), |(low, high), bar| (low.min(bar.key), high.max(bar.key)));
+    if low > high {
+        return (60.0 - half_span, 60.0 + half_span);
+    }
+    let (low, high) = (low.floor() - 1.0, high.ceil() + 1.0);
+    let middle = (low + high) / 2.0;
+    (low.min(middle - half_span), high.max(middle + half_span))
 }
 
 /// A distinct, readable color for each lane, as hue degrees: the golden angle
@@ -170,5 +182,9 @@ mod tests {
         }
         assert_eq!(roll.bars.len(), 2, "the long bar is still in view");
         assert_eq!(roll.key_range(0.0), (56.5, 80.5));
+        assert_eq!(roll.lane_key_range(0, 0.0), (62.5, 74.5));
+        assert_eq!(roll.lane_key_range(5, 0.0), (54.0, 66.0));
+        assert_eq!(roll.now(0.1, true), roll.position + 0.1);
+        assert_eq!(roll.now(3.0, true), roll.position + 0.25);
     }
 }

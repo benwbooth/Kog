@@ -52,6 +52,31 @@ pub fn Inspector(
     let request_generation = Rc::new(Cell::new(0u64));
     let roll = Rc::new(RefCell::new(PianoRoll::default()));
     let roll_canvas = NodeRef::<leptos::html::Canvas>::new();
+    // When the roll last took a snapshot, for the frames drawn in between.
+    let roll_at = Rc::new(Cell::new(0.0));
+    // Redraw the roll every display frame, moving "now" on from the last
+    // snapshot, so it scrolls smoothly; snapshots only come every 33 ms.
+    {
+        let (roll, roll_at) = (roll.clone(), roll_at.clone());
+        let frame: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+        let again = frame.clone();
+        *frame.borrow_mut() = Some(Closure::new(move || {
+            if open.get_untracked() && mode.get_untracked() == "roll" {
+                if let Some(canvas) = roll_canvas.get_untracked() {
+                    let playing = state.with_untracked(|snapshot| snapshot.playing);
+                    let roll = roll.borrow();
+                    draw_roll(&canvas, &roll, roll.now((js_sys::Date::now() - roll_at.get()) / 1000.0, playing));
+                }
+            }
+            if let (Some(window), Some(callback)) = (web_sys::window(), again.borrow().as_ref()) {
+                let _ = window.request_animation_frame(callback.as_ref().unchecked_ref());
+            }
+        }));
+        if let (Some(window), Some(callback)) = (web_sys::window(), frame.borrow().as_ref()) {
+            let _ = window.request_animation_frame(callback.as_ref().unchecked_ref());
+        }
+        std::mem::forget(frame);
+    }
     let tick = Closure::<dyn FnMut()>::new(move || {
         if !open.get_untracked() {
             return;
@@ -137,9 +162,7 @@ pub fn Inspector(
                     roll.update(snapshot.position, &snapshot.channels);
                 }
             });
-            if let Some(canvas) = roll_canvas.get_untracked() {
-                draw_roll(&canvas, &roll);
-            }
+            roll_at.set(js_sys::Date::now());
         }
         let Some(requested) = requested else { return };
         if pending.get() || js_sys::Date::now() - last_request.get() < 400.0 {
@@ -473,9 +496,10 @@ fn draw_keyboard(
 /// Seconds of the piano roll in view; now is the right edge.
 const ROLL_SECONDS: f64 = 8.0;
 
-/// The piano roll as the desktop draws it: each channel's notes as bars in its
-/// own color, octaves marked down the left, the newest notes at the right.
-fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll) {
+/// The piano roll as the desktop draws it: a roll per channel, stacked, each
+/// fitted to its own notes and drawn in the channel's color, with "now" (which
+/// moves between snapshots) at the right edge.
+fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll, now: f64) {
     let ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio());
     let (width, height) = (f64::from(canvas.client_width()), f64::from(canvas.client_height()));
     if width <= 0.0 || height <= 0.0 {
@@ -497,44 +521,44 @@ fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll) {
     let _ = ctx.set_transform(ratio, 0.0, 0.0, ratio, 0.0, 0.0);
     ctx.set_fill_style_str("#0f171c");
     ctx.fill_rect(0.0, 0.0, width, height);
-    let now = roll.position;
+    if roll.lanes.is_empty() {
+        return;
+    }
     let since = now - ROLL_SECONDS;
-    let (low, high) = roll.key_range(since);
-    let (low, high) = (f64::from(low), f64::from(high));
+    let band = height / roll.lanes.len() as f64;
     let left = 34.0;
-    let row = height / (high - low + 1.0);
-    let y = |key: f64| height - (key - low + 1.0) * row;
     let x = |time: f64| left + (width - left) * (1.0 - (now - time) / ROLL_SECONDS);
     ctx.set_font("10px ui-monospace, monospace");
-    let mut key = low.ceil();
-    while key <= high {
-        let pitch = (key as i32).rem_euclid(12);
-        if [1, 3, 6, 8, 10].contains(&pitch) {
-            ctx.set_fill_style_str("#121d23");
-            ctx.fill_rect(left, y(key), width - left, row);
+    for (index, lane) in roll.lanes.iter().enumerate() {
+        let (low, high) = roll.lane_key_range(index, since);
+        let (low, high) = (f64::from(low), f64::from(high));
+        let top = index as f64 * band;
+        let row = band / (high - low + 1.0);
+        let y = |key: f64| top + band - (key - low + 1.0) * row;
+        let mut key = low.ceil();
+        while key <= high {
+            let pitch = (key as i32).rem_euclid(12);
+            if [1, 3, 6, 8, 10].contains(&pitch) {
+                ctx.set_fill_style_str("#121d23");
+                ctx.fill_rect(left, y(key), width - left, row);
+            }
+            if pitch == 0 && row * 12.0 > 14.0 {
+                ctx.set_fill_style_str("#6f8794");
+                let _ = ctx.fill_text(&format!("C{}", key as i32 / 12 - 1), 4.0, y(key) + row - 1.0);
+            }
+            key += 1.0;
         }
-        if pitch == 0 {
-            ctx.set_fill_style_str("#2a3a44");
-            ctx.fill_rect(left, y(key) + row - 1.0, width - left, 1.0);
-            ctx.set_fill_style_str("#6f8794");
-            let _ = ctx.fill_text(&format!("C{}", key as i32 / 12 - 1), 4.0, y(key) + row - 2.0);
+        for bar in roll.bars.iter().filter(|bar| bar.lane == index && bar.end >= since) {
+            let start = x(bar.start).max(left);
+            // A bar still sounding reaches the moving "now".
+            let end = if bar.end >= roll.position - 1e-6 { now } else { bar.end };
+            let alpha = 0.45 + 0.55 * f64::from(bar.velocity.min(1.0));
+            ctx.set_fill_style_str(&format!("hsla({:.0}, 75%, 60%, {alpha:.2})", lane.hue));
+            ctx.fill_rect(start, y(f64::from(bar.key)) + 1.0, (x(end) - start).max(2.0), (row - 2.0).max(2.0));
         }
-        key += 1.0;
-    }
-    for bar in roll.bars.iter().filter(|bar| bar.end >= since) {
-        let Some(lane) = roll.lanes.get(bar.lane) else { continue };
-        let start = x(bar.start).max(left);
-        let alpha = 0.45 + 0.55 * f64::from(bar.velocity.min(1.0));
-        ctx.set_fill_style_str(&format!("hsla({:.0}, 75%, 60%, {alpha:.2})", lane.hue));
-        ctx.fill_rect(start, y(f64::from(bar.key)) + 1.0, (x(bar.end) - start).max(2.0), (row - 2.0).max(2.0));
-    }
-    // Which color is which channel.
-    let mut legend = left + 8.0;
-    for lane in &roll.lanes {
+        ctx.set_fill_style_str("#2a3a44");
+        ctx.fill_rect(0.0, top + band - 1.0, width, 1.0);
         ctx.set_fill_style_str(&format!("hsl({:.0}, 75%, 60%)", lane.hue));
-        ctx.fill_rect(legend, 8.0, 10.0, 10.0);
-        ctx.set_fill_style_str("#dce3e8");
-        let _ = ctx.fill_text(&lane.name, legend + 14.0, 17.0);
-        legend += 24.0 + ctx.measure_text(&lane.name).map_or(40.0, |m| m.width());
+        let _ = ctx.fill_text(&lane.name, left + 6.0, top + 12.0);
     }
 }
