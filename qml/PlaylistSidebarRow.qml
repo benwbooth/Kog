@@ -63,12 +63,17 @@ FocusScope {
             mipmap: true
         }
         Label {
+            id: nameLabel
             Layout.fillWidth: true
             visible: !row.renaming
             text: row.name
             font.pixelSize: 12
             color: row.selected ? row.theme.highlightedText : row.theme.text
             elide: Text.ElideRight
+            // The whole name, only when the row cuts it short.
+            ToolTip.visible: hover.hovered && truncated && !pointer.dragging
+            ToolTip.delay: 600
+            ToolTip.text: row.name
         }
         TextField {
             Layout.fillWidth: true
