@@ -3827,8 +3827,8 @@ ApplicationWindow {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.topMargin: playlistWorkspaceBar.height
-                height: 260
+                // From the very top, behind the playlist tabs, as in the demo.
+                height: 260 + playlistWorkspaceBar.height
                 gradient: Gradient {
                     GradientStop {
                         position: 0

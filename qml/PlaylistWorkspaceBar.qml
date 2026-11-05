@@ -112,6 +112,9 @@ Item {
         objectName: "playlistTabBar"
         anchors.fill: parent
         clip: true
+        // No bar of its own: the playlist's blue glow shows through, as in
+        // Earshot, and the tabs float on it.
+        background: Item {}
         // Keep the style's view. Replacing KDE's eagerly created ListView
         // leaves it attached to contentModel, where it can steal tab buttons
         // into its hidden content item when the model moves them.
@@ -173,34 +176,48 @@ Item {
             required property string tabKey
             required property string title
             required property bool dirty
-            readonly property bool nativePaintedLabel: !!background && "text" in background
+            // Kog draws the tab itself (below), so the label is always ours.
+            readonly property bool nativePaintedLabel: true
             text: title + (dirty ? " •" : "")
             width: implicitWidth
             implicitWidth: Math.ceil(implicitContentWidth) + leftPadding + rightPadding
             leftPadding: 12
             rightPadding: tabKey !== "queue" ? closeButton.width + 12 : leftPadding
-            // KDE normally paints its label inside the native background,
-            // centered across the whole tab regardless of content padding.
-            // Draw just the label ourselves so it shares the close button's
-            // layout, retaining the native frame, hover and selection states.
-            Binding {
-                target: tab.nativePaintedLabel ? tab.background : null
-                property: "text"
-                value: ""
+            // Flat, softly rounded tabs over the glow, as in Earshot: the
+            // open tab is a raised pill with an accent underline, others
+            // light up on hover.
+            background: Item {
+                implicitHeight: 30
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.topMargin: 3
+                    anchors.bottomMargin: 2
+                    anchors.leftMargin: 2
+                    anchors.rightMargin: 2
+                    radius: 6
+                    color: tab.checked ? tab.palette.button
+                        : (tab.hovered ? tab.palette.alternateBase : "transparent")
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                }
+                Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    width: parent.width - 20
+                    height: 2
+                    radius: 1
+                    color: tab.palette.accent
+                    visible: tab.checked
+                }
             }
-            Binding {
-                target: tab
-                property: "contentItem"
-                value: tabLabel
-                when: tab.nativePaintedLabel
-            }
+            contentItem: tabLabel
             Text {
                 id: tabLabel
                 objectName: "playlistTabLabel"
-                visible: tab.nativePaintedLabel
                 text: tab.text
                 font: tab.font
-                color: tab.palette.buttonText
+                color: tab.checked ? tab.palette.buttonText
+                    : Qt.rgba(tab.palette.buttonText.r, tab.palette.buttonText.g,
+                        tab.palette.buttonText.b, 0.66)
                 horizontalAlignment: Text.AlignLeft
                 verticalAlignment: Text.AlignVCenter
                 elide: Text.ElideRight
