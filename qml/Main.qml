@@ -3828,12 +3828,18 @@ ApplicationWindow {
                 anchors.right: parent.right
                 anchors.top: parent.top
                 // From the very top, behind the playlist tabs, as in the demo.
-                height: 260 + playlistWorkspaceBar.height
+                height: 340 + playlistWorkspaceBar.height
                 gradient: Gradient {
                     GradientStop {
                         position: 0
                         color: Qt.rgba(0x4d / 255, 0x78 / 255, 1,
-                            root.baseLuminance < 0.5 ? 0.13 : 0.07)
+                            root.baseLuminance < 0.5 ? 0.26 : 0.12)
+                    }
+                    // Eased: the blue holds near the top, then melts away.
+                    GradientStop {
+                        position: 0.45
+                        color: Qt.rgba(0x4d / 255, 0x78 / 255, 1,
+                            root.baseLuminance < 0.5 ? 0.09 : 0.04)
                     }
                     GradientStop { position: 1; color: "transparent" }
                 }
