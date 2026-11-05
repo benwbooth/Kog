@@ -872,7 +872,7 @@ button:focus-visible {
   top: 50%;
   transform: translateY(-50%);
   width: 24px;
-  height: 21px;
+  height: 24px;
   box-sizing: border-box;
   border-radius: 4px;
   pointer-events: none;
@@ -4245,15 +4245,10 @@ button.primary:hover:not(:disabled) {
 
 .now-text .title .now-meter {
   display: inline-block;
-  width: 22px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   margin-right: 6px;
-  vertical-align: -4px;
-}
-
-.now-text .title .now-meter .row-meter {
-  transform: scale(0.88);
-  transform-origin: left top;
+  vertical-align: -7px;
 }
 
 /* Search fields take the field colour with a hairline, as in Earshot. */

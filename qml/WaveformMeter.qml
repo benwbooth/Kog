@@ -15,7 +15,7 @@ Item {
     property bool dark: true
 
     implicitWidth: 24
-    implicitHeight: 21
+    implicitHeight: 22
 
     readonly property var levels: [
         app.audio_level_low,
@@ -29,8 +29,10 @@ Item {
     Item {
         id: area
         anchors.centerIn: parent
+        // The bars use the meter's full height: there is no box around
+        // them to inset.
         width: meter.width - 4
-        height: meter.height - 4
+        height: meter.height
 
         Repeater {
             model: 6

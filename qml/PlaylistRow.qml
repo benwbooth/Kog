@@ -310,7 +310,7 @@ Item {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     width: 24
-                    height: 21
+                    height: 22
                     visible: root.isPlaying
                     app: root.app
                     highlighted: root.selected
