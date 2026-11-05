@@ -138,8 +138,8 @@ Item {
         anchors.fill: parent
         anchors.leftMargin: 6
         anchors.rightMargin: 6
-        anchors.topMargin: 3
-        anchors.bottomMargin: 3
+        anchors.topMargin: 2
+        anchors.bottomMargin: 2
         radius: 4
         color: root.selected
             ? root.theme.highlight

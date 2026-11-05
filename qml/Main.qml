@@ -148,6 +148,9 @@ ApplicationWindow {
         palette.base.r + (palette.text.r - palette.base.r) * 0.66,
         palette.base.g + (palette.text.g - palette.base.g) * 0.66,
         palette.base.b + (palette.text.b - palette.base.b) * 0.66, 1)
+    // Earshot's text-field fill: a little lighter than the striped rows in
+    // dark mode, the plain base colour in light mode.
+    readonly property color fieldColor: baseLuminance < 0.5 ? "#0e1016" : palette.base
     // The music folder with the home folder shortened to ~, as shells show it.
     function homeRelative(path) {
         const home = String(QtCore.StandardPaths.writableLocation(QtCore.StandardPaths.HomeLocation))
@@ -2426,7 +2429,7 @@ ApplicationWindow {
                     width: Math.max(140, Math.min(parent.width - 24, root.compactToolbar ? 340 : 460))
                     height: 34
                     radius: 17
-                    color: root.palette.alternateBase
+                    color: root.fieldColor
                     border.width: 1
                     border.color: searchField.activeFocus ? root.palette.highlight : root.palette.mid
 
@@ -2996,7 +2999,7 @@ ApplicationWindow {
                     Layout.bottomMargin: 6
                     Layout.preferredHeight: 34
                     radius: 17
-                    color: root.palette.alternateBase
+                    color: root.fieldColor
                     border.width: 1
                     border.color: treeSearchField.activeFocus ? root.palette.highlight : root.palette.mid
 
@@ -3301,8 +3304,6 @@ ApplicationWindow {
                             anchors.fill: parent
                             anchors.leftMargin: 4
                             anchors.rightMargin: 4
-                            anchors.topMargin: 1
-                            anchors.bottomMargin: 1
                             radius: 6
                             color: treeDelegate.selected
                                 ? treeDelegate.palette.highlight

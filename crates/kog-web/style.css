@@ -27,6 +27,8 @@
   --highlight-text: #ffffff;
   /* Selected rows: a deeper blue so white text on it stays legible. */
   --selection: #2f7de1;
+  /* Alternate rows: opaque, so the playlist's glow shows only between them. */
+  --stripe: #0a0b0f;
   --border: #1e2230;
   --glow: rgba(77, 120, 255, 0.14);
   --row-height: 26px;
@@ -72,6 +74,7 @@
     --accent2: #6a4cf0;
     --highlight-text: #ffffff;
     --selection: #2a73d9;
+    --stripe: #f2f2f8;
     --border: #dddfea;
     --glow: rgba(47, 125, 225, 0.10);
     color-scheme: light;
@@ -92,6 +95,7 @@
   --accent2: #6a4cf0;
   --highlight-text: #ffffff;
   --selection: #2a73d9;
+  --stripe: #f2f2f8;
   --border: #dddfea;
   --glow: rgba(47, 125, 225, 0.10);
   color-scheme: light;
@@ -3969,6 +3973,12 @@ button.primary:hover:not(:disabled) {
   border-radius: 6px;
 }
 
+.tree-row:nth-child(even),
+.track.alternate,
+.track.current.alternate {
+  background: var(--stripe);
+}
+
 .track {
   border-radius: 4px;
 }
@@ -3997,10 +4007,6 @@ button.primary:hover:not(:disabled) {
   background: transparent;
   box-shadow: none;
   color: var(--text);
-}
-
-.track.current.alternate {
-  background: color-mix(in srgb, var(--alternate) 45%, transparent);
 }
 
 .track.current:hover {
