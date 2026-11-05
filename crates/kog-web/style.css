@@ -8,25 +8,25 @@
  * Desktop keeps resizable playlist columns and horizontal scrolling.
  */
 
-/* Colours follow Earshot's theme: a deep blue-black, a pink accent with a
- * violet second accent, and soft rounded surfaces. `--surface` is the chrome
+/* Colours follow Earshot's theme: true black (for OLED screens) in dark mode,
+ * a blue accent with a violet second accent, and soft rounded surfaces. `--surface` is the chrome
  * around the playlist (toolbar, sidebar, transport), `--base` the playlist
  * itself, `--field` text fields and `--alternate` hover. */
 :root {
-  --window: #0d0f14;
-  --base: #0d0f14;
-  --field: #151821;
-  --alternate: #1c2030;
-  --surface: #090b0f;
+  --window: #000000;
+  --base: #000000;
+  --field: #0e1016;
+  --alternate: #161922;
+  --surface: #000000;
   --text: #f2f3f7;
   --muted: #9aa1b5;
   --faint: #636a80;
-  --highlight: #ff5f7e;
-  --highlight-hover: #ff7a93;
+  --highlight: #4d9fff;
+  --highlight-hover: #6db1ff;
   --accent2: #7a5cff;
   --highlight-text: #ffffff;
-  --border: #262b3a;
-  --glow: rgba(122, 92, 255, 0.16);
+  --border: #1e2230;
+  --glow: rgba(77, 120, 255, 0.14);
   --row-height: 26px;
   /* The folder tree is scanned, not read row by row: keep it compact. */
   --tree-row-height: 21px;
@@ -63,12 +63,12 @@
     --text: #161822;
     --muted: #5d6478;
     --faint: #8a90a3;
-    --highlight: #e8456a;
-    --highlight-hover: #f2607f;
+    --highlight: #2f7de1;
+    --highlight-hover: #4a8fe8;
     --accent2: #6a4cf0;
     --highlight-text: #ffffff;
     --border: #dddfea;
-    --glow: rgba(122, 92, 255, 0.10);
+    --glow: rgba(47, 125, 225, 0.10);
     color-scheme: light;
   }
 }
@@ -1641,7 +1641,7 @@ body.touch .track .index-cell {
   width: 100%;
   height: auto;
   max-height: 58dvh;
-  background: #0b0d13;
+  background: #000000;
   border-radius: 6px;
 }
 
@@ -3668,7 +3668,7 @@ body.touch .track .index-cell {
 .channel-modes button.current {
   background: #2a2150;
   color: #f2f3f7;
-  box-shadow: inset 0 -2px 0 #ff5f7e;
+  box-shadow: inset 0 -2px 0 #4d9fff;
 }
 
 .channel-mml {
@@ -3704,15 +3704,15 @@ body.touch .track .index-cell {
 }
 .channel-mml .mml-bar.current {
   background: #13303b;
-  border-left-color: #ff5f7e;
+  border-left-color: #4d9fff;
 }
 .channel-mml .k4 {
   font-weight: 700;
 }
 .channel-mml .sounding {
-  background: #ff5f7e;
+  background: #4d9fff;
   border-radius: 3px;
-  box-shadow: 0 0 0 1px #ff5f7e;
+  box-shadow: 0 0 0 1px #4d9fff;
 }
 .channel-mml .sounding span {
   color: #0b1016;
@@ -3747,7 +3747,7 @@ body.touch .track .index-cell {
   inset: 4vh 5vw;
   display: grid;
   grid-template-columns: minmax(180px, 260px) 1fr;
-  background: #0b0d13;
+  background: #000000;
   color: #e4e6ef;
   border: 1px solid #262b3a;
   border-radius: 12px;
@@ -3777,7 +3777,7 @@ body.touch .track .index-cell {
 }
 .mml-guide nav button.current {
   background: #2a2150;
-  box-shadow: inset 3px 0 0 #ff5f7e;
+  box-shadow: inset 3px 0 0 #4d9fff;
 }
 .mml-guide-body {
   display: flex;
@@ -3844,8 +3844,8 @@ body.touch .track .index-cell {
  *
  * Colour and finish only: nothing below changes sizes or positions. Rows and
  * buttons get rounded corners, the playlist a faint violet glow at its top,
- * section titles Earshot's small capitals, and the current song a pink to
- * violet wash with a pink edge.
+ * section titles Earshot's small capitals, and the current song a blue to
+ * violet wash with a blue edge.
  */
 
 input,

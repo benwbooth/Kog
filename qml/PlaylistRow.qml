@@ -304,7 +304,7 @@ Item {
                     // Six pill bars on a black rectangle, laid out like the Dynamic
                     // Island's waveform (centered in their slots, half a slot
                     // wide when quiet and up to 66% wider when loud), springing
-                    // to each new height and shading from violet to pink.
+                    // to each new height and shading from violet to blue.
                     readonly property var levels: [
                         root.app.audio_level_low,
                         root.app.audio_level_low_mid,
@@ -344,8 +344,8 @@ Item {
                                 y: (waveformArea.height - height) / 2
                                 radius: width / 2
                                 antialiasing: true
-                                // Earshot's violet when quiet, its pink when loud.
-                                color: Qt.hsla((252 + 96 * shown) / 360, 0.9,
+                                // Violet when quiet, the blue accent when loud.
+                                color: Qt.hsla((262 - 50 * shown) / 360, 0.9,
                                     root.selected ? 0.7 : 0.6, 1)
 
                                 Behavior on level {
