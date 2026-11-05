@@ -52,9 +52,17 @@ Rectangle {
 
     implicitHeight: 30
     implicitWidth: totalWidth
-    color: theme.window
-    border.color: theme.mid
+    // The bar ends with the last column; past it the list shows through.
+    color: "transparent"
     clip: true
+
+    Rectangle {
+        z: -1
+        width: Math.min(root.width, root.totalWidth)
+        height: root.height
+        color: root.theme.window
+        border.color: root.theme.mid
+    }
 
     FontMetrics {
         id: columnFontMetrics
