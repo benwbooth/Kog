@@ -7,9 +7,13 @@ use std::sync::mpsc::{self, Receiver};
 
 use kog_audio::decoder::{DecoderSettings, PlaybackSource};
 use kog_audio::inspection::mml::{BARS_PER_LINE, Document, Score, encode_lines};
+use kog_audio::inspection::piano_roll::{Lane, PianoRoll};
 use kog_audio::inspection::score::{Progress, analyze_progressively};
 
-type Update = Result<(Score, bool), String>;
+/// A recording update, with its text laid out and the piano roll's lanes
+/// worked out on the recording thread: doing that here every second made
+/// the inspector's piano roll hitch.
+type Update = Result<(Score, Document, Vec<Lane>, bool), String>;
 
 #[derive(Default)]
 pub struct MmlView {
@@ -18,6 +22,9 @@ pub struct MmlView {
     receiver: Option<Receiver<Update>>,
     score: Option<Score>,
     document: Option<Document>,
+    lanes: Vec<Lane>,
+    /// Bars per line, shared with the recording thread that lays out the text.
+    layout_bars: Arc<std::sync::atomic::AtomicUsize>,
     error: Option<String>,
     revision: u64,
     /// Bars written on each track's line (0 means the default).
@@ -51,11 +58,18 @@ impl MmlView {
         let (sender, receiver) = mpsc::channel();
         let (source, title, settings, progress) =
             (source.clone(), title.to_owned(), settings.clone(), Arc::clone(&self.progress));
+        self.layout_bars.store(self.bars(), Ordering::Relaxed);
+        let layout_bars = Arc::clone(&self.layout_bars);
+        let update = move |score: Score, done: bool| {
+            let document = encode_lines(&score, layout_bars.load(Ordering::Relaxed));
+            let lanes = PianoRoll::plan_lanes(&score);
+            (score, document, lanes, done)
+        };
         let _ = std::thread::Builder::new().name("kog-mml-score".into()).spawn(move || {
             let result = analyze_progressively(source, settings, &title, &progress, &mut |score| {
-                let _ = sender.send(Ok((score, false)));
+                let _ = sender.send(Ok(update(score, false)));
             });
-            let _ = sender.send(result.map(|score| (score, true)));
+            let _ = sender.send(result.map(|score| update(score, true)));
         });
         self.receiver = Some(receiver);
     }
@@ -71,6 +85,7 @@ impl MmlView {
             return;
         }
         self.bars = bars;
+        self.layout_bars.store(bars, Ordering::Relaxed);
         if let Some(score) = &self.score {
             self.document = Some(encode_lines(score, bars));
             self.revision += 1;
@@ -80,8 +95,9 @@ impl MmlView {
     fn poll(&mut self) {
         while let Some(receiver) = &self.receiver {
             match receiver.try_recv() {
-                Ok(Ok((score, done))) => {
-                    self.document = Some(encode_lines(&score, self.bars()));
+                Ok(Ok((score, document, lanes, done))) => {
+                    self.document = Some(document);
+                    self.lanes = lanes;
                     self.score = Some(score);
                     self.revision += 1;
                     if done {
@@ -132,11 +148,11 @@ impl MmlView {
         })
     }
 
-    /// The recorded score so far and its revision (which changes with each
-    /// update while recording runs ahead of playback).
-    pub fn score(&mut self) -> Option<(&Score, u64)> {
+    /// The piano roll's lanes from the recording so far, and its revision
+    /// (which changes with each update while recording runs ahead).
+    pub fn roll_lanes(&mut self) -> Option<(&[Lane], u64)> {
         self.poll();
-        self.score.as_ref().map(|score| (score, self.revision))
+        self.score.as_ref().map(|_| (self.lanes.as_slice(), self.revision))
     }
 
     /// The whole MML text, and whether recording is still adding to it.

@@ -118,6 +118,18 @@ impl PianoRoll {
     /// Take every channel's range from a recording of the song (it may still
     /// be growing), so the bands and their ranges are set before notes play.
     pub fn plan(&mut self, score: &Score) {
+        self.set_plan(Self::plan_lanes(score));
+    }
+
+    /// Install lanes from [`PianoRoll::plan_lanes`], which can be worked out
+    /// off the UI thread.
+    pub fn set_plan(&mut self, plan: Vec<Lane>) {
+        self.plan = plan;
+        self.adopt_plan();
+    }
+
+    /// Every channel's lane and range over a recording of the song.
+    pub fn plan_lanes(score: &Score) -> Vec<Lane> {
         let mut plan: Vec<Lane> = Vec::new();
         for note in score.piano_roll() {
             let Some(cents) = note.cents else { continue };
@@ -142,8 +154,7 @@ impl PianoRoll {
         for (index, lane) in plan.iter_mut().enumerate() {
             lane.hue = lane_hue(index);
         }
-        self.plan = plan;
-        self.adopt_plan();
+        plan
     }
 
     /// Lanes follow the plan's order and colors, keeping what they've seen.

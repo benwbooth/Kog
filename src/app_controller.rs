@@ -5753,12 +5753,12 @@ impl qobject::AppController {
         let planned = rust.piano_roll_plan;
         let fresh = rust
             .mml
-            .score()
+            .roll_lanes()
             .filter(|(_, revision)| *revision != planned)
-            .map(|(score, revision)| (score.clone(), revision));
-        if let Some((score, revision)) = fresh {
+            .map(|(lanes, revision)| (lanes.to_vec(), revision));
+        if let Some((lanes, revision)) = fresh {
             rust.piano_roll_plan = revision;
-            rust.piano_roll.get_mut().plan(&score);
+            rust.piano_roll.get_mut().set_plan(lanes);
         }
         let state = self.as_ref();
         let state = state.rust();

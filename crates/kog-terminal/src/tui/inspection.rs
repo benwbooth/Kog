@@ -1,5 +1,5 @@
 use super::{Key, Surface, cell_width, paint, truncate};
-use kog_audio::inspection::piano_roll::{PianoRoll, lane_hue};
+use kog_audio::inspection::piano_roll::PianoRoll;
 use kog_audio::inspection::{Channel, Snapshot, note_name};
 
 pub(super) struct View {
