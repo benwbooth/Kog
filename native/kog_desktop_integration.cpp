@@ -69,7 +69,9 @@ QPalette kogEarshotPalette(const KogColors &c)
     set(QPalette::Shadow, Qt::black);
     set(QPalette::Highlight, c.highlight);
     set(QPalette::HighlightedText, Qt::white);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
     set(QPalette::Accent, c.accent);
+#endif
     set(QPalette::Link, c.link);
     set(QPalette::LinkVisited, c.accent2);
     set(QPalette::ToolTipBase, c.tooltip);
@@ -130,9 +132,13 @@ void kogApplyEarshotColors(QApplication &application)
     }
     // Light or dark as chosen in Preferences, else as the desktop is.
     const QString mode = kogAppearanceMode();
-    const bool light = mode == QStringLiteral("system")
-        ? QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light
-        : mode == QStringLiteral("light");
+    // Qt before 6.5 cannot tell the desktop's scheme, so it stays dark.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    const bool systemLight = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light;
+#else
+    const bool systemLight = false;
+#endif
+    const bool light = mode == QStringLiteral("system") ? systemLight : mode == QStringLiteral("light");
     const KogColors &colors = kogEarshotColors(light);
 
     const QString directory = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
@@ -236,9 +242,11 @@ std::unique_ptr<QApplication> kogApplicationNew()
     application->setOrganizationName(QStringLiteral("Kog"));
     kogApplyEarshotColors(*application);
     kogApplyInterfaceFont();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     // Follow the desktop between Earshot's dark and light variants.
     QObject::connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
                      application.get(), [app = application.get()] { kogApplyEarshotColors(*app); });
+#endif
 #ifdef KOG_WAYLAND_SESSION_RESTORE
     if (application->platformName().startsWith(QStringLiteral("wayland"))
         && !application->sessionId().isEmpty()) {

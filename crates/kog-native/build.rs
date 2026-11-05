@@ -440,7 +440,9 @@ fn build_game_music_emu() {
     native_overlay(source, &overlay, &|path, data| {
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
         let data = if GME_FDS_PATCHES.iter().any(|(file, _, _)| *file == name) {
-            let mut text = String::from_utf8(data).unwrap();
+            // A Windows checkout may have CRLF line endings; the patches
+            // are written with LF.
+            let mut text = String::from_utf8(data).unwrap().replace("\r\n", "\n");
             for (_, before, after) in GME_FDS_PATCHES.iter().filter(|(file, _, _)| *file == name) {
                 assert_eq!(text.matches(before).count(), 1, "GME FDS overlay needs updating in {name}");
                 text = text.replacen(before, after, 1);
