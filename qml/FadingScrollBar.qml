@@ -23,5 +23,11 @@ ScrollBar {
         onTriggered: bar.scrolling = false
     }
     opacity: hovered || pressed || scrolling ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: 150 } }
+    // Quick to appear, slow to fade away.
+    Behavior on opacity {
+        NumberAnimation {
+            duration: opacity < 0.5 ? 150 : 700
+            easing.type: Easing.OutCubic
+        }
+    }
 }

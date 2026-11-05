@@ -2192,12 +2192,14 @@ body.touch .track .index-cell {
 }
 
 :where(.section-body, .playlist .rows, .tree, .modal-body, .channel-keyboards, .channel-tracker) {
-  transition: --scrollbar-opacity 150ms ease;
+  /* A slow fade out; the fade in (below) is quick. */
+  transition: --scrollbar-opacity 700ms ease-out;
 }
 
 .scrollbar-hover,
 .scrollbar-scrolling {
   --scrollbar-opacity: 1;
+  transition-duration: 150ms;
 }
 
 ::-webkit-scrollbar {
