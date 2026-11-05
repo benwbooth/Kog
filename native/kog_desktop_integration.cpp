@@ -1,16 +1,140 @@
 #include "kog_desktop_integration.h"
 #include "kog_modern_skin.h"
 
+#include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QHash>
 #include <QtCore/QMimeDatabase>
+#include <QtCore/QSaveFile>
+#include <QtCore/QStandardPaths>
 #include "kog_settings.h"
 #include <QtGui/QCursor>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QIcon>
+#include <QtGui/QPalette>
+#include <QtGui/QStyleHints>
 #include <QtGui/QWindow>
 
 #include <array>
+
+namespace {
+// Earshot's colours: a deep blue-black, a pink accent with a violet second
+// accent. Selection uses a slightly deeper pink so white text on it stays
+// legible; the brighter pink is the accent (slider fills, focus, links).
+struct KogColors {
+    QColor window, base, alternateBase, button, text, muted, faint, border,
+        light, dark, highlight, accent, accent2, link, tooltip;
+};
+
+const KogColors &kogEarshotColors(bool light)
+{
+    static const KogColors dark {
+        QColor(0x0b, 0x0d, 0x12), QColor(0x0d, 0x0f, 0x14), QColor(0x12, 0x15, 0x1d),
+        QColor(0x1c, 0x20, 0x30), QColor(0xf2, 0xf3, 0xf7), QColor(0x9a, 0xa1, 0xb5),
+        QColor(0x63, 0x6a, 0x80), QColor(0x26, 0x2b, 0x3a), QColor(0x2c, 0x32, 0x48),
+        QColor(0x05, 0x06, 0x09), QColor(0xe3, 0x47, 0x6d), QColor(0xff, 0x5f, 0x7e),
+        QColor(0x7a, 0x5c, 0xff), QColor(0xff, 0x7a, 0x93), QColor(0x1c, 0x20, 0x30),
+    };
+    static const KogColors bright {
+        QColor(0xf1, 0xf1, 0xf7), QColor(0xfb, 0xfb, 0xfe), QColor(0xf2, 0xf2, 0xf8),
+        QColor(0xe8, 0xe8, 0xf1), QColor(0x16, 0x18, 0x22), QColor(0x5d, 0x64, 0x78),
+        QColor(0x8a, 0x90, 0xa3), QColor(0xd6, 0xd8, 0xe4), QColor(0xff, 0xff, 0xff),
+        QColor(0xb4, 0xb8, 0xc8), QColor(0xe0, 0x44, 0x6a), QColor(0xe8, 0x45, 0x6a),
+        QColor(0x6a, 0x4c, 0xf0), QColor(0xd6, 0x36, 0x5c), QColor(0xff, 0xff, 0xff),
+    };
+    return light ? bright : dark;
+}
+
+QPalette kogEarshotPalette(const KogColors &c)
+{
+    QPalette palette;
+    const auto set = [&palette](QPalette::ColorRole role, const QColor &color) {
+        palette.setColor(QPalette::All, role, color);
+    };
+    set(QPalette::Window, c.window);
+    set(QPalette::WindowText, c.text);
+    set(QPalette::Base, c.base);
+    set(QPalette::AlternateBase, c.alternateBase);
+    set(QPalette::Button, c.button);
+    set(QPalette::ButtonText, c.text);
+    set(QPalette::Text, c.text);
+    set(QPalette::BrightText, Qt::white);
+    set(QPalette::Light, c.light);
+    set(QPalette::Midlight, c.button.lighter(115));
+    set(QPalette::Mid, c.border);
+    set(QPalette::Dark, c.dark);
+    set(QPalette::Shadow, Qt::black);
+    set(QPalette::Highlight, c.highlight);
+    set(QPalette::HighlightedText, Qt::white);
+    set(QPalette::Accent, c.accent);
+    set(QPalette::Link, c.link);
+    set(QPalette::LinkVisited, c.accent2);
+    set(QPalette::ToolTipBase, c.tooltip);
+    set(QPalette::ToolTipText, c.text);
+    set(QPalette::PlaceholderText, c.faint);
+    for (const auto role : { QPalette::WindowText, QPalette::Text, QPalette::ButtonText }) {
+        palette.setColor(QPalette::Disabled, role, c.faint);
+    }
+    palette.setColor(QPalette::Disabled, QPalette::Highlight, c.border);
+    return palette;
+}
+
+// The same colours as a KDE colour scheme. The desktop style and Kirigami read
+// colours from a scheme file rather than from the palette alone, so Kog writes
+// one and points the application at it, as KDE's own colour scheme menus do.
+QString kogEarshotColorScheme(const KogColors &c)
+{
+    const auto rgb = [](const QColor &color) {
+        return QStringLiteral("%1,%2,%3").arg(color.red()).arg(color.green()).arg(color.blue());
+    };
+    const auto group = [&](const QString &name, const QColor &background, const QColor &alternate,
+                           const QColor &foreground) {
+        return QStringLiteral("[Colors:%1]\n"
+                              "BackgroundNormal=%2\nBackgroundAlternate=%3\n"
+                              "ForegroundNormal=%4\nForegroundInactive=%5\nForegroundActive=%6\n"
+                              "ForegroundLink=%7\nForegroundVisited=%8\nForegroundNegative=255,107,107\n"
+                              "ForegroundNeutral=246,197,96\nForegroundPositive=61,220,151\n"
+                              "DecorationFocus=%6\nDecorationHover=%7\n\n")
+            .arg(name, rgb(background), rgb(alternate), rgb(foreground), rgb(c.muted), rgb(c.accent),
+                 rgb(c.link), rgb(c.accent2));
+    };
+    // Earshot keeps its pink when the window is in the background.
+    return QStringLiteral("[General]\nColorScheme=Earshot\nName=Earshot\n\n"
+                          "[ColorEffects:Inactive]\nEnable=false\nChangeSelectionColor=false\n\n")
+        + group(QStringLiteral("Window"), c.window, c.alternateBase, c.text)
+        + group(QStringLiteral("View"), c.base, c.alternateBase, c.text)
+        + group(QStringLiteral("Button"), c.button, c.button.lighter(110), c.text)
+        + group(QStringLiteral("Selection"), c.highlight, c.highlight.darker(110), QColor(Qt::white))
+        + group(QStringLiteral("Tooltip"), c.tooltip, c.tooltip, c.text)
+        + group(QStringLiteral("Header"), c.window, c.alternateBase, c.text)
+        + group(QStringLiteral("Complementary"), c.dark, c.window, QColor(0xf2, 0xf3, 0xf7));
+}
+
+void kogApplyEarshotColors(QApplication &application)
+{
+    // KOG_COLORS=system keeps the desktop's own colour scheme.
+    if (qEnvironmentVariable("KOG_COLORS") == QStringLiteral("system")) {
+        return;
+    }
+    const bool light = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light;
+    const KogColors &colors = kogEarshotColors(light);
+
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+        + QStringLiteral("/kog/colors");
+    const QString path = directory + (light ? QStringLiteral("/EarshotLight.colors")
+                                            : QStringLiteral("/Earshot.colors"));
+    if (QDir().mkpath(directory)) {
+        QSaveFile file(path);
+        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            file.write(kogEarshotColorScheme(colors).toUtf8());
+            if (file.commit()) {
+                application.setProperty("KDE_COLOR_SCHEME_PATH", path);
+            }
+        }
+    }
+    QApplication::setPalette(kogEarshotPalette(colors));
+}
+} // namespace
 
 std::unique_ptr<QApplication> kogApplicationNew()
 {
@@ -34,6 +158,10 @@ std::unique_ptr<QApplication> kogApplicationNew()
     auto application = std::make_unique<QApplication>(argumentCount, arguments.data());
     kogRegisterModernSkinTypes();
     application->setOrganizationName(QStringLiteral("Kog"));
+    kogApplyEarshotColors(*application);
+    // Follow the desktop between Earshot's dark and light variants.
+    QObject::connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
+                     application.get(), [app = application.get()] { kogApplyEarshotColors(*app); });
 #ifdef KOG_WAYLAND_SESSION_RESTORE
     if (application->platformName().startsWith(QStringLiteral("wayland"))
         && !application->sessionId().isEmpty()) {

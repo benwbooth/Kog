@@ -8,19 +8,25 @@
  * Desktop keeps resizable playlist columns and horizontal scrolling.
  */
 
+/* Colours follow Earshot's theme: a deep blue-black, a pink accent with a
+ * violet second accent, and soft rounded surfaces. `--surface` is the chrome
+ * around the playlist (toolbar, sidebar, transport), `--base` the playlist
+ * itself, `--field` text fields and `--alternate` hover. */
 :root {
-  --window: #1b1e20;
-  --base: #23272a;
-  --alternate: #2b3034;
-  --surface: #202427;
-  --text: #eff0f1;
-  --muted: #9aa0a6;
-  --faint: #7b848c;
-  --highlight: #3daee9;
-  /* White on the highlight, like the desktop's Breeze palette: the darker
-   * navy previously here read as black-on-blue on the current row. */
+  --window: #0d0f14;
+  --base: #0d0f14;
+  --field: #151821;
+  --alternate: #1c2030;
+  --surface: #090b0f;
+  --text: #f2f3f7;
+  --muted: #9aa1b5;
+  --faint: #636a80;
+  --highlight: #ff5f7e;
+  --highlight-hover: #ff7a93;
+  --accent2: #7a5cff;
   --highlight-text: #ffffff;
-  --border: #34393d;
+  --border: #262b3a;
+  --glow: rgba(122, 92, 255, 0.16);
   --row-height: 26px;
   /* The folder tree is scanned, not read row by row: keep it compact. */
   --tree-row-height: 21px;
@@ -49,16 +55,20 @@
 
 @media (prefers-color-scheme: light) {
   :root {
-    --window: #eff0f1;
-    --base: #ffffff;
-    --alternate: #f2f3f5;
-    --surface: #e7e9ec;
-    --text: #232629;
-    --muted: #6b7280;
-    --faint: #8b929a;
-    --highlight: #1d78b8;
+    --window: #f7f7fb;
+    --base: #fbfbfe;
+    --field: #ffffff;
+    --alternate: #ececf4;
+    --surface: #f1f1f7;
+    --text: #161822;
+    --muted: #5d6478;
+    --faint: #8a90a3;
+    --highlight: #e8456a;
+    --highlight-hover: #f2607f;
+    --accent2: #6a4cf0;
     --highlight-text: #ffffff;
-    --border: #c9ccd1;
+    --border: #dddfea;
+    --glow: rgba(122, 92, 255, 0.10);
     color-scheme: light;
   }
 }
@@ -77,7 +87,7 @@ body {
 body {
   background: var(--window);
   color: var(--text);
-  font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 13px/1.35 Inter, "Noto Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -1631,7 +1641,7 @@ body.touch .track .index-cell {
   width: 100%;
   height: auto;
   max-height: 58dvh;
-  background: #10191f;
+  background: #0b0d13;
   border-radius: 6px;
 }
 
@@ -3591,7 +3601,7 @@ body.touch .track .index-cell {
   background: #070b0e;
   border: 1px solid #1d2a32;
   border-radius: 4px;
-  color: #eef4f7;
+  color: #f2f3f7;
 }
 .channel-inspector .channel-tracker table {
   border-collapse: collapse;
@@ -3608,7 +3618,7 @@ body.touch .track .index-cell {
 }
 .channel-inspector .channel-tracker thead th {
   background: #101a21;
-  color: #a9c4d2;
+  color: #b3b8cc;
   padding: 3px 6px;
 }
 .channel-inspector .channel-tracker tbody th {
@@ -3632,17 +3642,17 @@ body.touch .track .index-cell {
   margin-right: 1ch;
 }
 .channel-tracker td span:last-child { margin-right: 0; }
-.channel-tracker .tn { color: #eef4f7; }
-.channel-tracker .ti { color: #58c8f0; }
+.channel-tracker .tn { color: #f2f3f7; }
+.channel-tracker .ti { color: #b9a6ff; }
 .channel-tracker .tv { color: #8fdc7c; }
 .channel-tracker .tf { color: #e39cf2; }
-.channel-tracker td span.blank { color: #33454f; }
+.channel-tracker td span.blank { color: #363c50; }
 .channel-tracker tbody td:last-child { color: #83d4bb; }
 
 .channel-modes {
   display: flex;
   flex-wrap: wrap;
-  border: 1px solid #253944;
+  border: 1px solid #262b3a;
   border-radius: 8px;
   overflow: hidden;
 }
@@ -3653,12 +3663,12 @@ body.touch .track .index-cell {
   padding: 0.35rem 0.8rem;
 }
 .channel-modes button + button {
-  border-left: 1px solid #253944;
+  border-left: 1px solid #262b3a;
 }
 .channel-modes button.current {
-  background: #173946;
-  color: #edf4f7;
-  box-shadow: inset 0 -2px 0 #50c8ef;
+  background: #2a2150;
+  color: #f2f3f7;
+  box-shadow: inset 0 -2px 0 #ff5f7e;
 }
 
 .channel-mml {
@@ -3667,7 +3677,7 @@ body.touch .track .index-cell {
   overflow: auto;
   contain: strict;
   font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  color: #dce3e8;
+  color: #e4e6ef;
   background: #0f171c;
   border-radius: 8px;
 }
@@ -3684,7 +3694,7 @@ body.touch .track .index-cell {
 .channel-mml summary {
   cursor: pointer;
   padding: 0.35rem 0.75rem;
-  color: #7d9aa8;
+  color: #8a90a6;
 }
 .channel-mml .mml-header {
   opacity: 0.85;
@@ -3694,15 +3704,15 @@ body.touch .track .index-cell {
 }
 .channel-mml .mml-bar.current {
   background: #13303b;
-  border-left-color: #50c8ef;
+  border-left-color: #ff5f7e;
 }
 .channel-mml .k4 {
   font-weight: 700;
 }
 .channel-mml .sounding {
-  background: #50c8ef;
+  background: #ff5f7e;
   border-radius: 3px;
-  box-shadow: 0 0 0 1px #50c8ef;
+  box-shadow: 0 0 0 1px #ff5f7e;
 }
 .channel-mml .sounding span {
   color: #0b1016;
@@ -3737,16 +3747,16 @@ body.touch .track .index-cell {
   inset: 4vh 5vw;
   display: grid;
   grid-template-columns: minmax(180px, 260px) 1fr;
-  background: #10191f;
-  color: #dce3e8;
-  border: 1px solid #253944;
+  background: #0b0d13;
+  color: #e4e6ef;
+  border: 1px solid #262b3a;
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 12px 60px #000a;
 }
 .mml-guide nav {
   overflow: auto;
-  border-right: 1px solid #253944;
+  border-right: 1px solid #262b3a;
   padding: 0.5rem 0;
 }
 .mml-guide nav h2 {
@@ -3766,8 +3776,8 @@ body.touch .track .index-cell {
   cursor: pointer;
 }
 .mml-guide nav button.current {
-  background: #173946;
-  box-shadow: inset 3px 0 0 #50c8ef;
+  background: #2a2150;
+  box-shadow: inset 3px 0 0 #ff5f7e;
 }
 .mml-guide-body {
   display: flex;
@@ -3784,7 +3794,7 @@ body.touch .track .index-cell {
   justify-content: space-between;
   align-items: center;
   padding: 0.6rem 1rem;
-  border-top: 1px solid #253944;
+  border-top: 1px solid #262b3a;
 }
 .mml-guide-page {
   flex: 1;
@@ -3812,20 +3822,217 @@ body.touch .track .index-cell {
 .mml-guide-page pre code {
   background: none;
   padding: 0;
-  color: #dce3e8;
+  color: #e4e6ef;
 }
 .mml-guide-page table {
   border-collapse: collapse;
   margin: 0.8rem 0;
 }
 .mml-guide-page th, .mml-guide-page td {
-  border: 1px solid #253944;
+  border: 1px solid #262b3a;
   padding: 0.35rem 0.7rem;
   text-align: left;
   vertical-align: top;
 }
-.mml-guide-page th { background: #152229; }
+.mml-guide-page th { background: #151821; }
 @media (max-width: 700px) {
   .mml-guide { inset: 1vh 1vw; grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  .mml-guide nav { max-height: 30vh; border-right: 0; border-bottom: 1px solid #253944; }
+  .mml-guide nav { max-height: 30vh; border-right: 0; border-bottom: 1px solid #262b3a; }
+}
+
+/* ------------------------------------------------------------ Earshot look
+ *
+ * Colour and finish only: nothing below changes sizes or positions. Rows and
+ * buttons get rounded corners, the playlist a faint violet glow at its top,
+ * section titles Earshot's small capitals, and the current song a pink to
+ * violet wash with a pink edge.
+ */
+
+input,
+select,
+textarea,
+.toolbar .search,
+.tree-search {
+  background: var(--field);
+}
+
+.toolbar .search:hover,
+.tree-search:hover {
+  border-color: var(--faint);
+}
+
+.toolbar .search:focus-within,
+.tree-search:focus-within {
+  border-color: var(--text);
+  background: var(--alternate);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--highlight-hover);
+}
+
+.playlist {
+  background:
+    linear-gradient(180deg, var(--glow) 0, transparent 260px),
+    var(--base);
+}
+
+.columns {
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(12px);
+  color: var(--faint);
+}
+
+.columns .col-sort:hover {
+  background: transparent;
+  color: var(--text);
+}
+
+.section-header {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--faint);
+}
+
+.section-header:hover {
+  background: transparent;
+  color: var(--muted);
+}
+
+.section-add:hover {
+  border-color: transparent;
+  color: var(--text);
+}
+
+.tree-row,
+.track {
+  border-radius: 8px;
+}
+
+.tree-row:hover,
+.track:hover {
+  background: var(--alternate);
+}
+
+.tree-row.selected,
+.tree-row.selected:hover {
+  background: color-mix(in srgb, var(--accent2) 26%, var(--surface));
+  color: var(--text);
+}
+
+.tree-row.selected .twisty,
+.tree-row.selected .count {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.track.selected,
+.track.selected:hover {
+  background: color-mix(in srgb, var(--accent2) 24%, transparent);
+}
+
+.track.current,
+.track.current:hover {
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--highlight) 30%, transparent),
+    color-mix(in srgb, var(--accent2) 16%, transparent));
+  box-shadow: inset 3px 0 0 var(--highlight);
+  color: var(--text);
+}
+
+.track.current .title-cell {
+  color: var(--highlight);
+  font-weight: 600;
+}
+
+.track.current .index-cell,
+.track.current .duration-cell,
+.track.current .trackno-cell,
+.track.current .artist-cell,
+.track.current .album-cell,
+.track.current .star-cell,
+.track.current .status-cell {
+  color: var(--text);
+}
+
+.icon-button,
+.controls button,
+.section-add {
+  border-radius: 50%;
+}
+
+.icon-button:hover:not(:disabled),
+.controls button:hover:not(:disabled) {
+  background: var(--alternate);
+  color: var(--text);
+}
+
+.controls button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+/* The transport's play button: a white disc with a dark glyph, as in Earshot. */
+.controls .play,
+.controls .play:hover:not(:disabled) {
+  background: var(--text);
+  color: var(--window);
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.controls .play:hover:not(:disabled) {
+  transform: scale(1.06);
+}
+
+.controls .toggle.active {
+  color: var(--highlight);
+  background: transparent;
+  border-color: transparent;
+}
+
+.controls .toggle.active::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--highlight);
+}
+
+.art {
+  border-radius: 8px;
+  border-color: transparent;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.now-text .subtitle {
+  color: var(--muted);
+}
+
+.context-menu {
+  border-radius: 12px;
+  background: var(--field);
+}
+
+.context-menu .menu-item {
+  border-radius: 8px;
+}
+
+.settings,
+.audio-visualizer {
+  border-radius: 16px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--highlight) 45%, transparent);
+}
+
+* {
+  scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
 }

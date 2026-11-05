@@ -303,20 +303,22 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 text: sectionHeader.sectionTitle
-                font.bold: true
-                font.pixelSize: 11
-                color: root.palette.text
+                // Earshot's section titles: small spaced capitals, quietly grey.
+                font.weight: Font.DemiBold
+                font.pixelSize: 10
+                font.capitalization: Font.AllUppercase
+                font.letterSpacing: 1.1
+                color: root.palette.placeholderText
                 elide: Text.ElideRight
             }
             Rectangle {
                 Layout.preferredWidth: 24
                 Layout.preferredHeight: 24
                 visible: sectionHeader.showAddButton
-                radius: 5
+                radius: width / 2
                 color: addMouse.containsMouse
                     ? root.palette.button : "transparent"
-                border.color: addMouse.containsMouse
-                    ? root.palette.mid : "transparent"
+                border.color: "transparent"
 
                 Label {
                     anchors.centerIn: parent
@@ -2601,6 +2603,7 @@ ApplicationWindow {
                         onClicked: appController.previous()
                     }
                     ToolbarButton {
+                        id: transportPlayButton
                         Layout.preferredWidth: 40
                         Layout.preferredHeight: 40
                         glyph: appController.playback_state === "playing" ? "Ⅱ" : "▶"
@@ -2610,6 +2613,33 @@ ApplicationWindow {
                         toolTip: qsTr("Play/Pause")
                         enabled: root.transportReady
                         onClicked: appController.play_pause()
+                        // Earshot's play button: a disc in the text colour with
+                        // the glyph in the background colour. The desktop style
+                        // paints a button's icon as part of its background, so
+                        // both are drawn here.
+                        iconBackground: root.palette.text
+                        forceLightIcon: false
+                        background: Rectangle {
+                            radius: width / 2
+                            color: root.palette.text
+                            opacity: transportPlayButton.enabled
+                                ? (transportPlayButton.pressed ? 0.8 : 1) : 0.45
+                            scale: transportPlayButton.hovered && transportPlayButton.enabled ? 1.06 : 1
+                            Behavior on scale { NumberAnimation { duration: 120 } }
+                        }
+                        contentItem: Item {
+                            Image {
+                                anchors.centerIn: parent
+                                // The play triangle's weight sits left of its box.
+                                anchors.horizontalCenterOffset:
+                                    appController.playback_state === "playing" ? 0 : 1
+                                width: 20
+                                height: 20
+                                sourceSize: Qt.size(20, 20)
+                                source: transportPlayButton.icon.source
+                                opacity: transportPlayButton.enabled ? 1 : 0.7
+                            }
+                        }
                     }
                     ToolbarButton {
                         Layout.preferredWidth: 34

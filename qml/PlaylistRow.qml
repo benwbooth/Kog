@@ -228,9 +228,12 @@ Item {
             wholeQuery: true
             visible: (cell.column.id !== "status" || !root.isActiveTrack)
                 && cell.column.id !== "star"
+            // The playing song's title takes the accent, as in Earshot.
             color: root.selected
                 ? root.theme.highlightedText
-                : (root.isMissing ? root.theme.placeholderText : root.theme.text)
+                : (root.isMissing ? root.theme.placeholderText
+                    : (root.isActiveTrack && cell.column.id === "title"
+                        ? root.theme.accent : root.theme.text))
             font.pixelSize: 11
             horizontalAlignment: cell.column.alignment
             verticalAlignment: Text.AlignVCenter
@@ -287,7 +290,7 @@ Item {
                         : "media-playback-pause"
                     color: root.selected
                         ? root.theme.highlightedText
-                        : root.theme.text
+                        : root.theme.accent
                 }
 
                 Item {
@@ -301,7 +304,7 @@ Item {
                     // Six pill bars on a black rectangle, laid out like the Dynamic
                     // Island's waveform (centered in their slots, half a slot
                     // wide when quiet and up to 66% wider when loud), springing
-                    // to each new height and shading from blue to green.
+                    // to each new height and shading from violet to pink.
                     readonly property var levels: [
                         root.app.audio_level_low,
                         root.app.audio_level_low_mid,
@@ -341,7 +344,8 @@ Item {
                                 y: (waveformArea.height - height) / 2
                                 radius: width / 2
                                 antialiasing: true
-                                color: Qt.hsla((210 - 90 * shown) / 360, 0.85,
+                                // Earshot's violet when quiet, its pink when loud.
+                                color: Qt.hsla((252 + 96 * shown) / 360, 0.9,
                                     root.selected ? 0.7 : 0.6, 1)
 
                                 Behavior on level {
