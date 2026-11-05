@@ -3758,8 +3758,9 @@ ApplicationWindow {
                             id: playlistRow
                             required property int index
                             objectName: "sidebarPlaylist_" + pid
+                            // Full width: the scroll bar floats over the
+                            // rows' right end, where the + sits.
                             width: playlistsList.width
-                                - (playlistsScrollBar.visible ? playlistsScrollBar.implicitWidth + 2 : 0)
                             height: playlistsList.rowPitch - playlistsList.spacing
                             theme: root.themePalette
                             selected: root.isPlaylistSelected(pid)
