@@ -54,6 +54,8 @@ pub fn Inspector(
     let roll_canvas = NodeRef::<leptos::html::Canvas>::new();
     // When the roll last took a snapshot, for the frames drawn in between.
     let roll_at = Rc::new(Cell::new(0.0));
+    // One roll per channel, or every channel in one.
+    let roll_separate = RwSignal::new(true);
     // Redraw the roll every display frame, moving "now" on from the last
     // snapshot, so it scrolls smoothly; snapshots only come every 33 ms.
     {
@@ -65,7 +67,8 @@ pub fn Inspector(
                 if let Some(canvas) = roll_canvas.get_untracked() {
                     let playing = state.with_untracked(|snapshot| snapshot.playing);
                     let roll = roll.borrow();
-                    draw_roll(&canvas, &roll, roll.now((js_sys::Date::now() - roll_at.get()) / 1000.0, playing));
+                    let now = roll.now((js_sys::Date::now() - roll_at.get()) / 1000.0, playing);
+                    draw_roll(&canvas, &roll, now, roll_separate.get_untracked());
                 }
             }
             if let (Some(window), Some(callback)) = (web_sys::window(), again.borrow().as_ref()) {
@@ -319,6 +322,9 @@ pub fn Inspector(
                         }).collect_view()}
                     </div>
                     <label><input type="checkbox" prop:checked=move || follow.get() on:change=move |ev| follow.set(event_target_checked(&ev))/>{"Follow playback"}</label>
+                    <Show when=move || mode.get() == "roll">
+                        <label><input type="checkbox" prop:checked=move || roll_separate.get() on:change=move |ev| roll_separate.set(event_target_checked(&ev))/>{"A roll per channel"}</label>
+                    </Show>
                     <span>{move || state.with(|s| format!("{} · {:.3} s", s.description.backend, s.position))}</span>
                 </div>
                 <p class="channel-description">{move || message.get()}</p>
@@ -497,9 +503,9 @@ fn draw_keyboard(
 const ROLL_SECONDS: f64 = 8.0;
 
 /// The piano roll as the desktop draws it: a roll per channel, stacked, each
-/// fitted to its own notes and drawn in the channel's color, with "now" (which
-/// moves between snapshots) at the right edge.
-fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll, now: f64) {
+/// fitted to its own notes (or all channels in one), drawn in each channel's
+/// color, with "now" (which moves between snapshots) at the right edge.
+fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll, now: f64, separate: bool) {
     let ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio());
     let (width, height) = (f64::from(canvas.client_width()), f64::from(canvas.client_height()));
     if width <= 0.0 || height <= 0.0 {
@@ -525,12 +531,16 @@ fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll, now: f64) {
         return;
     }
     let since = now - ROLL_SECONDS;
-    let band = height / roll.lanes.len() as f64;
+    let groups: Vec<Option<usize>> = if separate { (0..roll.lanes.len()).map(Some).collect() } else { vec![None] };
+    let band = height / groups.len() as f64;
     let left = 34.0;
     let x = |time: f64| left + (width - left) * (1.0 - (now - time) / ROLL_SECONDS);
     ctx.set_font("10px ui-monospace, monospace");
-    for (index, lane) in roll.lanes.iter().enumerate() {
-        let (low, high) = roll.lane_key_range(index, since);
+    for (index, group) in groups.iter().enumerate() {
+        let (low, high) = match group {
+            Some(lane) => roll.lane_key_range(*lane, since),
+            None => roll.key_range(since),
+        };
         let (low, high) = (f64::from(low), f64::from(high));
         let top = index as f64 * band;
         let row = band / (high - low + 1.0);
@@ -548,7 +558,8 @@ fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll, now: f64) {
             }
             key += 1.0;
         }
-        for bar in roll.bars.iter().filter(|bar| bar.lane == index && bar.end >= since) {
+        for bar in roll.bars.iter().filter(|bar| group.is_none_or(|lane| bar.lane == lane) && bar.end >= since) {
+            let Some(lane) = roll.lanes.get(bar.lane) else { continue };
             let start = x(bar.start).max(left);
             // A bar still sounding reaches the moving "now".
             let end = if bar.end >= roll.position - 1e-6 { now } else { bar.end };
@@ -558,7 +569,12 @@ fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll, now: f64) {
         }
         ctx.set_fill_style_str("#2a3a44");
         ctx.fill_rect(0.0, top + band - 1.0, width, 1.0);
-        ctx.set_fill_style_str(&format!("hsl({:.0}, 75%, 60%)", lane.hue));
-        let _ = ctx.fill_text(&lane.name, left + 6.0, top + 12.0);
+        // The band's channel, or every channel's color.
+        let mut legend = left + 6.0;
+        for lane in roll.lanes.iter().enumerate().filter(|(lane, _)| group.is_none_or(|only| only == *lane)).map(|(_, lane)| lane) {
+            ctx.set_fill_style_str(&format!("hsl({:.0}, 75%, 60%)", lane.hue));
+            let _ = ctx.fill_text(&lane.name, legend, top + 12.0);
+            legend += 14.0 + ctx.measure_text(&lane.name).map_or(40.0, |m| m.width());
+        }
     }
 }

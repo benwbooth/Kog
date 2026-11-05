@@ -26,6 +26,8 @@ ApplicationWindow {
     property var roll: ({ position: 0, lanes: [], bars: [] })
     readonly property real rollSeconds: 8
     property double rollReceived: 0
+    // One roll per channel, or every channel in one.
+    property bool rollSeparate: true
     property bool follow: true
     property int mode: 2
     readonly property var modeNames: [qsTr("Keyboards"), qsTr("Tracker"), qsTr("Keyboards + tracker"), qsTr("MML score"), qsTr("Piano roll")]
@@ -201,6 +203,13 @@ ApplicationWindow {
                     }
                 }
             }
+            CheckBox {
+                objectName: "rollSeparate"
+                visible: root.mode === 4
+                text: qsTr("A roll per channel")
+                checked: root.rollSeparate
+                onToggled: { root.rollSeparate = checked; pianoRoll.requestPaint() }
+            }
             Label { visible: root.mode === 3; text: qsTr("Bars per line") }
             SpinBox {
                 objectName: "mmlBarsPerLine"
@@ -341,20 +350,23 @@ ApplicationWindow {
                 const since = now - root.rollSeconds
                 const lanes = roll.lanes || []
                 if (!lanes.length) return
-                // One roll per channel, stacked, each fitted to its own notes.
-                const band = height / lanes.length
+                // One roll per channel, stacked, each fitted to its own notes,
+                // or all of them in one roll.
+                const groups = root.rollSeparate ? lanes.map((_, index) => index) : [-1]
+                const half = root.rollSeparate ? 6 : 12
+                const band = height / groups.length
                 const left = 34
                 const x = time => left + (width - left) * (1 - (now - time) / root.rollSeconds)
                 ctx.font = "10px monospace"
-                lanes.forEach((lane, index) => {
-                    const shown = (roll.bars || []).filter(bar => bar.lane === index && bar.end >= since)
-                    let low = 54, high = 66
+                groups.forEach((group, index) => {
+                    const shown = (roll.bars || []).filter(bar => (group < 0 || bar.lane === group) && bar.end >= since)
+                    let low = 60 - half, high = 60 + half
                     if (shown.length) {
                         low = Math.floor(Math.min(...shown.map(bar => bar.key))) - 1
                         high = Math.ceil(Math.max(...shown.map(bar => bar.key))) + 1
                         const middle = (low + high) / 2
-                        low = Math.min(low, middle - 6)
-                        high = Math.max(high, middle + 6)
+                        low = Math.min(low, middle - half)
+                        high = Math.max(high, middle + half)
                     }
                     const top = index * band
                     const row = band / (high - low + 1)
@@ -369,8 +381,8 @@ ApplicationWindow {
                             ctx.fillText("C" + (key / 12 - 1), 4, y(key) + row - 1)
                         }
                     }
-                    const color = Qt.hsla(lane.hue / 360, 0.75, 0.6, 1)
                     for (const bar of shown) {
+                        const lane = lanes[bar.lane]
                         const start = Math.max(left, x(bar.start))
                         // A bar still sounding reaches the moving "now".
                         const end = bar.end >= roll.position - 0.000001 ? now : bar.end
@@ -379,8 +391,13 @@ ApplicationWindow {
                     }
                     ctx.fillStyle = "#2a3a44"
                     ctx.fillRect(0, top + band - 1, width, 1)
-                    ctx.fillStyle = color
-                    ctx.fillText(lane.name, left + 6, top + 12)
+                    // The band's channel, or every channel's color.
+                    let legend = left + 6
+                    for (const lane of group < 0 ? lanes : [lanes[group]]) {
+                        ctx.fillStyle = Qt.hsla(lane.hue / 360, 0.75, 0.6, 1)
+                        ctx.fillText(lane.name, legend, top + 12)
+                        legend += 14 + ctx.measureText(lane.name).width
+                    }
                 })
             }
         }

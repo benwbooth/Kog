@@ -14,6 +14,7 @@ pub(super) struct View {
     pub mml: super::mml::Mml,
     guide: super::guide::Guide,
     roll: PianoRoll,
+    roll_separate: bool,
 }
 impl Default for View {
     fn default() -> Self {
@@ -29,6 +30,7 @@ impl Default for View {
             mml: super::mml::Mml::default(),
             guide: super::guide::Guide::default(),
             roll: PianoRoll::default(),
+            roll_separate: true,
         }
     }
 }
@@ -52,6 +54,7 @@ impl View {
             Key::Char('3') => self.mode = 3,
             Key::Char('4') => self.mode = 4,
             Key::Char('5') => self.mode = 5,
+            Key::Char('c') | Key::Char('C') if self.mode == 5 => self.roll_separate = !self.roll_separate,
             Key::Char('f') if self.mode == 4 => self.mml.follow = !self.mml.follow,
             Key::Char('+') | Key::Char('=') if self.mode == 4 => self.mml.change_bars(true),
             Key::Char('-') if self.mode == 4 => self.mml.change_bars(false),
@@ -184,12 +187,16 @@ impl View {
             if !state.seeking {
                 self.roll.update(state.position, &state.channels);
             }
-            draw_roll(out, &self.roll, (2, 4, width - 3, height.saturating_sub(4)));
+            draw_roll(out, &self.roll, (2, 4, width - 3, height.saturating_sub(4)), self.roll_separate);
             paint(
                 out,
                 height,
                 2,
-                "Each channel's notes in its own color · newest at the right · Space play/pause",
+                if self.roll_separate {
+                    "A roll per channel · C combine them · newest at the right · Space play/pause"
+                } else {
+                    "All channels in one roll · C separate them · newest at the right · Space play/pause"
+                },
                 width - 3,
                 Surface::Muted,
                 false,
@@ -566,10 +573,11 @@ fn level_meter(level: f32, cells: usize) -> String {
 /// Seconds of the piano roll across the screen; now is the right edge.
 const ROLL_SECONDS: f64 = 8.0;
 
-/// The piano roll: a roll per channel, stacked, each fitted to its own notes,
+/// The piano roll: a roll per channel, stacked, each fitted to its own notes
+/// (or every channel in one roll, each in its color),
 /// with one row per key (or several when the band is short) and the
 /// channel's notes as blocks in its color. Now is the right edge.
-fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usize)) {
+fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usize), separate: bool) {
     let (x, y, width, height) = area;
     let label = 4;
     if width <= label + 4 || height < 2 || roll.lanes.is_empty() {
@@ -578,24 +586,27 @@ fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usi
     let columns = width - label;
     let now = roll.position;
     let since = now - ROLL_SECONDS;
-    let lanes = roll.lanes.len().min(height);
+    let groups: Vec<Option<usize>> = if separate { (0..roll.lanes.len()).map(Some).collect() } else { vec![None] };
+    let lanes = groups.len().min(height);
     let column_of = |time: f64| (((time - since) / ROLL_SECONDS) * columns as f64).floor();
-    for (index, lane) in roll.lanes.iter().enumerate().take(lanes) {
+    for (index, group) in groups.iter().copied().enumerate().take(lanes) {
         let top = index * height / lanes;
         let rows = (index + 1) * height / lanes - top;
-        let (low, high) = roll.lane_key_range(index, since);
+        let (low, high) = match group {
+            Some(lane) => roll.lane_key_range(lane, since),
+            None => roll.key_range(since),
+        };
         let keys = f64::from(high - low + 1.0);
         let row_of = |key: f32| ((f64::from(high - key) / keys) * rows as f64).floor().clamp(0.0, rows as f64 - 1.0) as usize;
-        let mut grid = vec![false; columns * rows];
-        for bar in roll.bars.iter().filter(|bar| bar.lane == index && bar.end >= since) {
+        let mut grid = vec![None; columns * rows];
+        for bar in roll.bars.iter().filter(|bar| group.is_none_or(|lane| bar.lane == lane) && bar.end >= since) {
             let first = column_of(bar.start).max(0.0) as usize;
             let last = (column_of(bar.end).min(columns as f64 - 1.0) as usize).max(first);
             let row = row_of(bar.key);
             for column in first..=last.min(columns - 1) {
-                grid[row * columns + column] = true;
+                grid[row * columns + column] = Some(bar.lane);
             }
         }
-        let (r, g, b) = hsl(lane.hue, 0.75, 0.6);
         for row in 0..rows {
             // The first row names the channel; a row holding a C is labeled.
             let octave = (low.ceil() as i32..=high as i32).find(|key| key.rem_euclid(12) == 0 && row_of(*key as f32) == row);
@@ -611,7 +622,8 @@ fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usi
             while column < columns {
                 let lit = cells[column];
                 let run = cells[column..].iter().take_while(|cell| **cell == lit).count();
-                if lit {
+                if let Some(lane) = lit {
+                    let (r, g, b) = hsl(roll.lanes[lane].hue, 0.75, 0.6);
                     line.push_str(&format!("\x1b[38;2;{r};{g};{b};48;2;{ground}m{}", "█".repeat(run)));
                 } else {
                     line.push_str(&format!("\x1b[48;2;{ground}m{}", " ".repeat(run)));
@@ -621,8 +633,17 @@ fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usi
             line.push_str("\x1b[0m");
             out.push_str(&line);
         }
-        let name = truncate(&lane.name, columns.saturating_sub(2));
-        out.push_str(&format!("\x1b[{};{}H\x1b[38;2;{r};{g};{b};48;2;15;23;28m{name}\x1b[0m", y + top, x + label + 1));
+        // The band's channel, or every channel's color.
+        let mut legend = x + label + 1;
+        for (lane_index, lane) in roll.lanes.iter().enumerate().filter(|(lane, _)| group.is_none_or(|only| only == *lane)) {
+            let name = truncate(&lane.name, 16);
+            if legend + cell_width(&name) > x + width {
+                break;
+            }
+            let (r, g, b) = hsl(roll.lanes[lane_index].hue, 0.75, 0.6);
+            out.push_str(&format!("\x1b[{};{legend}H\x1b[38;2;{r};{g};{b};48;2;15;23;28m{name}\x1b[0m", y + top));
+            legend += cell_width(&name) + 2;
+        }
     }
 }
 
@@ -661,7 +682,10 @@ mod roll_tests {
         roll.update(1.0, &[pulse(60.0)]);
         roll.update(3.0, &[pulse(60.0)]);
         let mut out = String::new();
-        draw_roll(&mut out, &roll, (2, 4, 80, 24));
+        draw_roll(&mut out, &roll, (2, 4, 80, 24), true);
+        let mut combined = String::new();
+        draw_roll(&mut combined, &roll, (2, 4, 80, 24), false);
+        assert!(combined.contains('█') && combined.contains("Pulse 1"));
         let (r, g, b) = hsl(roll.lanes[0].hue, 0.75, 0.6);
         assert!(out.contains(&format!("\x1b[38;2;{r};{g};{b};")), "the bar uses the lane's color");
         assert!(out.contains('█'));

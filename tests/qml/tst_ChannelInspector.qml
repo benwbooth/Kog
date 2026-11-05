@@ -142,6 +142,13 @@ TestCase {
                 found = pixel.b > 0.6 && pixel.r < 0.5
             }
         verify(found, "a blue bar is drawn")
+        const separate = findChild(inspector, "rollSeparate")
+        verify(separate.visible && separate.checked)
+        separate.toggle()
+        separate.toggled()
+        compare(inspector.rollSeparate, false)
+        waitForRendering(roll)
+        inspector.rollSeparate = true
         inspector.mode = 2
     }
 
