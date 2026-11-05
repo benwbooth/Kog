@@ -177,13 +177,8 @@ impl Track {
             }
         }
 
-        if !title_is_informative(&track.title, &track.source) {
-            if let Some(better) = title_from_filename(&track.source) {
-                track.title = better;
-            }
-        } else if let Some(name) = filename_adding_to_short_title(&track.title, &track.source) {
-            // "Theme" alone says little; "Theme · Shofixti" says which.
-            track.title = format!("{} · {name}", track.title.trim());
+        if let Some(title) = better_title(&track.title, &track.source) {
+            track.title = title;
         }
         if track.album.trim().is_empty() {
             if let Some(album) = album_from_folder(&track.source) {
@@ -218,6 +213,20 @@ impl Track {
 
     pub fn duration_label(&self) -> String {
         duration_label(self.duration.unwrap_or_default())
+    }
+}
+
+/// The title to show in place of a song's own, when that one says too little:
+/// a placeholder (`A`, `Seq-1`, another file's name) gives way to the
+/// cleaned-up filename, and a short title gains it ("Theme" alone says
+/// little; "Theme · Shofixti" says which). `None` keeps the title as it is.
+/// The desktop's tracks and the server's metadata both go through here.
+pub fn better_title(title: &str, source: &PlaybackSource) -> Option<String> {
+    if !title_is_informative(title, source) {
+        title_from_filename(source)
+    } else {
+        filename_adding_to_short_title(title, source)
+            .map(|name| format!("{} · {name}", title.trim()))
     }
 }
 
@@ -479,6 +488,16 @@ pub fn canonical_path(path: &Path) -> Result<PathBuf, String> {
 
 #[cfg(any(test, feature = "test-util"))]
 mod tests {
+
+    #[test]
+    fn a_midi_placeholder_title_gives_way_to_the_cleaned_filename() {
+        let source = source("02 - Debut Of The Chron-O-John.mid");
+        assert_eq!(
+            better_title("A", &source).as_deref(),
+            Some("02 - Debut Of The Chron-O-John")
+        );
+        assert_eq!(better_title("", &source).as_deref(), Some("02 - Debut Of The Chron-O-John"));
+    }
 
     #[test]
     fn sequencer_and_placeholder_titles_give_way_to_the_filename() {

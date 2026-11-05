@@ -246,6 +246,14 @@ impl StreamService {
                 }
             }
         }
+        // As on the desktop, a placeholder title (a MIDI file's "A", "Seq-1")
+        // gives way to the cleaned-up filename, and a short one gains it.
+        if let Some(title) = kog_audio::track::better_title(
+            properties.title.as_deref().unwrap_or_default(),
+            &source,
+        ) {
+            properties.title = Some(title);
+        }
         // As on the desktop, a song without an album takes its folder's or
         // archive's name.
         if properties.album.as_deref().is_none_or(|album| album.trim().is_empty()) {
