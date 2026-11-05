@@ -25,6 +25,8 @@
   --highlight-hover: #6db1ff;
   --accent2: #7a5cff;
   --highlight-text: #ffffff;
+  /* Selected rows: a deeper blue so white text on it stays legible. */
+  --selection: #2f7de1;
   --border: #1e2230;
   --glow: rgba(77, 120, 255, 0.14);
   --row-height: 26px;
@@ -69,6 +71,7 @@
     --highlight-hover: #4a8fe8;
     --accent2: #6a4cf0;
     --highlight-text: #ffffff;
+    --selection: #2a73d9;
     --border: #dddfea;
     --glow: rgba(47, 125, 225, 0.10);
     color-scheme: light;
@@ -88,6 +91,7 @@
   --highlight-hover: #4a8fe8;
   --accent2: #6a4cf0;
   --highlight-text: #ffffff;
+  --selection: #2a73d9;
   --border: #dddfea;
   --glow: rgba(47, 125, 225, 0.10);
   color-scheme: light;
@@ -3863,9 +3867,9 @@ body.touch .track .index-cell {
 /* ------------------------------------------------------------ Earshot look
  *
  * Colour and finish only: nothing below changes sizes or positions. Rows and
- * buttons get rounded corners, the playlist a faint violet glow at its top,
- * section titles Earshot's small capitals, and the current song a blue to
- * violet wash with a blue edge.
+ * buttons get rounded corners, the playlist a faint blue glow at its top,
+ * section titles Earshot's small capitals, selected rows a solid blue pill,
+ * and the current song's title the blue accent.
  */
 
 input,
@@ -3898,9 +3902,10 @@ button.primary:hover:not(:disabled) {
 }
 
 .columns {
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
-  backdrop-filter: blur(12px);
-  color: var(--faint);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
 }
 
 .columns .col-sort:hover {
@@ -3926,9 +3931,12 @@ button.primary:hover:not(:disabled) {
   color: var(--text);
 }
 
-.tree-row,
+.tree-row {
+  border-radius: 6px;
+}
+
 .track {
-  border-radius: 8px;
+  border-radius: 4px;
 }
 
 .tree-row:hover,
@@ -3938,43 +3946,171 @@ button.primary:hover:not(:disabled) {
 
 .tree-row.selected,
 .tree-row.selected:hover {
-  background: color-mix(in srgb, var(--accent2) 26%, var(--surface));
-  color: var(--text);
+  background: var(--selection);
+  color: var(--highlight-text);
 }
 
 .tree-row.selected .twisty,
 .tree-row.selected .count {
-  color: var(--muted);
-  opacity: 1;
+  color: var(--highlight-text);
+  opacity: 0.85;
 }
 
-.track.selected,
-.track.selected:hover {
-  background: color-mix(in srgb, var(--accent2) 24%, transparent);
-}
-
+/* The current song keeps the row's own background; only its title and play
+ * glyph take the accent. */
 .track.current,
 .track.current:hover {
-  background: linear-gradient(90deg,
-    color-mix(in srgb, var(--highlight) 30%, transparent),
-    color-mix(in srgb, var(--accent2) 16%, transparent));
-  box-shadow: inset 3px 0 0 var(--highlight);
+  background: transparent;
+  box-shadow: none;
   color: var(--text);
 }
 
-.track.current .title-cell {
+.track.current.alternate {
+  background: color-mix(in srgb, var(--alternate) 45%, transparent);
+}
+
+.track.current:hover {
+  background: var(--alternate);
+}
+
+.track.current .title-cell,
+.track.current .status-cell {
   color: var(--highlight);
-  font-weight: 600;
+  opacity: 1;
 }
 
 .track.current .index-cell,
 .track.current .duration-cell,
-.track.current .trackno-cell,
+.track.current .trackno-cell {
+  color: var(--muted);
+  opacity: 1;
+}
+
 .track.current .artist-cell,
 .track.current .album-cell,
-.track.current .star-cell,
-.track.current .status-cell {
+.track.current .star-cell {
   color: var(--text);
+  opacity: 1;
+}
+
+.track.selected,
+.track.selected:hover,
+.track.current.selected {
+  background: var(--selection);
+  color: var(--highlight-text);
+}
+
+.track.selected .index-cell,
+.track.selected .duration-cell,
+.track.selected .trackno-cell,
+.track.selected .filesize-cell,
+.track.selected .filesizebytes-cell,
+.track.selected .star-cell,
+.track.selected .status-cell,
+.track.selected .title-cell,
+.track.selected .artist-cell,
+.track.selected .album-cell {
+  color: var(--highlight-text);
+}
+
+/* Seek and volume: a thin track filled with the accent up to a white knob.
+ * --fill is set from the slider's value, since WebKit has no progress part. */
+.seek-row .seek,
+.transport-right .volume {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.seek-row .seek::-webkit-slider-runnable-track,
+.transport-right .volume::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg,
+    var(--highlight) var(--fill, 0%),
+    color-mix(in srgb, var(--text) 14%, transparent) var(--fill, 0%));
+}
+
+.seek-row .seek::-moz-range-track,
+.transport-right .volume::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+}
+
+.seek-row .seek::-moz-range-progress,
+.transport-right .volume::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--highlight);
+}
+
+.seek-row .seek::-webkit-slider-thumb,
+.transport-right .volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 120ms ease;
+}
+
+.seek-row .seek::-moz-range-thumb,
+.transport-right .volume::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 120ms ease;
+}
+
+.seek-row .seek:hover::-webkit-slider-thumb,
+.transport-right .volume:hover::-webkit-slider-thumb {
+  transform: scale(1.08);
+}
+
+.seek-row .seek:hover::-moz-range-thumb,
+.transport-right .volume:hover::-moz-range-thumb {
+  transform: scale(1.08);
+}
+
+.seek-row .seek:disabled::-webkit-slider-thumb,
+.transport-right .volume:disabled::-webkit-slider-thumb {
+  visibility: hidden;
+}
+
+.seek-row .seek:disabled::-moz-range-thumb,
+.transport-right .volume:disabled::-moz-range-thumb {
+  visibility: hidden;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .seek-row .seek::-webkit-slider-thumb,
+  :root:not([data-theme="dark"]) .transport-right .volume::-webkit-slider-thumb {
+    border-color: var(--border);
+  }
+
+  :root:not([data-theme="dark"]) .seek-row .seek::-moz-range-thumb,
+  :root:not([data-theme="dark"]) .transport-right .volume::-moz-range-thumb {
+    border-color: var(--border);
+  }
+}
+
+:root[data-theme="light"] .seek-row .seek::-webkit-slider-thumb,
+:root[data-theme="light"] .transport-right .volume::-webkit-slider-thumb {
+  border-color: var(--border);
+}
+
+:root[data-theme="light"] .seek-row .seek::-moz-range-thumb,
+:root[data-theme="light"] .transport-right .volume::-moz-range-thumb {
+  border-color: var(--border);
 }
 
 .icon-button,
@@ -4027,8 +4163,8 @@ button.primary:hover:not(:disabled) {
 
 .art {
   border-radius: 8px;
-  border-color: transparent;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  background: var(--field);
+  border-color: var(--border);
 }
 
 .now-text .subtitle {

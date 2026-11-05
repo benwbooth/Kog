@@ -7876,6 +7876,15 @@ fn App() -> impl IntoView {
                                     if value.is_finite() && value > 0.0 { value } else { 1.0 }
                                 }
                                 step="0.5"
+                                style=move || {
+                                    let end = duration.get();
+                                    let fill = if end.is_finite() && end > 0.0 {
+                                        (position.get() / end).clamp(0.0, 1.0) * 100.0
+                                    } else {
+                                        0.0
+                                    };
+                                    format!("--fill: {fill:.2}%")
+                                }
                                 prop:value=move || position.get()
                                 on:input=move |event| {
                                     let requested: f64 =
@@ -7953,6 +7962,9 @@ fn App() -> impl IntoView {
                                     step="0.01"
                                     title=move || {
                                         format!("Volume {}%", (volume.get() * 100.0).round())
+                                    }
+                                    style=move || {
+                                        format!("--fill: {:.2}%", volume.get().clamp(0.0, 1.0) * 100.0)
                                     }
                                     prop:value=move || volume.get()
                                     on:input=move |event| {
