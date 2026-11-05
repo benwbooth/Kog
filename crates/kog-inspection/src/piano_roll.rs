@@ -27,6 +27,11 @@ pub struct Lane {
     pub name: String,
     /// The lane's color, as hue degrees.
     pub hue: f32,
+    /// The lowest and highest keys the channel has played this song. Ranges
+    /// only grow, so the roll settles on a song's range instead of zooming
+    /// with every phrase.
+    pub low: f32,
+    pub high: f32,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -55,11 +60,13 @@ impl PianoRoll {
                 Some(lane) => lane,
                 None => {
                     let hue = lane_hue(self.lanes.len());
-                    self.lanes.push(Lane { id: channel.id, name: channel.name.clone(), hue });
+                    self.lanes.push(Lane { id: channel.id, name: channel.name.clone(), hue, low: f32::MAX, high: f32::MIN });
                     self.lanes.len() - 1
                 }
             };
             for note in channel.notes.iter().filter(|note| note.velocity > 0.0) {
+                let seen = &mut self.lanes[lane];
+                (seen.low, seen.high) = (seen.low.min(note.key), seen.high.max(note.key));
                 let sounding = self.open.iter().copied().find(|index| {
                     let bar = &self.bars[*index];
                     bar.lane == lane && (bar.key - note.key).abs() < BAR_STEP && !still_open.contains(index)
@@ -103,15 +110,15 @@ impl PianoRoll {
         self.open.clear();
     }
 
-    /// The keys the bars from `since` on span, padded to at least two octaves
-    /// around their middle so a quiet passage doesn't fill the whole height.
-    pub fn key_range(&self, since: f64) -> (f32, f32) {
-        fit_keys(self.bars.iter().filter(|bar| bar.end >= since), 12.0)
+    /// The keys every channel has played this song, padded to at least two
+    /// octaves around their middle so a quiet song doesn't fill the height.
+    pub fn key_range(&self) -> (f32, f32) {
+        fit_keys(self.lanes.iter(), 12.0)
     }
 
     /// One lane's key range, for a roll per channel: at least an octave.
-    pub fn lane_key_range(&self, lane: usize, since: f64) -> (f32, f32) {
-        fit_keys(self.bars.iter().filter(|bar| bar.lane == lane && bar.end >= since), 6.0)
+    pub fn lane_key_range(&self, lane: usize) -> (f32, f32) {
+        fit_keys(self.lanes.get(lane).into_iter(), 6.0)
     }
 
     /// Where to draw "now" `elapsed` seconds after the last update while
@@ -122,8 +129,8 @@ impl PianoRoll {
     }
 }
 
-fn fit_keys<'a>(bars: impl Iterator<Item = &'a Bar>, half_span: f32) -> (f32, f32) {
-    let (low, high) = bars.fold((f32::MAX, f32::MIN), |(low, high), bar| (low.min(bar.key), high.max(bar.key)));
+fn fit_keys<'a>(lanes: impl Iterator<Item = &'a Lane>, half_span: f32) -> (f32, f32) {
+    let (low, high) = lanes.fold((f32::MAX, f32::MIN), |(low, high), lane| (low.min(lane.low), high.max(lane.high)));
     if low > high {
         return (60.0 - half_span, 60.0 + half_span);
     }
@@ -181,9 +188,10 @@ mod tests {
             roll.update(5.0 + f64::from(step), &[channel(1, &[if step < 35 { 67.0 } else { 70.0 }])]);
         }
         assert_eq!(roll.bars.len(), 2, "the long bar is still in view");
-        assert_eq!(roll.key_range(0.0), (56.5, 80.5));
-        assert_eq!(roll.lane_key_range(0, 0.0), (62.5, 74.5));
-        assert_eq!(roll.lane_key_range(5, 0.0), (54.0, 66.0));
+        // Ranges keep every key played since the seek, even out of view.
+        assert_eq!(roll.key_range(), (56.5, 80.5));
+        assert_eq!(roll.lane_key_range(0), (62.5, 74.5));
+        assert_eq!(roll.lane_key_range(5), (54.0, 66.0));
         assert_eq!(roll.now(0.1, true), roll.position + 0.1);
         assert_eq!(roll.now(3.0, true), roll.position + 0.25);
     }

@@ -593,8 +593,8 @@ fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usi
         let top = index * height / lanes;
         let rows = (index + 1) * height / lanes - top;
         let (low, high) = match group {
-            Some(lane) => roll.lane_key_range(lane, since),
-            None => roll.key_range(since),
+            Some(lane) => roll.lane_key_range(lane),
+            None => roll.key_range(),
         };
         let keys = f64::from(high - low + 1.0);
         let row_of = |key: f32| ((f64::from(high - key) / keys) * rows as f64).floor().clamp(0.0, rows as f64 - 1.0) as usize;

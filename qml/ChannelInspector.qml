@@ -360,10 +360,13 @@ ApplicationWindow {
                 ctx.font = "10px monospace"
                 groups.forEach((group, index) => {
                     const shown = (roll.bars || []).filter(bar => (group < 0 || bar.lane === group) && bar.end >= since)
+                    // Every key the channel has played this song: the range
+                    // only grows, so it settles instead of zooming per phrase.
+                    const played = (group < 0 ? lanes : [lanes[group]]).filter(lane => lane.low <= lane.high)
                     let low = 60 - half, high = 60 + half
-                    if (shown.length) {
-                        low = Math.floor(Math.min(...shown.map(bar => bar.key))) - 1
-                        high = Math.ceil(Math.max(...shown.map(bar => bar.key))) + 1
+                    if (played.length) {
+                        low = Math.floor(Math.min(...played.map(lane => lane.low))) - 1
+                        high = Math.ceil(Math.max(...played.map(lane => lane.high))) + 1
                         const middle = (low + high) / 2
                         low = Math.min(low, middle - half)
                         high = Math.max(high, middle + half)

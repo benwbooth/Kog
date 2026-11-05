@@ -20,7 +20,7 @@ TestCase {
         property int requests: 0
         function channel_snapshot() { requests++; return JSON.stringify(test.state) }
         function piano_roll() {
-            return JSON.stringify({position: 4, lanes: [{id: 0, name: "Pulse 1", hue: 200}, {id: 1, name: "Triangle", hue: 337}],
+            return JSON.stringify({position: 4, lanes: [{id: 0, name: "Pulse 1", hue: 200, low: 60, high: 60}, {id: 1, name: "Triangle", hue: 337, low: 43, high: 43}],
                 bars: [{lane: 0, key: 60, start: 1, end: 3, velocity: 1}, {lane: 1, key: 43, start: 2, end: 4, velocity: 0.5}]})
         }
         function play_pause() { test.state = Object.assign({}, test.state, {playing:!test.state.playing}) }

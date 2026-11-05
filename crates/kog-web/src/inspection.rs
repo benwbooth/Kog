@@ -538,8 +538,8 @@ fn draw_roll(canvas: &web_sys::HtmlCanvasElement, roll: &PianoRoll, now: f64, se
     ctx.set_font("10px ui-monospace, monospace");
     for (index, group) in groups.iter().enumerate() {
         let (low, high) = match group {
-            Some(lane) => roll.lane_key_range(*lane, since),
-            None => roll.key_range(since),
+            Some(lane) => roll.lane_key_range(*lane),
+            None => roll.key_range(),
         };
         let (low, high) = (f64::from(low), f64::from(high));
         let top = index as f64 * band;
