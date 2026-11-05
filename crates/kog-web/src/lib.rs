@@ -2150,14 +2150,11 @@ fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
                 <span
                     class="row-meter-bar"
                     style=move || {
-                        let level = levels
-                            .get()
-                            .get(band)
-                            .copied()
-                            .unwrap_or(0.0)
-                            .clamp(0.0, 1.0);
-                        // Cool to hot as the bar grows.
-                        let fill = format!("hsl({:.0}, 85%, 62%)", 210.0 - 90.0 * level);
+                        let level = kog_playback_policy::waveform::displayed(
+                            levels.get().get(band).copied().unwrap_or(0.0),
+                        );
+                        // Violet when quiet, the blue accent when loud.
+                        let fill = format!("hsl({:.0}, 90%, 66%)", 262.0 - 50.0 * level);
                         // The bars' 20x17 area,
                         // laid out as iOS does.
                         const WIDTH: f32 = 20.0;
@@ -2169,7 +2166,7 @@ fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
                         let left = slot * (band as f32 + 0.5) - width / 2.0;
                         let top = (HEIGHT - height) / 2.0;
                         format!(
-                            "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; transition: left {ms}ms, top {ms}ms, width {ms}ms, height {ms}ms; transition-timing-function: cubic-bezier(0.3, 1.1, 0.6, 1);",
+                            "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; transition: left {ms}ms, top {ms}ms, width {ms}ms, height {ms}ms; transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);",
                             2.0 + left,
                             2.0 + top,
                             ms = kog_playback_policy::waveform::SPRING_MS,

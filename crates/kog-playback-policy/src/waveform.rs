@@ -9,10 +9,22 @@
 pub const BARS: usize = 6;
 /// How often the bars get new heights.
 pub const UPDATES_PER_SECOND: u32 = 20;
-/// How long a bar takes to spring to a new height, in milliseconds, as on iOS.
-pub const SPRING_MS: u32 = 325;
+/// How long a bar takes to spring to a new height, in milliseconds. Shorter
+/// than three updates, so each bar reaches its reading and springs a little
+/// past it before the next one, the way the Dynamic Island's bars bounce; a
+/// spring slower than the updates averaged them into a quiet shimmer.
+pub const SPRING_MS: u32 = 140;
 /// How much wider a bar at full height is than a quiet one.
 pub const WIDTH_GROWTH: f32 = 0.66;
+/// Display lift: the measured heights rarely pass the middle on ordinary
+/// music, so they are drawn raised toward the top before the spring.
+pub const DISPLAY_EXPONENT: f32 = 0.8;
+pub const DISPLAY_GAIN: f32 = 1.2;
+
+/// The height a bar is drawn at for a measured level, both from 0 to 1.
+pub fn displayed(level: f32) -> f32 {
+    (level.clamp(0.0, 1.0).powf(DISPLAY_EXPONENT) * DISPLAY_GAIN).min(1.0)
+}
 
 const STOPS_HZ: [f32; BARS + 1] = [20.0, 81.0, 170.0, 527.0, 1_500.0, 4_500.0, 10_000.0];
 const AMPLITUDE_GAIN: f32 = 0.6;
@@ -199,5 +211,14 @@ mod tests {
         let treble = levels(&sine(6_000.0, 0.5), 48_000);
         assert!(bass[1] > 0.5 && bass[5] < bass[1], "{bass:?}");
         assert!(treble[5] > 0.3 && treble[0] < treble[5], "{treble:?}");
+    }
+
+    #[test]
+    fn display_lifts_the_middle_and_keeps_the_ends() {
+        assert_eq!(displayed(0.0), 0.0);
+        assert_eq!(displayed(1.0), 1.0);
+        assert!(displayed(0.4) > 0.5, "{}", displayed(0.4));
+        let steps: Vec<f32> = (0..=20).map(|i| displayed(i as f32 / 20.0)).collect();
+        assert!(steps.windows(2).all(|pair| pair[0] <= pair[1]), "{steps:?}");
     }
 }

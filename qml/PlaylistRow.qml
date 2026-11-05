@@ -333,13 +333,17 @@ Item {
                                 required property int index
                                 readonly property real slot: waveformArea.width / 6
                                 readonly property real base: slot / 2
-                                property real level: Math.max(0, Math.min(1,
-                                    playingWaveform.levels[index]))
-                                // The spring overshoots; keep the drawing in range.
+                                // Raised toward the top like kog_playback_policy's
+                                // waveform::displayed (gain 1.2, exponent 0.8).
+                                property real level: Math.min(1, 1.2 * Math.pow(
+                                    Math.max(0, Math.min(1, playingWaveform.levels[index])), 0.8))
+                                // The spring overshoots: the height may bounce a
+                                // little past the top (the pill has room for it).
                                 readonly property real shown: Math.max(0, Math.min(1, level))
+                                readonly property real bounce: Math.max(0, Math.min(1.15, level))
 
                                 width: base + 0.66 * shown * base
-                                height: Math.max(shown * waveformArea.height, base)
+                                height: Math.max(bounce * waveformArea.height, base)
                                 x: slot * (index + 0.5) - width / 2
                                 y: (waveformArea.height - height) / 2
                                 radius: width / 2
@@ -349,9 +353,12 @@ Item {
                                     root.selected ? 0.7 : 0.6, 1)
 
                                 Behavior on level {
+                                    // Stiff and lightly damped: a bar gets most of
+                                    // the way to each reading (20 a second) and
+                                    // springs past it, like the Dynamic Island's.
                                     SpringAnimation {
-                                        spring: 5
-                                        damping: 0.7
+                                        spring: 15
+                                        damping: 0.45
                                         epsilon: 0.005
                                     }
                                 }
