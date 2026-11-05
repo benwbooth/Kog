@@ -32,6 +32,8 @@ Item {
         && app.playback_state === "playing"
     readonly property bool isActiveTrack: isCurrentTrack
         && app.playback_state !== "stopped"
+    readonly property bool darkRows: 0.2126 * theme.base.r + 0.7152 * theme.base.g
+        + 0.0722 * theme.base.b < 0.5
     // Earshot's muted text: two thirds of the way from the background to the
     // text colour, for the number columns.
     readonly property color mutedText: Qt.rgba(
@@ -303,78 +305,17 @@ Item {
                         : root.theme.accent
                 }
 
-                Item {
+                WaveformMeter {
                     id: playingWaveform
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     width: 24
                     height: 21
                     visible: root.isPlaying
-
-                    // Six pill bars on a black rectangle, laid out like the Dynamic
-                    // Island's waveform (centered in their slots, half a slot
-                    // wide when quiet and up to 66% wider when loud), springing
-                    // to each new height and shading from violet to blue.
-                    readonly property var levels: [
-                        root.app.audio_level_low,
-                        root.app.audio_level_low_mid,
-                        root.app.audio_level_mid,
-                        root.app.audio_level_high_mid,
-                        root.app.audio_level_high,
-                        root.app.audio_level_air
-                    ]
-
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 4
-                        color: "black"
-                    }
-
-                    Item {
-                        id: waveformArea
-                        anchors.centerIn: parent
-                        width: 20
-                        height: 17
-
-                        Repeater {
-                            model: 6
-
-                            Rectangle {
-                                required property int index
-                                readonly property real slot: waveformArea.width / 6
-                                readonly property real base: slot / 2
-                                // Raised toward the top like kog_playback_policy's
-                                // waveform::displayed (gain 1.2, exponent 0.8).
-                                property real level: Math.min(1, 1.2 * Math.pow(
-                                    Math.max(0, Math.min(1, playingWaveform.levels[index])), 0.8))
-                                // The spring overshoots: the height may bounce a
-                                // little past the top (the pill has room for it).
-                                readonly property real shown: Math.max(0, Math.min(1, level))
-                                readonly property real bounce: Math.max(0, Math.min(1.15, level))
-
-                                width: base + 0.66 * shown * base
-                                height: Math.max(bounce * waveformArea.height, base)
-                                x: slot * (index + 0.5) - width / 2
-                                y: (waveformArea.height - height) / 2
-                                radius: width / 2
-                                antialiasing: true
-                                // Violet when quiet, the blue accent when loud.
-                                color: Qt.hsla((262 - 50 * shown) / 360, 0.9,
-                                    root.selected ? 0.7 : 0.6, 1)
-
-                                Behavior on level {
-                                    // Stiff and lightly damped: a bar gets most of
-                                    // the way to each reading (20 a second) and
-                                    // springs past it, like the Dynamic Island's.
-                                    SpringAnimation {
-                                        spring: 15
-                                        damping: 0.45
-                                        epsilon: 0.005
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    app: root.app
+                    highlighted: root.selected
+                    highlightColor: root.theme.highlightedText
+                    dark: root.darkRows
                 }
             }
         }

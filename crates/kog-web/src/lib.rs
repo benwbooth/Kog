@@ -2157,7 +2157,7 @@ fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
     view! {
         <span
             class="row-meter"
-            style=if pinned { "position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 21px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" } else { "position: relative; top: auto; right: auto; transform: none; display: block; width: 24px; height: 21px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;" }
+            style=if pinned { "position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 21px; box-sizing: border-box; border-radius: 4px; pointer-events: none;" } else { "position: relative; top: auto; right: auto; transform: none; display: block; width: 24px; height: 21px; box-sizing: border-box; border-radius: 4px; pointer-events: none;" }
         >
             <For
                 each=|| [0usize, 1, 2, 3, 4, 5]
@@ -2171,7 +2171,9 @@ fn RowMeter(levels: ReadSignal<[f32; 6]>, pinned: bool) -> impl IntoView {
                             levels.get().get(band).copied().unwrap_or(0.0),
                         );
                         // Violet when quiet, the blue accent when loud.
-                        let fill = format!("hsl({:.0}, 90%, 66%)", 262.0 - 50.0 * level);
+                        // Straight on the row: --meter-lightness keeps the bars
+                        // bright on black rows and deep on light ones.
+                        let fill = format!("hsl({:.0}, 95%, var(--meter-lightness))", 262.0 - 50.0 * level);
                         // The bars' 20x17 area,
                         // laid out as iOS does.
                         const WIDTH: f32 = 20.0;
@@ -7786,7 +7788,14 @@ fn App() -> impl IntoView {
                             />
                         </div>
                         <div class="now-text">
-                            <div class="title">{move || now_title()}</div>
+                            // The playing song's waveform leads its title, as on
+                            // the playing row.
+                            <div class="title">
+                                <Show when=move || playing.get()>
+                                    <span class="now-meter"><RowMeter levels=audio_levels pinned=false/></span>
+                                </Show>
+                                {move || now_title()}
+                            </div>
                             <div class="subtitle">{move || now_subtitle()}</div>
                             <div class="mobile-now-subtitle">{move || now_mobile_subtitle()}</div>
                         </div>

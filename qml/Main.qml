@@ -2642,12 +2642,25 @@ ApplicationWindow {
                     Layout.alignment: Qt.AlignVCenter
                     spacing: 2
 
-                    Label {
+                    // The playing song's waveform leads its title, as on the
+                    // playing row.
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: playbackTitle.text
-                        font.pixelSize: 14
-                        color: root.palette.text
-                        elide: Text.ElideRight
+                        spacing: 6
+                        WaveformMeter {
+                            Layout.preferredWidth: 22
+                            Layout.preferredHeight: 18
+                            visible: appController.playback_state === "playing"
+                            app: appController
+                            dark: root.baseLuminance < 0.5
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: playbackTitle.text
+                            font.pixelSize: 14
+                            color: root.palette.text
+                            elide: Text.ElideRight
+                        }
                     }
                     Label {
                         Layout.fillWidth: true
@@ -3848,13 +3861,13 @@ ApplicationWindow {
                     GradientStop {
                         position: 0
                         color: Qt.rgba(0x4d / 255, 0x78 / 255, 1,
-                            root.baseLuminance < 0.5 ? 0.26 : 0.12)
+                            root.baseLuminance < 0.5 ? 0.18 : 0.09)
                     }
                     // Eased: the blue holds near the top, then melts away.
                     GradientStop {
                         position: 0.45
                         color: Qt.rgba(0x4d / 255, 0x78 / 255, 1,
-                            root.baseLuminance < 0.5 ? 0.09 : 0.04)
+                            root.baseLuminance < 0.5 ? 0.06 : 0.03)
                     }
                     GradientStop { position: 1; color: "transparent" }
                 }

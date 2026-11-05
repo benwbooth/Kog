@@ -29,8 +29,10 @@
   --selection: #2f7de1;
   /* Alternate rows: opaque, so the playlist's glow shows only between them. */
   --stripe: #0a0b0f;
+  /* The playing row's meter bars: bright on black rows, deep on light. */
+  --meter-lightness: 68%;
   --border: #1e2230;
-  --glow: rgba(77, 120, 255, 0.26);
+  --glow: rgba(77, 120, 255, 0.18);
   --row-height: 26px;
   /* The folder tree is scanned, not read row by row: keep it compact. */
   --tree-row-height: 21px;
@@ -75,8 +77,9 @@
     --highlight-text: #ffffff;
     --selection: #2a73d9;
     --stripe: #f2f2f8;
+    --meter-lightness: 50%;
     --border: #dddfea;
-    --glow: rgba(47, 125, 225, 0.12);
+    --glow: rgba(47, 125, 225, 0.09);
     color-scheme: light;
   }
 }
@@ -96,8 +99,9 @@
   --highlight-text: #ffffff;
   --selection: #2a73d9;
   --stripe: #f2f2f8;
+  --meter-lightness: 50%;
   --border: #dddfea;
-  --glow: rgba(47, 125, 225, 0.12);
+  --glow: rgba(47, 125, 225, 0.09);
   color-scheme: light;
 }
 
@@ -871,8 +875,12 @@ button:focus-visible {
   height: 21px;
   box-sizing: border-box;
   border-radius: 4px;
-  background: #000;
   pointer-events: none;
+}
+
+/* White bars on the blue of a selected row. */
+.track.selected .row-meter-bar {
+  background: var(--highlight-text) !important;
 }
 
 .row-meter-bar {
@@ -4233,6 +4241,19 @@ button.primary:hover:not(:disabled) {
 
 .now-text .subtitle {
   color: var(--muted);
+}
+
+.now-text .title .now-meter {
+  display: inline-block;
+  width: 22px;
+  height: 18px;
+  margin-right: 6px;
+  vertical-align: -4px;
+}
+
+.now-text .title .now-meter .row-meter {
+  transform: scale(0.88);
+  transform-origin: left top;
 }
 
 /* Search fields take the field colour with a hairline, as in Earshot. */
