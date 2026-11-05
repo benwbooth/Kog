@@ -70,7 +70,7 @@ ApplicationWindow {
             try {
                 roll = JSON.parse(app.piano_roll())
                 rollReceived = Date.now()
-                pianoRoll.requestPaint()
+                pianoRoll.update()
             } catch (_) { }
             return
         }
@@ -208,7 +208,7 @@ ApplicationWindow {
                 visible: root.mode === 4
                 text: qsTr("A roll per channel")
                 checked: root.rollSeparate
-                onToggled: { root.rollSeparate = checked; pianoRoll.requestPaint() }
+                onToggled: { root.rollSeparate = checked; pianoRoll.update() }
             }
             Label { visible: root.mode === 3; text: qsTr("Bars per line") }
             SpinBox {
@@ -327,41 +327,34 @@ ApplicationWindow {
                 }
             }
         }
-        Canvas {
+        // The piano roll draws its bars only when a snapshot arrives, onto a
+        // canvas a little wider than the view, and slides that canvas every
+        // display frame: the GPU moves it, so it scrolls at the display's full
+        // frame rate. Key stripes and labels sit underneath and only redraw
+        // when a range changes.
+        Item {
             id: pianoRoll
             objectName: "pianoRoll"
             visible: root.mode === 4
             Layout.fillWidth: true
             Layout.fillHeight: true
-            renderTarget: Canvas.FramebufferObject
-            // Redrawn every frame, with "now" moved on from the last update by
-            // the time since, so it scrolls smoothly between snapshots.
-            FrameAnimation {
-                running: pianoRoll.visible && root.app.playback_state === "playing"
-                onTriggered: pianoRoll.requestPaint()
-            }
-            onPaint: {
-                const ctx = getContext("2d")
-                ctx.fillStyle = "#0f171c"
-                ctx.fillRect(0, 0, width, height)
-                const roll = root.roll
-                const elapsed = Math.min(0.25, (Date.now() - root.rollReceived) / 1000)
-                const now = roll.position + (root.app.playback_state === "playing" ? elapsed : 0)
-                const since = now - root.rollSeconds
-                const lanes = roll.lanes || []
-                if (!lanes.length) return
-                // One roll per channel, stacked, each fitted to its own notes,
-                // or all of them in one roll.
-                const groups = root.rollSeparate ? lanes.map((_, index) => index) : [-1]
+            clip: true
+            readonly property real gutter: 34
+            readonly property real pixelsPerSecond: Math.max(1, (width - gutter) / root.rollSeconds)
+            // Seconds a still-sounding bar is drawn past the snapshot, so it
+            // reaches the right edge until the next one.
+            readonly property real lead: 0.3
+            // The roll's time at the moment the bars were drawn, and now.
+            property real paintedAt: 0
+            property real clock: 0
+            // One band per channel, or one for all, with its key range.
+            property var bands: []
+            function layout() {
+                const lanes = root.roll.lanes || []
+                const groups = root.rollSeparate ? lanes.map((_, index) => index) : (lanes.length ? [-1] : [])
                 const half = root.rollSeparate ? 6 : 12
-                const band = height / groups.length
-                const left = 34
-                const x = time => left + (width - left) * (1 - (now - time) / root.rollSeconds)
-                ctx.font = "10px monospace"
-                groups.forEach((group, index) => {
-                    const shown = (roll.bars || []).filter(bar => (group < 0 || bar.lane === group) && bar.end >= since)
-                    // Every key the channel has played this song: the range
-                    // only grows, so it settles instead of zooming per phrase.
+                const band = groups.length ? height / groups.length : height
+                const next = groups.map((group, index) => {
                     const played = (group < 0 ? lanes : [lanes[group]]).filter(lane => lane.low <= lane.high)
                     let low = 60 - half, high = 60 + half
                     if (played.length) {
@@ -371,37 +364,102 @@ ApplicationWindow {
                         low = Math.min(low, middle - half)
                         high = Math.max(high, middle + half)
                     }
-                    const top = index * band
-                    const row = band / (high - low + 1)
-                    const y = key => top + band - (key - low + 1) * row
-                    for (let key = Math.ceil(low); key <= high; ++key) {
-                        if ([1, 3, 6, 8, 10].indexOf(((key % 12) + 12) % 12) >= 0) {
-                            ctx.fillStyle = "#121d23"
-                            ctx.fillRect(left, y(key), width - left, row)
-                        }
-                        if (key % 12 === 0 && row * 12 > 14) {
-                            ctx.fillStyle = "#6f8794"
-                            ctx.fillText("C" + (key / 12 - 1), 4, y(key) + row - 1)
-                        }
-                    }
-                    for (const bar of shown) {
-                        const lane = lanes[bar.lane]
-                        const start = Math.max(left, x(bar.start))
-                        // A bar still sounding reaches the moving "now".
-                        const end = bar.end >= roll.position - 0.000001 ? now : bar.end
-                        ctx.fillStyle = Qt.hsla(lane.hue / 360, 0.75, 0.6, 0.45 + 0.55 * Math.min(1, bar.velocity))
-                        ctx.fillRect(start, y(bar.key) + 1, Math.max(2, x(end) - start), Math.max(2, row - 2))
-                    }
-                    ctx.fillStyle = "#2a3a44"
-                    ctx.fillRect(0, top + band - 1, width, 1)
-                    // The band's channel, or every channel's color.
-                    let legend = left + 6
-                    for (const lane of group < 0 ? lanes : [lanes[group]]) {
-                        ctx.fillStyle = Qt.hsla(lane.hue / 360, 0.75, 0.6, 1)
-                        ctx.fillText(lane.name, legend, top + 12)
-                        legend += 14 + ctx.measureText(lane.name).width
-                    }
+                    return { group: group, low: low, high: high, top: index * band, height: band,
+                             row: band / (high - low + 1), names: (group < 0 ? lanes : [lanes[group]]).map(lane => [lane.name, lane.hue]) }
                 })
+                if (JSON.stringify(next) !== JSON.stringify(bands)) {
+                    bands = next
+                    rollGrid.requestPaint()
+                }
+            }
+            function update() {
+                layout()
+                paintedAt = root.roll.position
+                clock = paintedAt
+                rollBars.requestPaint()
+            }
+            onWidthChanged: update()
+            onHeightChanged: update()
+            FrameAnimation {
+                running: pianoRoll.visible && root.app.playback_state === "playing"
+                onTriggered: pianoRoll.clock = root.roll.position + Math.min(pianoRoll.lead, (Date.now() - root.rollReceived) / 1000)
+            }
+            Canvas {
+                id: rollGrid
+                anchors.fill: parent
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.fillStyle = "#0f171c"
+                    ctx.fillRect(0, 0, width, height)
+                    ctx.font = "10px monospace"
+                    for (const band of pianoRoll.bands) {
+                        const y = key => band.top + band.height - (key - band.low + 1) * band.row
+                        for (let key = Math.ceil(band.low); key <= band.high; ++key) {
+                            if ([1, 3, 6, 8, 10].indexOf(((key % 12) + 12) % 12) >= 0) {
+                                ctx.fillStyle = "#121d23"
+                                ctx.fillRect(pianoRoll.gutter, y(key), width - pianoRoll.gutter, band.row)
+                            }
+                            if (key % 12 === 0 && band.row * 12 > 14) {
+                                ctx.fillStyle = "#6f8794"
+                                ctx.fillText("C" + (key / 12 - 1), 4, y(key) + band.row - 1)
+                            }
+                        }
+                        ctx.fillStyle = "#2a3a44"
+                        ctx.fillRect(0, band.top + band.height - 1, width, 1)
+                    }
+                }
+            }
+            Item {
+                x: pianoRoll.gutter
+                width: pianoRoll.width - pianoRoll.gutter
+                height: pianoRoll.height
+                clip: true
+                Canvas {
+                    id: rollBars
+                    // Shifted left by the time since the bars were drawn.
+                    x: -(pianoRoll.clock - pianoRoll.paintedAt) * pianoRoll.pixelsPerSecond
+                    width: parent.width + pianoRoll.lead * pianoRoll.pixelsPerSecond
+                    height: parent.height
+                    renderTarget: Canvas.FramebufferObject
+                    onPaint: {
+                        const ctx = getContext("2d")
+                        ctx.clearRect(0, 0, width, height)
+                        const roll = root.roll
+                        const lanes = roll.lanes || []
+                        const since = pianoRoll.paintedAt - root.rollSeconds
+                        const x = time => (time - since) * pianoRoll.pixelsPerSecond
+                        for (const band of pianoRoll.bands) {
+                            const y = key => band.top + band.height - (key - band.low + 1) * band.row
+                            for (const bar of roll.bars || []) {
+                                if (bar.end < since || (band.group >= 0 && bar.lane !== band.group)) continue
+                                const lane = lanes[bar.lane]
+                                const start = Math.max(0, x(bar.start))
+                                const end = bar.end >= roll.position - 0.000001 ? roll.position + pianoRoll.lead : bar.end
+                                ctx.fillStyle = Qt.hsla(lane.hue / 360, 0.75, 0.6, 0.45 + 0.55 * Math.min(1, bar.velocity))
+                                ctx.fillRect(start, y(bar.key) + 1, Math.max(2, x(end) - start), Math.max(2, band.row - 2))
+                            }
+                        }
+                    }
+                }
+            }
+            // Which channel each band is, in its color, over the bars.
+            Repeater {
+                model: pianoRoll.bands
+                Row {
+                    required property var modelData
+                    x: pianoRoll.gutter + 6
+                    y: modelData.top + 2
+                    spacing: 14
+                    Repeater {
+                        model: parent.modelData.names
+                        Text {
+                            required property var modelData
+                            text: modelData[0]
+                            color: Qt.hsla(modelData[1] / 360, 0.75, 0.6, 1)
+                            font.family: "monospace"; font.pixelSize: 10
+                        }
+                    }
+                }
             }
         }
         SplitView {
