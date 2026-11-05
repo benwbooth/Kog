@@ -66,7 +66,10 @@ Rectangle {
         height: root.height - 7
         radius: 5
         color: root.theme.window
-        border.color: root.theme.mid
+        // A hairline at a fractional display scale is spread over two device
+        // pixels and fades; a little lighter, it reads as the demo's crisp
+        // outline against the glow.
+        border.color: Qt.lighter(root.theme.mid, 1.4)
     }
 
     // The rows' name columns are 12px (numbers 11px); measure at the larger.
@@ -443,7 +446,8 @@ Rectangle {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             width: 1
-            height: parent.height * 0.56
+            // Short dividers, well inside the island, as in the demo.
+            height: Math.round(parent.height * 0.42)
             color: root.theme.mid
         }
 
@@ -486,8 +490,10 @@ Rectangle {
 
     Row {
         anchors.fill: parent
-        anchors.topMargin: 4
-        anchors.bottomMargin: 3
+        // Ubuntu's capitals sit low in their line box: lift the labels a
+        // pixel so they look centred in the island.
+        anchors.topMargin: 3
+        anchors.bottomMargin: 4
 
         Repeater {
             model: root.visibleColumns
