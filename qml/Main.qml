@@ -2610,7 +2610,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         visible: !root.compactToolbar
                         text: root.footer.trackSubtitle
-                        font.pixelSize: 11
+                        font.pixelSize: 12
                         color: root.mutedText
                         elide: Text.ElideRight
                     }

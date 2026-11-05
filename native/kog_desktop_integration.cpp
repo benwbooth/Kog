@@ -174,6 +174,10 @@ void kogApplyInterfaceFont()
     QFont font = QGuiApplication::font();
     font.setFamilies({ family });
     font.setWeight(QFont::Light);
+    // egui, which draws the demo, places glyphs without hinting; unhinted
+    // text keeps the same soft, round shapes here instead of snapping to the
+    // pixel grid.
+    font.setHintingPreference(QFont::PreferNoHinting);
     QGuiApplication::setFont(font);
 }
 } // namespace
