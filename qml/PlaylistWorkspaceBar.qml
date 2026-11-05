@@ -107,10 +107,47 @@ Item {
         text: qsTr("Play Queue")
         font: tabs.font
     }
+    // When the tabs overflow the bar, a ▾ at its end lists every tab.
+    readonly property bool overflowing: !!tabs.contentItem
+        && tabs.contentItem.contentWidth > tabs.width + 1
+    ToolButton {
+        id: tabListButton
+        objectName: "playlistTabList"
+        anchors.right: parent.right
+        anchors.rightMargin: 4
+        anchors.verticalCenter: parent.verticalCenter
+        width: 28
+        height: 28
+        visible: bar.overflowing
+        flat: true
+        text: "▾"
+        display: AbstractButton.TextOnly
+        Accessible.name: qsTr("All playlist tabs")
+        onClicked: tabListMenu.popup(tabListButton, tabListButton.width - tabListMenu.width,
+            tabListButton.height)
+    }
+    Menu {
+        id: tabListMenu
+        Instantiator {
+            model: bar.entries
+            delegate: MenuItem {
+                required property var modelData
+                text: modelData.name + (modelData.dirty ? " •" : "")
+                checkable: true
+                checked: modelData.key === bar.workspaceState.active
+                onTriggered: bar.send({op: "focus", key: modelData.key})
+            }
+            onObjectAdded: (index, object) => tabListMenu.insertItem(index, object)
+            onObjectRemoved: (index, object) => tabListMenu.removeItem(object)
+        }
+    }
     TabBar {
         id: tabs
         objectName: "playlistTabBar"
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: tabListButton.visible ? tabListButton.left : parent.right
         clip: true
         // No bar of its own: the playlist's blue glow shows through, as in
         // Earshot, and the tabs float on it.

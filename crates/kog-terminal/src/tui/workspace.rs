@@ -6,8 +6,9 @@ use kog_audio::playback_order::workspace::{CloseChoice, Command, QueueAction};
 /// The most of a playlist's name a tab shows.
 const TAB_NAME_CHARS: usize = 19;
 
-/// Cells at the right of the tab row for its ‹ › scroll arrows.
-const TAB_ARROWS_WIDTH: usize = 4;
+/// Cells at the right of the tab row for its ‹ › scroll arrows and the ▾
+/// list of every tab.
+const TAB_ARROWS_WIDTH: usize = 6;
 
 const CLOSE_CHOICES: [(CloseChoice, &str); 3] = [
     (CloseChoice::Save, "[Save]"),
@@ -261,6 +262,10 @@ impl Ui {
                 let layout = self.layout(size);
                 self.open_context(MenuPage::TabBar, layout.playlist_left() + 1, layout.tab_row + 1, size);
             }
+            Key::Char('L') => {
+                let layout = self.layout(size);
+                self.open_tab_list(layout.playlist_left() + 1, layout.tab_row + 1, size);
+            }
             // Space, volume and the other player keys still work here.
             _ => return false,
         }
@@ -289,6 +294,43 @@ impl Ui {
                 before: state.tabs.get(active + 2).map(|tab| tab.key.clone()),
             }),
             _ => {}
+        }
+        self.tab_start = None;
+    }
+
+    /// Open the list of every tab, for when the tab row cannot show them all.
+    pub(super) fn open_tab_list(&mut self, x: usize, y: usize, size: (usize, usize)) {
+        let state = self.session.workspace_model().snapshot();
+        let labels: Vec<String> = state
+            .tabs
+            .iter()
+            .map(|tab| {
+                format!(
+                    "{} {}{}",
+                    if tab.key == state.active { "●" } else { " " },
+                    tab.name,
+                    if tab.dirty { " *" } else { "" }
+                )
+            })
+            .collect();
+        {
+            let mut list = TAB_LIST.lock().unwrap();
+            if list.len() != labels.len() || list.iter().zip(&labels).any(|(a, b)| *a != b) {
+                let leaked: Vec<&'static str> = labels
+                    .into_iter()
+                    .map(|label| &*Box::leak(label.into_boxed_str()))
+                    .collect();
+                *list = Box::leak(leaked.into_boxed_slice());
+            }
+        }
+        self.open_context(MenuPage::TabList, x, y, size);
+    }
+
+    /// Show the tab picked from the tab list.
+    pub(super) fn focus_listed_tab(&mut self, index: usize) {
+        let state = self.session.workspace_model().snapshot();
+        if let Some(tab) = state.tabs.get(index) {
+            self.workspace_command(Command::Focus { key: tab.key.clone() });
         }
         self.tab_start = None;
     }
@@ -685,9 +727,12 @@ impl Ui {
                 && let Some((can_left, can_right)) = self.workspace_tab_arrows(size.0.saturating_sub(left))
                 && x >= size.0.saturating_sub(TAB_ARROWS_WIDTH)
             {
-                // The ‹ › arrows at the right end scroll the row one tab.
+                // The ‹ › arrows at the right end scroll the row one tab;
+                // the ▾ after them lists every tab.
                 let width = size.0.saturating_sub(left);
-                if x < size.0.saturating_sub(2) {
+                if x >= size.0.saturating_sub(2) {
+                    self.open_tab_list(x.saturating_sub(menu_width(size.0)), y + 1, size);
+                } else if x < size.0.saturating_sub(4) {
                     if can_left {
                         self.scroll_tabs(-1, width);
                     }
@@ -966,6 +1011,8 @@ impl Ui {
             paint(screen, layout.tab_row + 1, arrows_left + 2, " ", 1, Surface::Header, false);
             paint(screen, layout.tab_row + 1, arrows_left + 3, "›", 1,
                 if can_right { Surface::Header } else { Surface::Muted }, can_right);
+            paint(screen, layout.tab_row + 1, arrows_left + 4, " ", 1, Surface::Header, false);
+            paint(screen, layout.tab_row + 1, arrows_left + 5, "▾", 1, Surface::Header, true);
         }
         if let Some(marker) = self
             .tab_drag

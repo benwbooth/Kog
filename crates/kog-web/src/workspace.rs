@@ -49,9 +49,25 @@ pub fn Tabs(controller: Controller) -> impl IntoView {
         let _ = drag.call2(&wasm_bindgen::JsValue::NULL, event.as_ref(), &callback);
     });
     on_cleanup(move || listener.remove());
+    // When the tabs overflow their strip, a ▾ at its end lists every tab.
+    let strip = NodeRef::<leptos::html::Div>::new();
+    let (overflowing, set_overflowing) = signal(false);
+    let (list_open, set_list_open) = signal(false);
+    let measure = move || {
+        if let Some(element) = strip.get_untracked() {
+            set_overflowing.set(element.scroll_width() > element.client_width());
+        }
+    };
+    Effect::new(move |_| {
+        controller.snapshot();
+        request_animation_frame(measure);
+    });
+    let resize = window_event_listener(leptos::ev::resize, move |_| measure());
+    on_cleanup(move || resize.remove());
     view! {
         <Show when=move || { controller.snapshot().tabs.len() > 1 }>
-        <div class="playlist-tabs" role="tablist" aria-label="Open playlists">
+        <div class="playlist-tabs-bar">
+        <div class="playlist-tabs" role="tablist" aria-label="Open playlists" node_ref=strip>
             <For each=move || controller.snapshot().tabs.clone() key=|tab| (tab.key.clone(), tab.name.clone(), tab.dirty) let:tab>
                 { let focus = tab.key.clone(); let active = tab.key.clone(); let close = tab.key.clone(); let closable = tab.key != "queue";
                   view! { <div class="playlist-tab" data-tab-key=tab.key.clone() class:active=move || controller.snapshot().active == active>
@@ -63,6 +79,32 @@ pub fn Tabs(controller: Controller) -> impl IntoView {
                   </div> }
                 }
             </For>
+        </div>
+        <Show when=move || overflowing.get()>
+            <div class="tab-list">
+                <button class="tab-list-toggle" title="All playlist tabs" aria-haspopup="menu"
+                    aria-expanded=move || list_open.get().to_string()
+                    on:click=move |_| set_list_open.update(|open| *open = !*open)>"▾"</button>
+                <Show when=move || list_open.get()>
+                    <div class="tab-list-scrim" on:click=move |_| set_list_open.set(false)></div>
+                    <div class="tab-list-menu" role="menu" aria-label="All playlist tabs">
+                        <For each=move || controller.snapshot().tabs.clone() key=|tab| (tab.key.clone(), tab.name.clone(), tab.dirty) let:tab>
+                            { let key = tab.key.clone(); let current = tab.key.clone();
+                              view! {
+                                <button class="menu-item" role="menuitemradio"
+                                    aria-checked=move || (controller.snapshot().active == current).to_string()
+                                    on:click=move |_| {
+                                        controller.send(Command::Focus { key: key.clone() });
+                                        set_list_open.set(false);
+                                    }>
+                                    {format!("{}{}", tab.name, if tab.dirty { " *" } else { "" })}
+                                </button>
+                              } }
+                        </For>
+                    </div>
+                </Show>
+            </div>
+        </Show>
         </div>
         </Show>
         <Show when=move || controller.snapshot().pending_close.is_some()>

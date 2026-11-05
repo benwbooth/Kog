@@ -30,7 +30,7 @@
   /* Alternate rows: opaque, so the playlist's glow shows only between them. */
   --stripe: #0a0b0f;
   --border: #1e2230;
-  --glow: rgba(77, 120, 255, 0.14);
+  --glow: rgba(77, 120, 255, 0.26);
   --row-height: 26px;
   /* The folder tree is scanned, not read row by row: keep it compact. */
   --tree-row-height: 21px;
@@ -76,7 +76,7 @@
     --selection: #2a73d9;
     --stripe: #f2f2f8;
     --border: #dddfea;
-    --glow: rgba(47, 125, 225, 0.10);
+    --glow: rgba(47, 125, 225, 0.12);
     color-scheme: light;
   }
 }
@@ -97,7 +97,7 @@
   --selection: #2a73d9;
   --stripe: #f2f2f8;
   --border: #dddfea;
-  --glow: rgba(47, 125, 225, 0.10);
+  --glow: rgba(47, 125, 225, 0.12);
   color-scheme: light;
 }
 
@@ -3540,7 +3540,16 @@ body.touch .track .index-cell {
 }
 
 /* Saved playlists are drafts; transport always consumes Play Queue. */
-.playlist-tabs { display:flex; flex:none; gap:2px; overflow-x:auto; padding:6px 8px 0; background:var(--window); border-bottom:1px solid var(--border); }
+.playlist-tabs-bar { display:flex; flex:none; align-items:stretch; background:var(--window); border-bottom:1px solid var(--border); }
+.playlist-tabs { display:flex; flex:1; min-width:0; gap:2px; overflow-x:auto; padding:6px 8px 0; }
+/* The list of every tab, when they overflow the strip. */
+.tab-list { position:relative; flex:none; display:flex; align-items:center; padding:6px 6px 0 2px; }
+.tab-list-toggle { width:28px; height:28px; padding:0; border:0; border-radius:6px; color:var(--muted); background:transparent; font-size:13px; }
+.tab-list-toggle:hover, .tab-list-toggle[aria-expanded="true"] { color:var(--text); background:var(--alternate); }
+.tab-list-scrim { position:fixed; inset:0; z-index:29; }
+.tab-list-menu { position:absolute; top:calc(100% + 2px); right:6px; z-index:30; min-width:200px; max-width:min(360px, 90vw); max-height:60vh; overflow-y:auto; display:grid; padding:4px; border:1px solid var(--border); border-radius:12px; background:var(--field); box-shadow:0 12px 32px rgba(0,0,0,.45); }
+.tab-list-menu .menu-item { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; }
+.tab-list-menu .menu-item[aria-checked="true"] { color:var(--highlight); }
 .playlist-tab { display:flex; align-items:center; flex:none; position:relative; color:var(--muted); border:1px solid transparent; border-bottom:0; border-radius:6px 6px 0 0; }
 .playlist-tab.active { color:var(--text); border-color:var(--border); background:var(--base); box-shadow:inset 0 2px var(--highlight); }
 .playlist-tab:hover { color:var(--text); background:var(--alternate); }
@@ -3917,7 +3926,7 @@ button.primary:hover:not(:disabled) {
 
 .playlist {
   background:
-    linear-gradient(180deg, var(--glow) 0, transparent 260px),
+    linear-gradient(180deg, var(--glow) 0, color-mix(in srgb, var(--glow) 35%, transparent) 150px, transparent 340px),
     var(--base);
 }
 

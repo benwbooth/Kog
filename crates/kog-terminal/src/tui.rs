@@ -390,6 +390,7 @@ enum MenuPage {
     Tracks,
     Draft,
     TabBar,
+    TabList,
     Saved,
     Playlist,
     Columns,
@@ -423,6 +424,7 @@ impl MenuPage {
             Self::Tracks => "Playlist Row",
             Self::Draft => "Saved Playlist Row",
             Self::TabBar => "Tab",
+            Self::TabList => "Tabs",
             Self::Saved => "Saved Playlist",
             Self::Playlist => "Playlist",
             Self::Columns | Self::ColumnContext => "Columns",
@@ -445,6 +447,7 @@ impl MenuPage {
             Self::Tracks => &TRACKS_MENU,
             Self::Draft => &DRAFT_MENU,
             Self::TabBar => &TAB_MENU,
+            Self::TabList => *TAB_LIST.lock().unwrap(),
             Self::Saved => &SAVED_MENU,
             Self::Playlist => &PLAYLIST_MENU,
             Self::Columns => &COLUMNS_MENU[..12],
@@ -2628,8 +2631,17 @@ impl Ui {
             self.activate_draft_menu(index);
             return;
         }
+        if page == MenuPage::TabBar && index == 6 {
+            let layout = self.layout(size);
+            self.open_tab_list(layout.playlist_left() + 1, layout.tab_row + 1, size);
+            return;
+        }
         if page == MenuPage::TabBar {
             self.activate_tab_menu(index);
+            return;
+        }
+        if page == MenuPage::TabList {
+            self.focus_listed_tab(index);
             return;
         }
         if page == MenuPage::ColumnContext && index == 12 {
@@ -11256,7 +11268,20 @@ const DRAFT_MENU: [&str; 17] = [
 ];
 
 /// M on the focused tab row.
-const TAB_MENU: [&str; 5] = ["Close Tab", "Close Other Tabs", "", "Move Tab Left", "Move Tab Right"];
+const TAB_MENU: [&str; 7] = [
+    "Close Tab",
+    "Close Other Tabs",
+    "",
+    "Move Tab Left",
+    "Move Tab Right",
+    "",
+    "All Tabs…",
+];
+
+/// The tab list menu's rows: every open tab, the active one marked. Menu
+/// pages hand out static labels, so each new set of names is leaked once and
+/// kept until the tabs change.
+static TAB_LIST: Mutex<&'static [&'static str]> = Mutex::new(&[]);
 
 /// The Edit menu item each draft row menu item runs, past its queue actions.
 const DRAFT_MENU_EDIT: [usize; 17] = [0, 0, 0, 0, 12, 13, 5, 7, 8, 0, 0, 1, 3, 4, 0, 10, 11];
