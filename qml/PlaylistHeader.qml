@@ -460,7 +460,7 @@ Rectangle {
             // Quiet labels; the sorted column stands out in full colour.
             color: root.theme.buttonText
             opacity: root.sortColumn === cell.column.id ? 1 : 0.65
-            font.pixelSize: cell.column.id === "status" ? 9 : 11
+            font.pixelSize: cell.column.id === "status" ? 7 : 11
             horizontalAlignment: cell.column.alignment
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight

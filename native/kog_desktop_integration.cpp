@@ -174,10 +174,17 @@ void kogApplyInterfaceFont()
     }
     QFont font = QGuiApplication::font();
     font.setFamilies({ family });
-    // egui, which draws the demo, places glyphs without hinting; unhinted
-    // text keeps the same soft, round shapes here instead of snapping to the
-    // pixel grid.
-    font.setHintingPreference(QFont::PreferNoHinting);
+    // Hint vertically only: letters keep their designed widths and spacing,
+    // as egui draws the demo, while baselines and x-heights land on whole
+    // pixels. Fully unhinted text at a fractional display scale set each
+    // letter at its own sub-pixel height, so words looked wobbly.
+    font.setHintingPreference(QFont::PreferVerticalHinting);
+    // A whole pixel size: the desktop's 10pt is 13.33px, and text at a
+    // fractional size wobbled in the file tree and playlist list, which use
+    // the application font (the playlist's fixed pixel sizes looked fine).
+    if (font.pixelSize() <= 0) {
+        font.setPixelSize(qMax(1, qRound(font.pointSizeF() * 96.0 / 72.0)));
+    }
     // Grey-scale edges as egui draws them: coloured sub-pixel fringes look
     // rough on dark backgrounds, above all at fractional display scales.
     font.setStyleStrategy(QFont::StyleStrategy(QFont::PreferAntialias | QFont::NoSubpixelAntialias));

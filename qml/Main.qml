@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
+import QtQuick.Templates as T
 import QtQml.Models
 import QtCore as QtCore
 import Qt.labs.platform as Platform
@@ -3163,7 +3164,7 @@ ApplicationWindow {
                     Layout.bottomMargin: visible ? 5 : 0
                     visible: fileTreeModel.searchStatus.length > 0
                     text: fileTreeModel.searchStatus
-                    font.pointSize: root.font.pointSize * 0.9
+                    font.pixelSize: Math.round((root.font.pixelSize > 0 ? root.font.pixelSize : root.font.pointSize * 4 / 3) * 0.9)
                     wrapMode: Text.Wrap
                     opacity: 0.75
                 }
@@ -3264,8 +3265,55 @@ ApplicationWindow {
                         text: directoryTree.tooltipText
                     }
 
-                    delegate: TreeViewDelegate {
+                    // The plain template, not the desktop style's delegate: the
+                    // style draws its own branch lines and outline arrows, and
+                    // Kog draws small filled triangles, as Earshot does.
+                    delegate: T.TreeViewDelegate {
                         id: treeDelegate
+                        required property int row
+                        required property var model
+                        readonly property real contentIndent: !isTreeNode ? 0
+                            : depth * indentation + indicator.width + spacing
+                        indentation: 14
+                        leftMargin: 4
+                        rightMargin: 4
+                        spacing: 2
+                        leftPadding: leftMargin + contentIndent
+                        rightPadding: 4
+                        implicitWidth: leftPadding + implicitContentWidth + rightPadding
+                        indicator: Item {
+                            x: treeDelegate.leftMargin + treeDelegate.depth * treeDelegate.indentation
+                            y: (treeDelegate.height - height) / 2
+                            implicitWidth: 14
+                            implicitHeight: 14
+                            visible: treeDelegate.isTreeNode && treeDelegate.hasChildren
+
+                            Canvas {
+                                id: twisty
+                                anchors.centerIn: parent
+                                width: 8
+                                height: 8
+                                rotation: treeDelegate.expanded ? 90 : 0
+                                Behavior on rotation {
+                                    NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                                }
+                                readonly property color fill: treeDelegate.selected
+                                    ? treeDelegate.palette.highlightedText
+                                    : treeDelegate.palette.placeholderText
+                                onFillChanged: requestPaint()
+                                onPaint: {
+                                    const context = getContext("2d")
+                                    context.reset()
+                                    context.fillStyle = fill
+                                    context.beginPath()
+                                    context.moveTo(1.5, 0.5)
+                                    context.lineTo(7, 4)
+                                    context.lineTo(1.5, 7.5)
+                                    context.closePath()
+                                    context.fill()
+                                }
+                            }
+                        }
                         // Bind the QFileSystemModel role as a required delegate
                         // property. Accessing it through the transient `model`
                         // object leaves recycled TreeView delegates displaying
