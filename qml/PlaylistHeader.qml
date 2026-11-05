@@ -60,6 +60,7 @@ Rectangle {
         z: -1
         width: Math.min(root.width, root.totalWidth)
         height: root.height
+        radius: 4
         color: root.theme.window
         border.color: root.theme.mid
     }
@@ -432,7 +433,9 @@ Rectangle {
             text: cell.column.label + (root.sortColumn === cell.column.id
                 ? (root.sortAscending ? "  ▲" : "  ▼")
                 : "")
+            // Quiet labels; the sorted column stands out in full colour.
             color: root.theme.buttonText
+            opacity: root.sortColumn === cell.column.id ? 1 : 0.65
             font.pixelSize: 11
             font.bold: root.sortColumn === cell.column.id
             horizontalAlignment: cell.column.alignment

@@ -254,6 +254,45 @@ ApplicationWindow {
         palette.buttonText: root.palette.text
     }
 
+    // Earshot's slider: a thin rounded track, filled with the accent up to a
+    // white knob that grows a little under the pointer.
+    component KogSlider: Slider {
+        id: kogSlider
+        readonly property bool dark: root.baseLuminance < 0.5
+        background: Rectangle {
+            x: kogSlider.leftPadding
+            y: kogSlider.topPadding + kogSlider.availableHeight / 2 - height / 2
+            implicitWidth: 120
+            implicitHeight: 4
+            width: kogSlider.availableWidth
+            height: implicitHeight
+            radius: 2
+            color: Qt.rgba(root.palette.text.r, root.palette.text.g,
+                root.palette.text.b, 0.14)
+
+            Rectangle {
+                width: kogSlider.visualPosition * parent.width
+                height: parent.height
+                radius: 2
+                color: kogSlider.enabled ? root.palette.accent : root.palette.mid
+            }
+        }
+        handle: Rectangle {
+            x: kogSlider.leftPadding
+                + kogSlider.visualPosition * (kogSlider.availableWidth - width)
+            y: kogSlider.topPadding + kogSlider.availableHeight / 2 - height / 2
+            implicitWidth: 14
+            implicitHeight: 14
+            radius: 7
+            visible: kogSlider.enabled
+            color: kogSlider.dark ? "#ffffff" : root.palette.base
+            border.width: kogSlider.dark ? 0 : 1
+            border.color: root.palette.mid
+            scale: kogSlider.pressed ? 1.15 : (kogSlider.hovered ? 1.08 : 1)
+            Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+        }
+    }
+
     component ResizeHandle: MouseArea {
         required property int edges
         visible: root.visibility === Window.Windowed
@@ -2501,7 +2540,7 @@ ApplicationWindow {
                     Layout.preferredWidth: 72
                     Layout.preferredHeight: 72
                     Layout.alignment: Qt.AlignVCenter
-                    radius: 10
+                    radius: 8
                     color: root.palette.alternateBase
                     border.width: 1
                     border.color: root.palette.mid
@@ -2704,7 +2743,7 @@ ApplicationWindow {
                         color: root.palette.text
                         font.pixelSize: 11
                     }
-                    Slider {
+                    KogSlider {
                         Layout.fillWidth: true
                         from: 0
                         to: Math.max(1, appController.duration_seconds)
@@ -2802,7 +2841,7 @@ ApplicationWindow {
                             }
                         }
                     }
-                    Slider {
+                    KogSlider {
                         id: volumeSlider
                         Layout.preferredWidth: root.compactToolbar ? 80 : 140
                         Layout.alignment: Qt.AlignVCenter
@@ -2844,7 +2883,6 @@ ApplicationWindow {
             SplitView.minimumWidth: root.sidebarVisible ? 170 : 0
             visible: root.sidebarVisible
             color: root.palette.window
-            border.color: root.palette.mid
             onWidthChanged: {
                 // Debounced: SplitView drags fire per pixel, but only
                 // the settled width is worth persisting.
@@ -2884,7 +2922,6 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 40
                         color: root.palette.button
-                        border.color: root.palette.mid
 
                         RowLayout {
                             anchors.fill: parent
@@ -3238,6 +3275,22 @@ ApplicationWindow {
                         implicitHeight: directoryTree.rowPitch
                         topPadding: 0
                         bottomPadding: 0
+                        // Rounded, striped rows with a rounded selection, as
+                        // in the playlist.
+                        background: Rectangle {
+                            anchors.fill: parent
+                            anchors.leftMargin: 4
+                            anchors.rightMargin: 4
+                            anchors.topMargin: 1
+                            anchors.bottomMargin: 1
+                            radius: 6
+                            color: treeDelegate.selected
+                                ? treeDelegate.palette.highlight
+                                : (treePointer.containsMouse
+                                    ? treeDelegate.palette.button
+                                    : (treeDelegate.row % 2
+                                        ? treeDelegate.palette.alternateBase : "transparent"))
+                        }
                         // Use Kog's bundled SVG for folders and formats.
                         // Resolving a theme folder icon on each reused row
                         // stalls upward scrolling through nested folders.
@@ -3617,6 +3670,21 @@ ApplicationWindow {
             SplitView.fillWidth: true
             SplitView.minimumWidth: 320
             color: root.palette.base
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.topMargin: playlistWorkspaceBar.height
+                height: 260
+                gradient: Gradient {
+                    GradientStop {
+                        position: 0
+                        color: Qt.rgba(0x4d / 255, 0x78 / 255, 1,
+                            root.baseLuminance < 0.5 ? 0.13 : 0.07)
+                    }
+                    GradientStop { position: 1; color: "transparent" }
+                }
+            }
             Rectangle {
                 z: 10
                 anchors.fill: parent
