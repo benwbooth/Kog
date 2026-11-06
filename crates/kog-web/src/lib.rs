@@ -823,12 +823,14 @@ fn content_width(id: ColumnId, texts: &[String]) -> f64 {
     }) + 16.0
         + 3.0;
     context.set_font(&cell_font);
-    for text in texts {
-        let width = measured(&context, text) + 16.0 + 3.0;
-        if width > widest {
-            widest = width;
-        }
-    }
+    // The header always fits; the values fit but for a few outliers, which
+    // stay cut short (their tooltip shows them whole).
+    let cells: Vec<f64> = texts
+        .iter()
+        .skip(1)
+        .map(|text| measured(&context, text) + 16.0 + 3.0)
+        .collect();
+    widest = widest.max(kog_playback_policy::column_fit::width_without_outliers(&cells));
     widest.clamp(id.min_width(), 1024.0)
 }
 

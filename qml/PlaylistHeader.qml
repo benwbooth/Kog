@@ -416,15 +416,33 @@ Rectangle {
         // PlaylistRow reserves 26 px before title text for the format icon,
         // 6 px after it, and 6 px on each side of other text cells.
         const inset = column.id === "title" ? 36 : 18
-        let contentWidth = headerFontMetrics.advanceWidth(
+        const headerWidth = headerFontMetrics.advanceWidth(
             column.label.length > 0 ? column.label + "  ▼" : "▶")
-        for (let row = 0; row < root.app.playlist_count; ++row) {
-            contentWidth = Math.max(contentWidth, columnFontMetrics.advanceWidth(
-                root.app.track_value_at(row, column.id)))
-            if (contentWidth + inset >= cap)
-                break
+        const widths = []
+        for (let row = 0; row < root.app.playlist_count; ++row)
+            widths.push(columnFontMetrics.advanceWidth(root.app.track_value_at(row, column.id)))
+        const contentWidth = Math.max(headerWidth, typicalWidth(widths))
+        return Math.min(cap, Math.ceil(contentWidth + inset))
+    }
+
+    // The width that fits every value but the outliers: the widest value no
+    // more than 1.35 times the 90th-percentile width. Fewer than 8 values fit
+    // the widest. The web player shares this rule (kog_playback_policy::
+    // column_fit); the terminal player fits every value.
+    function typicalWidth(widths) {
+        if (widths.length === 0)
+            return 0
+        const sorted = widths.slice().sort((a, b) => a - b)
+        const widest = sorted[sorted.length - 1]
+        if (sorted.length < 8)
+            return widest
+        const index = Math.min(sorted.length, Math.max(1, Math.ceil(sorted.length * 0.9))) - 1
+        const limit = sorted[index] * 1.35
+        for (let i = sorted.length - 1; i >= 0; --i) {
+            if (sorted[i] <= limit)
+                return sorted[i]
         }
-        return Math.ceil(contentWidth + inset)
+        return widest
     }
 
     function autoFitColumn(identifier) {

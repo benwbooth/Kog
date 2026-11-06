@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 pub mod bridge;
+pub mod column_fit;
 pub mod ffi;
 pub mod radio;
 pub mod sort;
