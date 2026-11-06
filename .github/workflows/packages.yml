@@ -234,7 +234,8 @@ jobs:
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
       # The windows-2025 image now exports HOST_CC=cc (a GCC), which cc-rs
-      # prefers for a native build; Kog's C and C++ sources build with MSVC.
+      # prefers for a native build; Kog's C and C++ sources build with MSVC,
+      # put on PATH by msvc-dev-cmd below.
       HOST_CC: cl.exe
       HOST_CXX: cl.exe
       CC: cl.exe
@@ -247,6 +248,12 @@ jobs:
         with:
           ref: ${{ inputs.source_ref || github.ref }}
           submodules: recursive
+
+      # With CC and HOST_CC naming cl.exe (see the job's env), the MSVC
+      # developer environment must put it on PATH.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - uses: jurplel/install-qt-action@v4
         with:
