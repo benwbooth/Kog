@@ -491,7 +491,9 @@ mod tests {
 
     #[test]
     fn a_midi_placeholder_title_gives_way_to_the_cleaned_filename() {
-        let source = source("02 - Debut Of The Chron-O-John.mid");
+        let source = PlaybackSource::from_path(PathBuf::from(
+            "/nowhere/02 - Debut Of The Chron-O-John.mid",
+        ));
         assert_eq!(
             better_title("A", &source).as_deref(),
             Some("02 - Debut Of The Chron-O-John")
