@@ -8,6 +8,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const MAX_COVER_BYTES: u32 = 8 * 1024 * 1024;
+/// A platform's box-art listing runs to a few megabytes.
+const MAX_BOX_ART_INDEX_BYTES: u32 = 8 * 1024 * 1024;
 /// Box-art guesses asked at once.
 const BOX_ART_BATCH: usize = 12;
 pub const MAX_SEARCH_BYTES: u32 = 512 * 1024;
@@ -73,6 +75,23 @@ pub fn download_cover<T>(
                 .find_map(|probe| probe.join().ok().flatten())
         });
         if let Some(result) = found.and_then(&mut store) {
+            return Some(result);
+        }
+    }
+    // No guessed name exists: look the game up in the platform's listing,
+    // where names carry tags such as "(1986)(Nintendo)(VS UniSystem)".
+    for platform in game_platforms(file) {
+        if cancelled() {
+            return None;
+        }
+        if let Some(names) = box_art_index(platform, &fetch)
+            && let Some(name) = best_box_art(album, &names)
+            && let Some(result) = fetch_image!(format!(
+                "{LIBRETRO_THUMBNAILS}/{}/Named_Boxarts/{}.png",
+                path_encode(platform),
+                path_encode(name)
+            ))
+        {
             return Some(result);
         }
     }
@@ -543,14 +562,7 @@ pub fn game_box_art_urls(game: &str, platforms: &[&str]) -> Vec<String> {
     if platforms.is_empty() {
         return Vec::new();
     }
-    let mut base = album_lookup_name(game).trim().to_owned();
-    // Trailing tag groups: "Metroid (1986-08)(Nintendo R&D1)(Nintendo)".
-    while let Some(open) = base.rfind(['(', '[']) {
-        if open == 0 || !(base.ends_with(')') || base.ends_with(']')) {
-            break;
-        }
-        base = base[..open].trim_end().to_owned();
-    }
+    let base = without_tag_groups(album_lookup_name(game));
     if base.is_empty() {
         return Vec::new();
     }
@@ -579,6 +591,98 @@ pub fn game_box_art_urls(game: &str, platforms: &[&str]) -> Vec<String> {
         }
     }
     urls
+}
+
+/// A game title without trailing tag groups:
+/// "Metroid (1986-08)(Nintendo R&D1)(Nintendo)" is "Metroid".
+fn without_tag_groups(title: &str) -> String {
+    let mut base = title.trim().to_owned();
+    while let Some(open) = base.rfind(['(', '[']) {
+        if open == 0 || !(base.ends_with(')') || base.ends_with(']')) {
+            break;
+        }
+        base = base[..open].trim_end().to_owned();
+    }
+    base
+}
+
+/// A title's words for comparing names loosely: case, punctuation, tag
+/// groups and a leading or trailing "The" ignored, "&" read as "and".
+/// "VS. Super Mario Bros" and "Vs. Super Mario Bros. (1986)(Nintendo)"
+/// both give "vs super mario bros".
+pub fn game_title_words(title: &str) -> String {
+    let base = without_tag_groups(title).to_lowercase().replace('&', " and ");
+    let mut words: Vec<&str> = base
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.first() == Some(&"the") {
+        words.remove(0);
+    }
+    if words.last() == Some(&"the") {
+        words.pop();
+    }
+    words.join(" ")
+}
+
+/// The listing of a platform's box art on the libretro thumbnail server.
+pub fn box_art_index_url(platform: &str) -> String {
+    format!("{LIBRETRO_THUMBNAILS}/{}/Named_Boxarts/?F=0", path_encode(platform))
+}
+
+/// Image names (without ".png") in a libretro directory listing.
+pub fn parse_box_art_index(html: &str) -> Vec<String> {
+    html.split("href=\"")
+        .skip(1)
+        .filter_map(|rest| {
+            let name = rest.split('"').next()?.strip_suffix(".png")?;
+            (!name.contains('/')).then(|| {
+                percent_encoding::percent_decode_str(name)
+                    .decode_utf8_lossy()
+                    .into_owned()
+            })
+        })
+        .collect()
+}
+
+/// The listed box art whose title matches `game` loosely, preferring a good
+/// dump, then a USA or World release, then the shortest name.
+pub fn best_box_art<'a>(game: &str, names: &'a [String]) -> Option<&'a str> {
+    let wanted = game_title_words(album_lookup_name(game));
+    if wanted.is_empty() {
+        return None;
+    }
+    names
+        .iter()
+        .filter(|name| game_title_words(name) == wanted)
+        .min_by_key(|name| {
+            let lower = name.to_lowercase();
+            let flawed = ["[b", "[h", "(beta", "(proto", "(hack", "bootleg"]
+                .iter()
+                .any(|mark| lower.contains(mark));
+            let preferred = lower.contains("(usa") || lower.contains("(world");
+            (flawed, !preferred, name.len())
+        })
+        .map(String::as_str)
+}
+
+/// Box art for a platform's games, listed once per run of the program.
+fn box_art_index(
+    platform: &str,
+    fetch: &impl Fn(&str, u32) -> Option<Vec<u8>>,
+) -> Option<std::sync::Arc<Vec<String>>> {
+    static INDEXES: std::sync::Mutex<Vec<(String, std::sync::Arc<Vec<String>>)>> =
+        std::sync::Mutex::new(Vec::new());
+    if let Some((_, names)) = INDEXES.lock().ok()?.iter().find(|(name, _)| name == platform) {
+        return Some(names.clone());
+    }
+    let html = String::from_utf8(fetch(&box_art_index_url(platform), MAX_BOX_ART_INDEX_BYTES)?).ok()?;
+    let names = std::sync::Arc::new(parse_box_art_index(&html));
+    if names.is_empty() {
+        return None;
+    }
+    INDEXES.lock().ok()?.push((platform.to_owned(), names.clone()));
+    Some(names)
 }
 
 fn path_encode(value: &str) -> String {
@@ -979,6 +1083,23 @@ mod tests {
         assert!(!left.contains('/') && !left.contains('\0'));
         assert_ne!(left, cache_key("Fumihito Kasatani", "Alisia Dragoon!"));
         assert_ne!(left, cache_key("", "Alisia Dragoon"));
+    }
+
+    #[test]
+    fn box_art_listing_matches_titles_loosely() {
+        let html = r#"<li><a href="/Nintendo/"> Parent</a></li>
+<li><a href="Vs.%20Super%20Mario%20Bros.%20(1986)(Nintendo)(VS%20UniSystem)%5bb2%5d.png">x</a></li>
+<li><a href="Vs.%20Super%20Mario%20Bros.%20(1986)(Nintendo)(VS%20UniSystem).png">x</a></li>
+<li><a href="Super%20Mario%20Bros.%203%20(USA).png">x</a></li>"#;
+        let names = parse_box_art_index(html);
+        assert_eq!(names.len(), 3);
+        assert_eq!(
+            best_box_art("VS. Super Mario Bros", &names),
+            Some("Vs. Super Mario Bros. (1986)(Nintendo)(VS UniSystem)")
+        );
+        assert_eq!(best_box_art("Super Mario Bros.", &names), None);
+        assert_eq!(game_title_words("The Legend of Zelda"), "legend of zelda");
+        assert_eq!(game_title_words("Zelda, The"), "zelda");
     }
 
     #[test]
