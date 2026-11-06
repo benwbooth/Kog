@@ -2622,8 +2622,8 @@ ApplicationWindow {
             anchors.fill: parent
             anchors.leftMargin: 28
             anchors.rightMargin: 12
-            anchors.topMargin: 8
-            anchors.bottomMargin: 8
+            anchors.topMargin: 6
+            anchors.bottomMargin: 6
             spacing: 12
 
             RowLayout {
@@ -2632,9 +2632,10 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 spacing: 10
 
+                // The cover fills the bar's height.
                 Rectangle {
-                    Layout.preferredWidth: 72
-                    Layout.preferredHeight: 72
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: height
                     Layout.alignment: Qt.AlignVCenter
                     radius: 8
                     color: root.palette.alternateBase
@@ -2642,14 +2643,13 @@ ApplicationWindow {
                     border.color: root.palette.mid
 
                     Image {
-                        anchors.centerIn: parent
-                        width: 60
-                        height: 60
+                        anchors.fill: parent
+                        anchors.margins: appController.current_artwork_path.length > 0 ? 1 : 12
                         source: appController.current_artwork_path.length > 0
                             ? "file://" + appController.current_artwork_path
                             : Qt.resolvedUrl("icons/kog.svg")
-                        sourceSize.width: 120
-                        sourceSize.height: 120
+                        sourceSize.width: 160
+                        sourceSize.height: 160
                         fillMode: Image.PreserveAspectFit
                         mipmap: true
                         asynchronous: true
