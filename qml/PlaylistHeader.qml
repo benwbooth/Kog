@@ -213,7 +213,7 @@ Rectangle {
         const next = ({})
         for (const column of visibleColumns) {
             if (fixedColumns.indexOf(column.id) < 0)
-                next[column.id] = fittedColumnWidth(column, column.width)
+                next[column.id] = fittedColumnWidth(column, column.width, true)
         }
         fitted = next
         if (cacheKey.length > 0)
@@ -411,7 +411,10 @@ Rectangle {
         persistLayout()
     }
 
-    function fittedColumnWidth(column, limit) {
+    // The width a column's values need: by default all but a few outliers
+    // (automatic fitting), or with allValues every one (the content cap,
+    // dragging, and a fit asked for by double-clicking a divider).
+    function fittedColumnWidth(column, limit, allValues) {
         const cap = limit === undefined ? column.maximumWidth : limit
         // PlaylistRow reserves 26 px before title text for the format icon,
         // 6 px after it, and 6 px on each side of other text cells.
@@ -421,7 +424,8 @@ Rectangle {
         const widths = []
         for (let row = 0; row < root.app.playlist_count; ++row)
             widths.push(columnFontMetrics.advanceWidth(root.app.track_value_at(row, column.id)))
-        const contentWidth = Math.max(headerWidth, typicalWidth(widths))
+        const contentWidth = Math.max(headerWidth,
+            allValues ? widths.reduce((a, b) => Math.max(a, b), 0) : typicalWidth(widths))
         return Math.min(cap, Math.ceil(contentWidth + inset))
     }
 
@@ -453,14 +457,14 @@ Rectangle {
         persistLayout()
     }
 
-    function autoFitAllColumns() {
+    function autoFitAllColumns(allValues) {
         // Publish the widths together. Every columns assignment recreates the
         // header and visible row cell delegates, which is costly for playlists.
         const updated = columns.map(copyColumn)
         for (const column of updated) {
             if (column.visible)
                 column.width = Math.max(column.minimumWidth,
-                    Math.min(column.maximumWidth, fittedColumnWidth(column)))
+                    Math.min(column.maximumWidth, fittedColumnWidth(column, undefined, allValues)))
         }
         columns = updated
         persistLayout()
@@ -595,7 +599,7 @@ Rectangle {
             // Start from the width on screen; a text column can be dragged
             // narrower than its contents but never wider.
             dragMaximum = root.fixedColumns.indexOf(column.id) < 0
-                ? Math.min(column.maximumWidth, root.fittedColumnWidth(column))
+                ? Math.min(column.maximumWidth, root.fittedColumnWidth(column, undefined, true))
                 : column.maximumWidth
             root.resizingWidth = root.effectiveColumnWidth(column)
             root.resizingColumn = dragColumn
@@ -634,8 +638,9 @@ Rectangle {
         onDoubleClicked: mouse => {
             root.resizingColumn = ""
             dragColumn = ""
+            // Fitting asked for by hand includes the outliers.
             if (boundaryIndexAt(mouse.x) >= 0)
-                root.autoFitAllColumns()
+                root.autoFitAllColumns(true)
             mouse.accepted = true
         }
     }

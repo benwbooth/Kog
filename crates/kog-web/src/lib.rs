@@ -796,7 +796,9 @@ fn decode_columns(raw: &str) -> Vec<Column> {
 /// arrow) and the visible values, measured with the real fonts through a
 /// cached canvas. A per-character guess fit proportional text badly in both
 /// directions — wide glyphs overflowed, narrow ones left dead space.
-fn content_width(id: ColumnId, texts: &[String]) -> f64 {
+/// The width a column's texts need: all but a few outliers, or with
+/// `all_values` every one (a fit asked for by double-clicking a divider).
+fn content_width(id: ColumnId, texts: &[String], all_values: bool) -> f64 {
     let Some(context) = measure_context() else {
         // No canvas to measure with: the old per-character guess, padded.
         let widest = texts
@@ -830,7 +832,11 @@ fn content_width(id: ColumnId, texts: &[String]) -> f64 {
         .skip(1)
         .map(|text| measured(&context, text) + 16.0 + 3.0)
         .collect();
-    widest = widest.max(kog_playback_policy::column_fit::width_without_outliers(&cells));
+    widest = widest.max(if all_values {
+        cells.iter().copied().fold(0.0, f64::max)
+    } else {
+        kog_playback_policy::column_fit::width_without_outliers(&cells)
+    });
     widest.clamp(id.min_width(), 1024.0)
 }
 
@@ -6056,7 +6062,7 @@ fn App() -> impl IntoView {
     };
 
     let auto_fit_column = {
-        move |id: ColumnId| {
+        move |id: ColumnId, all_values: bool| {
             let rows = view_rows();
             let cache = metadata.get();
             let starred = stars.get();
@@ -6072,7 +6078,7 @@ fn App() -> impl IntoView {
                     "",
                 ));
             }
-            let width = content_width(id, &texts);
+            let width = content_width(id, &texts, all_values);
             apply_width(id, width);
             persist_columns(&columns.get_untracked());
         }
@@ -6087,7 +6093,7 @@ fn App() -> impl IntoView {
                     .iter()
                     .any(|column| column.id == id && column.visible)
                 {
-                    auto_fit_column(id);
+                    auto_fit_column(id, false);
                 }
             }
         }
@@ -7308,7 +7314,8 @@ fn App() -> impl IntoView {
                                                     let auto_fit_column = auto_fit_column.clone();
                                                     move |ev: web_sys::MouseEvent| {
                                                         ev.stop_propagation();
-                                                        auto_fit_column(start_column);
+                                                        // By hand: fit the outliers too.
+                                                        auto_fit_column(start_column, true);
                                                     }
                                                 }
                                             ></span>
@@ -8964,7 +8971,7 @@ fn App() -> impl IntoView {
                             on:click={
                                 let auto_fit_column = auto_fit_column.clone();
                                 move |_| {
-                                    auto_fit_column(menu_column());
+                                    auto_fit_column(menu_column(), false);
                                     set_column_menu.set(None);
                                 }
                             }
