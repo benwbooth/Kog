@@ -22,7 +22,9 @@ bool allowed(const QUrl &url)
         || host == QStringLiteral("coverartarchive.org")
         || host == QStringLiteral("archive.org")
         || host.endsWith(QStringLiteral(".archive.org"))
-        || host == QStringLiteral("duckduckgo.com");
+        || host == QStringLiteral("duckduckgo.com")
+        // Game box art for soundtracks.
+        || host == QStringLiteral("thumbnails.libretro.com");
 }
 } // namespace
 

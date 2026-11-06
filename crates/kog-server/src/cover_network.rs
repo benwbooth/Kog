@@ -25,6 +25,8 @@ fn allowed(url: &Url) -> bool {
             | "coverartarchive.org"
             | "archive.org"
             | "duckduckgo.com"
+            // Game box art for soundtracks.
+            | "thumbnails.libretro.com"
     ) || host.ends_with(".mzstatic.com")
         || host.ends_with(".archive.org")
 }

@@ -619,6 +619,7 @@ fn blacklist_path(path: &str) -> String {
 
 struct CoverArtRequest {
     generation: u64,
+    file: PathBuf,
     artist: String,
     album: String,
     cache_dir: PathBuf,
@@ -927,6 +928,7 @@ fn fetch_cover(url: &str, max_bytes: u32) -> Result<Vec<u8>, String> {
 fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<PathBuf> {
     let key = kog_audio::cover_art::cache_key(&request.artist, &request.album);
     kog_audio::cover_art::download_cover(
+        &request.file,
         &request.artist,
         &request.album,
         |url, max_bytes| fetch_cover(url, max_bytes).ok(),
@@ -7056,6 +7058,7 @@ impl qobject::AppController {
         });
         let request = CoverArtRequest {
             generation,
+            file: file.clone(),
             artist,
             album,
             cache_dir,

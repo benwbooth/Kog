@@ -240,6 +240,7 @@ fn cached_or_downloaded_cover(
         return None;
     }
     cover_art::download_cover(
+        file,
         artist,
         &album,
         fetch,

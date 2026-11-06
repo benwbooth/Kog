@@ -82,13 +82,14 @@ fn fetch(url: &str, max_bytes: u32) -> Option<Vec<u8>> {
 }
 
 fn download(
+    file: &Path,
     cache_dir: &Path,
     key: &str,
     artist: &str,
     album: &str,
     cancelled: &impl Fn() -> bool,
 ) -> Option<CoverPreview> {
-    cover_art::download_cover(artist, album, fetch, cancelled, |bytes| {
+    cover_art::download_cover(file, artist, album, fetch, cancelled, |bytes| {
         stored(cache_dir, key, &bytes)
     })
 }
@@ -135,7 +136,7 @@ pub fn resolve(
         }
     }
     if allow_download && may_download {
-        download(&cache_dir, &key, artist, &album, &cancelled)
+        download(file.unwrap_or(Path::new("")), &cache_dir, &key, artist, &album, &cancelled)
     } else {
         None
     }
@@ -197,6 +198,7 @@ mod tests {
     fn live_super_mario_galaxy_cover() {
         let cache = tempfile::tempdir().unwrap();
         let cover = download(
+            Path::new(""),
             cache.path(),
             "super-mario-galaxy",
             "Koji Kondo",

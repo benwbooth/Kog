@@ -27,7 +27,13 @@ fn musicbrainz_rate_limit() {
 /// Search and validate a cover with the same provider policy in native UIs.
 /// The caller supplies its network transport and cache/preview adapter. A
 /// rejected or unstorable candidate falls through to the next provider.
+///
+/// `file` is the song's own file: game music (an NSF, SPC, PSF, a MIDI from a
+/// game folder, ...) first tries the game's box art from the libretro
+/// thumbnail server, named by the album, for the consoles its format comes
+/// from.
 pub fn download_cover<T>(
+    file: &Path,
     artist: &str,
     album: &str,
     mut fetch: impl FnMut(&str, u32) -> Option<Vec<u8>>,
@@ -43,6 +49,14 @@ pub fn download_cover<T>(
     }
     if cancelled() {
         return None;
+    }
+    for url in game_box_art_urls(album, &game_platforms(file)) {
+        if cancelled() {
+            return None;
+        }
+        if let Some(result) = fetch_image!(url) {
+            return Some(result);
+        }
     }
     if let Some(json) = fetch(&deezer_search_url(artist, album), MAX_SEARCH_BYTES)
         && let Ok(text) = String::from_utf8(json)
@@ -227,6 +241,10 @@ pub fn track_cache_key(
     if artist.trim().is_empty() && tagged_album.trim().is_empty() {
         let scoped = format!("{} \0 {}", lookup_album, file.display());
         (cache_key("", &scoped), false)
+    } else if !game_platforms(file).is_empty() {
+        // Game music keeps its own entries: its cover is the game's box art,
+        // not whatever album a music search matched before box art was tried.
+        (cache_key(artist, &format!("game \0 {lookup_album}")), true)
     } else {
         (cache_key(artist, lookup_album), true)
     }
@@ -424,6 +442,109 @@ fn query_text(artist: &str, album: &str) -> String {
     format!("{} {}", artist.trim(), album.trim())
         .trim()
         .to_owned()
+}
+
+/// libretro's thumbnail server: box art named after each game's No-Intro
+/// (or similar) title, per platform. No key needed.
+const LIBRETRO_THUMBNAILS: &str = "https://thumbnails.libretro.com";
+
+/// The libretro platforms a game-music file's format belongs to, most likely
+/// first. Formats that are not game music, and MIDI files outside a game
+/// folder, give none.
+pub fn game_platforms(file: &Path) -> Vec<&'static str> {
+    let extension = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let folders = file
+        .parent()
+        .map(|folder| folder.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "nsf" | "nsfe" => vec!["Nintendo - Nintendo Entertainment System"],
+        "spc" | "rsn" => vec!["Nintendo - Super Nintendo Entertainment System"],
+        "gbs" => vec!["Nintendo - Game Boy", "Nintendo - Game Boy Color"],
+        "gsf" | "minigsf" => vec!["Nintendo - Game Boy Advance"],
+        "2sf" | "mini2sf" | "ncsf" | "minincsf" => vec!["Nintendo - Nintendo DS"],
+        "usf" | "miniusf" => vec!["Nintendo - Nintendo 64"],
+        "psf" | "minipsf" => vec!["Sony - PlayStation"],
+        "psf2" | "minipsf2" => vec!["Sony - PlayStation 2"],
+        "ssf" | "minissf" => vec!["Sega - Saturn"],
+        "dsf" | "minidsf" => vec!["Sega - Dreamcast"],
+        "hes" => vec!["NEC - PC Engine - TurboGrafx 16"],
+        "sid" | "psid" | "rsid" => vec!["Commodore - 64"],
+        "kss" => vec!["Microsoft - MSX", "Microsoft - MSX2"],
+        "vgm" | "vgz" => {
+            if folders.contains("game gear") || folders.contains("gamegear") {
+                vec!["Sega - Game Gear"]
+            } else if folders.contains("master system") || folders.contains("sms") {
+                vec!["Sega - Master System - Mark III"]
+            } else {
+                vec!["Sega - Mega Drive - Genesis", "Sega - Master System - Mark III"]
+            }
+        }
+        "mid" | "midi" | "rmi" | "hmp" | "hmi" | "xmi"
+            if ["gamemid", "dos", "game"].iter().any(|hint| folders.contains(hint)) =>
+        {
+            vec!["DOS"]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Box-art URLs to try for a game on its platforms: its title as tagged, with
+/// any trailing "(1986-08)(Nintendo)" groups dropped, a leading "The" moved
+/// to the end, and the usual region suffixes.
+pub fn game_box_art_urls(game: &str, platforms: &[&str]) -> Vec<String> {
+    if platforms.is_empty() {
+        return Vec::new();
+    }
+    let mut base = album_lookup_name(game).trim().to_owned();
+    // Trailing tag groups: "Metroid (1986-08)(Nintendo R&D1)(Nintendo)".
+    while let Some(open) = base.rfind(['(', '[']) {
+        if open == 0 || !(base.ends_with(')') || base.ends_with(']')) {
+            break;
+        }
+        base = base[..open].trim_end().to_owned();
+    }
+    if base.is_empty() {
+        return Vec::new();
+    }
+    let mut titles = vec![base.clone()];
+    if let Some(rest) = base.strip_prefix("The ") {
+        titles.push(format!("{rest}, The"));
+    }
+    if base.contains(": ") {
+        titles.push(base.replace(": ", " - "));
+    }
+    let mut urls = Vec::new();
+    for platform in platforms {
+        for title in &titles {
+            for region in ["", " (USA)", " (World)", " (USA, Europe)", " (Europe)", " (Japan)"] {
+                // libretro's file names stand `&*/:`<>?\|"` in as `_`.
+                let name: String = format!("{title}{region}")
+                    .chars()
+                    .map(|c| if "&*/:`<>?\\|\"".contains(c) { '_' } else { c })
+                    .collect();
+                urls.push(format!(
+                    "{LIBRETRO_THUMBNAILS}/{}/Named_Boxarts/{}.png",
+                    path_encode(platform),
+                    path_encode(&name)
+                ));
+            }
+        }
+    }
+    urls
+}
+
+fn path_encode(value: &str) -> String {
+    const SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    percent_encoding::utf8_percent_encode(value, SEGMENT).to_string()
 }
 
 pub fn deezer_search_url(artist: &str, album: &str) -> String {
@@ -708,9 +829,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn game_music_tries_the_games_box_art_first() {
+        let urls = game_box_art_urls(
+            "Metroid (1986-08)(Nintendo R&D1)(Nintendo)",
+            &game_platforms(Path::new("/music/Metroid/01 Title.nsf")),
+        );
+        assert_eq!(
+            urls[1],
+            "https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%20Entertainment%20System/Named_Boxarts/Metroid%20%28USA%29.png"
+        );
+        assert!(game_platforms(Path::new("/music/song.mp3")).is_empty());
+        assert_eq!(
+            game_platforms(Path::new("/Chiptunes/gamemids/Day of the Tentacle/04 - The Inn.MID")),
+            vec!["DOS"]
+        );
+        assert!(game_platforms(Path::new("/music/pop/song.mid")).is_empty());
+    }
+
+    #[test]
     fn shared_download_rejects_bad_image_and_uses_next_provider() {
         let mut requested = Vec::new();
         let cover = download_cover(
+            Path::new("/music/song.mp3"),
             "Artist",
             "Album",
             |url, limit| {
@@ -741,6 +881,7 @@ mod tests {
     fn shared_download_can_use_album_only_release_fallback() {
         let mut requested = Vec::new();
         let cover = download_cover(
+            Path::new("/music/song.mp3"),
             "Track Composer",
             "Soundtrack Album",
             |url, _| {
