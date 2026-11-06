@@ -330,12 +330,17 @@ jobs:
             ~/.cargo/git
           key: cargo-windows-${{ hashFiles('Cargo.lock') }}
 
-      - name: Build web frontend
-        shell: bash
+      # In Git Bash, coreutils' link.exe shadows the MSVC linker, so the
+      # native install happens in PowerShell.
+      - name: Install wasm-bindgen
+        shell: pwsh
         run: |
           rustup target add wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.121 --locked
-          crates/kog-web/build.sh
+
+      - name: Build web frontend
+        shell: bash
+        run: crates/kog-web/build.sh
 
       - name: Build release binary
         shell: pwsh
