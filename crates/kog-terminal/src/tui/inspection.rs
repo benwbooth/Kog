@@ -597,11 +597,19 @@ fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usi
         return;
     }
     let columns = width - label;
-    let now = roll.position;
-    let since = now - ROLL_SECONDS;
+    // Columns are fixed slices of song time, so the roll steps left a whole
+    // column at a time. Measured from the moving window instead, a note's
+    // edges rounded differently from frame to frame, and the short gaps
+    // between notes flickered in and out.
+    let column_seconds = ROLL_SECONDS / columns as f64;
+    let first_column = (roll.position / column_seconds).floor() - (columns - 1) as f64;
+    let since = first_column * column_seconds;
     let groups: Vec<Option<usize>> = if separate { (0..roll.lanes.len()).map(Some).collect() } else { vec![None] };
     let lanes = groups.len().min(height);
-    let column_of = |time: f64| (((time - since) / ROLL_SECONDS) * columns as f64).floor();
+    let column_of = |time: f64| (time / column_seconds).floor() - first_column;
+    // The last column a note reaches: the one its end falls inside, or the
+    // one before when it ends exactly on a column's edge.
+    let last_column_of = |time: f64| (time / column_seconds).ceil() - 1.0 - first_column;
     for (index, group) in groups.iter().copied().enumerate().take(lanes) {
         let top = index * height / lanes;
         let rows = (index + 1) * height / lanes - top;
@@ -614,7 +622,7 @@ fn draw_roll(out: &mut String, roll: &PianoRoll, area: (usize, usize, usize, usi
         let mut grid = vec![None; columns * rows];
         for bar in roll.bars.iter().filter(|bar| group.is_none_or(|lane| bar.lane == lane) && bar.end >= since) {
             let first = column_of(bar.start).max(0.0) as usize;
-            let last = (column_of(bar.end).min(columns as f64 - 1.0) as usize).max(first);
+            let last = (last_column_of(bar.end).min(columns as f64 - 1.0).max(0.0) as usize).max(first);
             let row = row_of(bar.key);
             for column in first..=last.min(columns - 1) {
                 grid[row * columns + column] = Some(bar.lane);
