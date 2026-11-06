@@ -1289,9 +1289,12 @@ fn build_ncsf(mgba_output: &Path) {
         .file("../../native/gsf_bridge.cpp")
         .files(player_sources)
         .warnings(false);
-    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu")
+        || player_build.get_compiler().is_like_gnu()
+    {
         // SSEQPlayer's pre-C++11 libstdc++ shims conflict with modern GNU
-        // libstdc++. libc++ and MSVC select their own standard implementation.
+        // libstdc++, also when GCC builds for a Windows (MSVC) target.
+        // libc++ and MSVC select their own standard implementation.
         player_build.define("_LIBCPP_VERSION", "1");
     }
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
