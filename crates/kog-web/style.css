@@ -4743,3 +4743,34 @@ button.primary:hover:not(:disabled) {
     animation: none;
   }
 }
+
+/* A now-playing title too long for its space rests, glides to its end,
+ * rests, and glides back (the script marks it and sets the distance). */
+@keyframes kog-marquee {
+  0%, 18% { transform: translateX(0); }
+  82%, 100% { transform: translateX(var(--marquee-shift, 0)); }
+}
+
+.now-text .title .title-text {
+  display: inline-block;
+  max-width: none;
+}
+
+.now-text .title.marquee {
+  text-overflow: clip;
+}
+
+.now-text .title.marquee .title-text {
+  animation: kog-marquee var(--marquee-duration, 6s) ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .now-text .title.marquee .title-text {
+    animation: none;
+  }
+
+  .now-text .title.marquee {
+    text-overflow: ellipsis;
+  }
+}

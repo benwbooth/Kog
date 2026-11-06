@@ -2051,6 +2051,41 @@ pub fn start() {
 /// when it is cut off: elided, wider than its box, or partly scrolled out of
 /// view. Their `title` is parked in `data-cut-tip` whenever the text fits,
 /// decided as the pointer enters, so the reactive titles stay as they are.
+/// A now-playing title too long for its space scrolls back and forth (CSS
+/// does the motion); this marks the titles that overflow and how far they
+/// travel, whenever a title or the window changes.
+fn install_title_marquee() {
+    let _ = js_sys::eval(
+        r#"(() => {
+  if (window.kogTitleMarquee) return;
+  window.kogTitleMarquee = true;
+  const measure = () => {
+    for (const title of document.querySelectorAll('.now-text .title')) {
+      const text = title.querySelector('.title-text');
+      if (!text) continue;
+      const room = title.getBoundingClientRect().right - text.getBoundingClientRect().left;
+      const overflow = Math.ceil(text.scrollWidth - room);
+      const moving = overflow > 2;
+      title.classList.toggle('marquee', moving);
+      if (moving) {
+        title.style.setProperty('--marquee-shift', `-${overflow}px`);
+        title.style.setProperty('--marquee-duration', `${Math.max(3, 4 + overflow / 30)}s`);
+      }
+    }
+  };
+  let pending = false;
+  const schedule = () => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; measure(); });
+  };
+  new MutationObserver(schedule).observe(document.body, { subtree: true, childList: true, characterData: true });
+  window.addEventListener('resize', schedule);
+  schedule();
+})()"#,
+    );
+}
+
 fn install_cut_off_tooltips() {
     let _ = js_sys::eval(
         r#"(() => {
@@ -2211,6 +2246,7 @@ fn RowMeter(
 #[component]
 fn App() -> impl IntoView {
     install_cut_off_tooltips();
+    install_title_marquee();
     // A phone opening the server's own address is already pointed at it.
     let origin = web_sys::window()
         .and_then(|window| window.location().origin().ok())
@@ -7814,7 +7850,7 @@ fn App() -> impl IntoView {
                                 <Show when=move || playing.get()>
                                     <span class="now-meter"><RowMeter levels=audio_levels pinned=false height=48.0/></span>
                                 </Show>
-                                {move || now_title()}
+                                <span class="title-text">{move || now_title()}</span>
                             </div>
                             <div class="subtitle">{move || now_subtitle()}</div>
                             <div class="mobile-now-subtitle">{move || now_mobile_subtitle()}</div>

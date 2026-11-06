@@ -2660,12 +2660,47 @@ ApplicationWindow {
                             app: appController
                             dark: root.baseLuminance < 0.5
                         }
-                        Label {
+                        // A title too long for its space scrolls: it rests,
+                        // glides to its end, rests, and glides back.
+                        Item {
+                            id: titleMarquee
                             Layout.fillWidth: true
-                            text: playbackTitle.text
-                            font.pixelSize: 14
-                            color: root.palette.text
-                            elide: Text.ElideRight
+                            implicitHeight: titleMarqueeText.implicitHeight
+                            clip: true
+                            readonly property real overflow:
+                                Math.max(0, titleMarqueeText.implicitWidth - width)
+
+                            Label {
+                                id: titleMarqueeText
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: playbackTitle.text
+                                font.pixelSize: 14
+                                color: root.palette.text
+                                onTextChanged: x = 0
+                            }
+
+                            SequentialAnimation {
+                                running: titleMarquee.overflow > 0 && titleMarquee.visible
+                                loops: Animation.Infinite
+                                onRunningChanged: if (!running) titleMarqueeText.x = 0
+                                PauseAnimation { duration: 2000 }
+                                NumberAnimation {
+                                    target: titleMarqueeText
+                                    property: "x"
+                                    to: -titleMarquee.overflow
+                                    // About 30 pixels a second.
+                                    duration: Math.max(1500, titleMarquee.overflow * 33)
+                                    easing.type: Easing.InOutSine
+                                }
+                                PauseAnimation { duration: 2000 }
+                                NumberAnimation {
+                                    target: titleMarqueeText
+                                    property: "x"
+                                    to: 0
+                                    duration: Math.max(1500, titleMarquee.overflow * 33)
+                                    easing.type: Easing.InOutSine
+                                }
+                            }
                         }
                     }
                     Label {
