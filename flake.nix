@@ -148,6 +148,8 @@
               ];
               buildInputs = kogLibraries;
               inherit KOG_CARGO_VENDOR KOG_PKG_CONFIG_PATH LIBCLANG_PATH;
+              # By path: util-linux as an input would change what build scripts see.
+              KOG_FLOCK = "${pkgs.util-linux}/bin/flock";
               QMAKE = "${qtEnv}/bin/qmake";
               # Cargo invokes CMake/Ninja for decoder libraries; they must not
               # replace Cargo's top-level configure/build/install phases.

@@ -20,6 +20,17 @@ work_dir="${KOG_WORK_DIR:-/var/tmp/cargo-nix/kog}"
 umask 000
 mkdir -p "$work_dir/src" "$work_dir/target" "$work_dir/cargo-home"
 touch "$work_dir"
+
+# The dev loop and Nix's build users can run at the same time. Cargo's own lock
+# only covers Cargo, so hold one from syncing the source through adopting files:
+# otherwise one side rewrites src/ or briefly empties a directory under target/
+# while the other is compiling, and that side starts over from scratch.
+flock="${KOG_FLOCK:-flock}"
+exec {lock_fd}>>"$work_dir/build.lock"
+if ! "$flock" -n "$lock_fd"; then
+  echo "[shared-build] waiting for another build in $work_dir" >&2
+  "$flock" "$lock_fd"
+fi
 open_target() {
   find "$work_dir/target" -mindepth 1 -user "$(id -u)" ! -perm -o+w -exec chmod a+rwX {} + 2>/dev/null || true
 }

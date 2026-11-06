@@ -330,13 +330,16 @@ jobs:
             ~/.cargo/git
           key: cargo-windows-${{ hashFiles('Cargo.lock') }}
 
-      # In Git Bash, coreutils' link.exe shadows the MSVC linker, so the
-      # native install happens in PowerShell.
+      # In Git Bash, coreutils' link.exe shadows the MSVC linker, so Cargo is
+      # pointed at MSVC's by full path for the web build's build scripts.
       - name: Install wasm-bindgen
         shell: pwsh
         run: |
           rustup target add wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.121 --locked
+          $linker = (Get-Command link.exe).Source
+          if ($linker -like "*Git*") { throw "link.exe resolves to $linker, not MSVC" }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build web frontend
         shell: bash
