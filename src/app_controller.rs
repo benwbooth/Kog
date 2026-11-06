@@ -42,6 +42,8 @@ pub mod qobject {
         #[qproperty(QString, now_artist)]
         #[qproperty(QString, current_album)]
         #[qproperty(QString, current_artwork_path)]
+        #[qproperty(QString, cover_art_source)]
+        #[qproperty(f64, cover_art_progress)]
         #[qproperty(bool, download_cover_art)]
         #[qproperty(bool, radio_active)]
         #[qproperty(QString, current_genre)]
@@ -623,6 +625,33 @@ struct CoverArtRequest {
     artist: String,
     album: String,
     cache_dir: PathBuf,
+    progress: Arc<std::sync::Mutex<CoverArtProgress>>,
+}
+
+/// Where a cover download is looking, for the spinner on the cover.
+#[derive(Clone, Default, PartialEq)]
+struct CoverArtProgress {
+    source: &'static str,
+    fraction: f64,
+}
+
+impl CoverArtProgress {
+    /// The providers in the order download_cover asks them.
+    fn for_url(url: &str) -> Option<Self> {
+        let host = url::Url::parse(url).ok()?.host_str()?.to_owned();
+        let (source, fraction) = match host.as_str() {
+            "thumbnails.libretro.com" => ("game box art", 0.15),
+            "api.deezer.com" | "cdn-images.dzcdn.net" => ("Deezer", 0.3),
+            "itunes.apple.com" => ("Apple Music", 0.45),
+            host if host.ends_with(".mzstatic.com") => ("Apple Music", 0.45),
+            "musicbrainz.org" => ("MusicBrainz", 0.6),
+            "coverartarchive.org" | "archive.org" => ("Cover Art Archive", 0.75),
+            host if host.ends_with(".archive.org") => ("Cover Art Archive", 0.75),
+            "duckduckgo.com" => ("web image search", 0.9),
+            _ => return None,
+        };
+        Some(Self { source, fraction })
+    }
 }
 
 struct CoverArtResult {
@@ -634,6 +663,7 @@ struct CoverArtState {
     receiver: Receiver<CoverArtResult>,
     cancel: Arc<AtomicBool>,
     generation: u64,
+    progress: Arc<std::sync::Mutex<CoverArtProgress>>,
 }
 
 impl AddPathResult {
@@ -931,7 +961,15 @@ fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<P
         &request.file,
         &request.artist,
         &request.album,
-        |url, max_bytes| fetch_cover(url, max_bytes).ok(),
+        |url, max_bytes| {
+            if let Some(step) = CoverArtProgress::for_url(url)
+                && let Ok(mut progress) = request.progress.lock()
+                && step.fraction >= progress.fraction
+            {
+                *progress = step;
+            }
+            fetch_cover(url, max_bytes).ok()
+        },
         || cancel.load(AtomicOrdering::Relaxed),
         |bytes| kog_audio::cover_art::store_cache(&request.cache_dir, &key, &bytes),
     )
@@ -1959,6 +1997,8 @@ pub struct AppControllerRust {
     track_notifications: bool,
     download_cover_art: bool,
     current_artwork_path: QString,
+    cover_art_source: QString,
+    cover_art_progress: f64,
     radio_active: bool,
     radio: Option<RadioState>,
     cover_art: Option<CoverArtState>,
@@ -2224,6 +2264,8 @@ impl Default for AppControllerRust {
             track_notifications: app_settings.track_notifications,
             download_cover_art: app_settings.download_cover_art,
             current_artwork_path: QString::default(),
+            cover_art_source: QString::default(),
+            cover_art_progress: 0.0,
             radio_active: false,
             radio: None,
             cover_art: None,
@@ -6965,6 +7007,20 @@ impl qobject::AppController {
     }
 
     pub fn poll_cover_art(mut self: Pin<&mut Self>) {
+        let progress = self
+            .as_ref()
+            .rust()
+            .cover_art
+            .as_ref()
+            .and_then(|job| job.progress.lock().ok().map(|progress| progress.clone()))
+            .unwrap_or_default();
+        let source = qstring(progress.source);
+        if *self.as_ref().cover_art_source() != source {
+            self.as_mut().set_cover_art_source(source);
+        }
+        if *self.as_ref().cover_art_progress() != progress.fraction {
+            self.as_mut().set_cover_art_progress(progress.fraction);
+        }
         let generation = match self.as_ref().rust().cover_art.as_ref() {
             Some(job) => job.generation,
             None => return,
@@ -7051,10 +7107,15 @@ impl qobject::AppController {
         }
         let (sender, receiver) = std::sync::mpsc::sync_channel(2);
         let cancel = Arc::new(AtomicBool::new(false));
+        let progress = Arc::new(std::sync::Mutex::new(CoverArtProgress {
+            source: "the web",
+            fraction: 0.05,
+        }));
         self.as_mut().rust_mut().cover_art = Some(CoverArtState {
             receiver,
             cancel: Arc::clone(&cancel),
             generation,
+            progress: Arc::clone(&progress),
         });
         let request = CoverArtRequest {
             generation,
@@ -7062,6 +7123,7 @@ impl qobject::AppController {
             artist,
             album,
             cache_dir,
+            progress,
         };
         if std::thread::Builder::new()
             .name("kog-cover-art".to_owned())

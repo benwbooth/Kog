@@ -46,10 +46,14 @@ fn stored(cache_dir: &Path, key: &str, bytes: &[u8]) -> Option<CoverPreview> {
 }
 
 fn fetch(url: &str, max_bytes: u32) -> Option<Vec<u8>> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(8)))
-        .build()
-        .into();
+    // Shared, so connections to a provider are reused across requests.
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    let agent = AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(8)))
+            .build()
+            .into()
+    });
     let mut response = None;
     for attempt in 0..2 {
         match agent

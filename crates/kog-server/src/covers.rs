@@ -123,7 +123,7 @@ impl Default for CoverService {
             tracks: Arc::new(Jobs::default()),
             albums: Arc::new(Jobs::default()),
             probes: Arc::new(Semaphore::new(2)),
-            downloads: Arc::new(Semaphore::new(2)),
+            downloads: Arc::new(Semaphore::new(4)),
             cache_dir: directories::ProjectDirs::from("org", "Kog", "Kog")
                 .map(|directories| cover_art::cache_directory(directories.cache_dir()))
                 .unwrap_or_else(|| std::env::temp_dir().join("kog-covers")),
@@ -223,7 +223,7 @@ fn cached_or_downloaded_cover(
     tagged_album: &str,
     cache_dir: &Path,
     allow_download: bool,
-    fetch: impl FnMut(&str, u32) -> Option<Vec<u8>>,
+    fetch: impl Fn(&str, u32) -> Option<Vec<u8>> + Sync,
 ) -> Option<Vec<u8>> {
     let album = cover_art::fallback_album(file, tagged_album);
     if album.is_empty() {

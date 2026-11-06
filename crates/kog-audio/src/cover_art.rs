@@ -8,6 +8,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const MAX_COVER_BYTES: u32 = 8 * 1024 * 1024;
+/// Box-art guesses asked at once.
+const BOX_ART_BATCH: usize = 12;
 pub const MAX_SEARCH_BYTES: u32 = 512 * 1024;
 pub const MAX_CACHE_BYTES: u64 = 200 * 1024 * 1024;
 const CACHE_SUBDIRECTORY: &str = "covers";
@@ -36,7 +38,7 @@ pub fn download_cover<T>(
     file: &Path,
     artist: &str,
     album: &str,
-    mut fetch: impl FnMut(&str, u32) -> Option<Vec<u8>>,
+    fetch: impl Fn(&str, u32) -> Option<Vec<u8>> + Sync,
     cancelled: impl Fn() -> bool,
     mut store: impl FnMut(Vec<u8>) -> Option<T>,
 ) -> Option<T> {
@@ -50,11 +52,27 @@ pub fn download_cover<T>(
     if cancelled() {
         return None;
     }
-    for url in game_box_art_urls(album, &game_platforms(file)) {
+    // Most guessed box-art names miss, and each miss is a round trip, so a
+    // batch of them is asked at once; the earliest name that hits wins.
+    for batch in game_box_art_urls(album, &game_platforms(file)).chunks(BOX_ART_BATCH) {
         if cancelled() {
             return None;
         }
-        if let Some(result) = fetch_image!(url) {
+        let found = std::thread::scope(|scope| {
+            let probes: Vec<_> = batch
+                .iter()
+                .map(|url| {
+                    let fetch = &fetch;
+                    scope.spawn(move || {
+                        fetch(url, MAX_COVER_BYTES).filter(|bytes| sniff_image_kind(bytes).is_some())
+                    })
+                })
+                .collect();
+            probes
+                .into_iter()
+                .find_map(|probe| probe.join().ok().flatten())
+        });
+        if let Some(result) = found.and_then(&mut store) {
             return Some(result);
         }
     }
@@ -848,13 +866,13 @@ mod tests {
 
     #[test]
     fn shared_download_rejects_bad_image_and_uses_next_provider() {
-        let mut requested = Vec::new();
+        let requested = std::sync::Mutex::new(Vec::new());
         let cover = download_cover(
             Path::new("/music/song.mp3"),
             "Artist",
             "Album",
             |url, limit| {
-                requested.push((url.to_owned(), limit));
+                requested.lock().unwrap().push((url.to_owned(), limit));
                 if url.starts_with("https://api.deezer.com/") {
                     Some(br#"{"data":[{"title":"Album","artist":{"name":"Artist"},"cover_xl":"https://example.test/deezer.jpg"}]}"#.to_vec())
                 } else if url.ends_with("/deezer.jpg") {
@@ -871,6 +889,7 @@ mod tests {
             Some,
         );
         assert_eq!(cover, Some(vec![0xff, 0xd8, 0xff, 0xe0]));
+        let requested = requested.into_inner().unwrap();
         assert_eq!(requested.len(), 4);
         assert_eq!(requested[0].1, MAX_SEARCH_BYTES);
         assert_eq!(requested[1].1, MAX_COVER_BYTES);
@@ -879,13 +898,13 @@ mod tests {
 
     #[test]
     fn shared_download_can_use_album_only_release_fallback() {
-        let mut requested = Vec::new();
+        let requested = std::sync::Mutex::new(Vec::new());
         let cover = download_cover(
             Path::new("/music/song.mp3"),
             "Track Composer",
             "Soundtrack Album",
             |url, _| {
-                requested.push(url.to_owned());
+                requested.lock().unwrap().push(url.to_owned());
                 if url.starts_with("https://musicbrainz.org/ws/2/release/?query=")
                     && !url.contains("artist%3A")
                 {
@@ -905,6 +924,8 @@ mod tests {
         );
         assert!(
             requested
+                .into_inner()
+                .unwrap()
                 .iter()
                 .any(|url| url.ends_with("/release-1/front-500"))
         );

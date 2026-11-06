@@ -36,11 +36,16 @@ pub fn fetch(url: &str, max_bytes: u32) -> Option<Vec<u8>> {
         return None;
     }
     let mut current = Url::parse(url).ok()?;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(8)))
-        .max_redirects(0)
-        .build()
-        .into();
+    // One agent for every request, so connections to a provider are reused
+    // instead of paying a TLS handshake per request.
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    let agent = AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(8)))
+            .max_redirects(0)
+            .build()
+            .into()
+    });
     for _ in 0..=5 {
         if !allowed(&current) {
             return None;
