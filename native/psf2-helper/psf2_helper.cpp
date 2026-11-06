@@ -786,8 +786,8 @@ public:
                 auto& spu = m_subsystem.GetSpuCore(core);
                 for(unsigned i = 0; i < 24; ++i) {
                     const auto& c = spu.GetChannel(i);
-                    const float left = std::abs(double(c.volumeLeftAbs)) / 2147483647.0;
-                    const float right = std::abs(double(c.volumeRightAbs)) / 2147483647.0;
+                    const float left = float(std::abs(double(c.volumeLeftAbs)) / 2147483647.0);
+                    const float right = float(std::abs(double(c.volumeRightAbs)) / 2147483647.0);
                     char name[64]; std::snprintf(name, sizeof(name), "SPU %u · Voice %u", core + 1, i + 1);
                     auto& v = voices.add(name, 2, c.status != Iop::CSpuBase::STOPPED,
                         0, c.adsrVolume / 2147483647.0f * std::max(left, right), right - left);
