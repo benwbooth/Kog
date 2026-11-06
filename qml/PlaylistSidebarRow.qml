@@ -75,18 +75,23 @@ FocusScope {
             ToolTip.delay: 600
             ToolTip.text: row.name
         }
-        TextField {
+        // Built only while renaming: a text field per row is the costliest
+        // part of a row, and rows are made as the list scrolls.
+        Loader {
             Layout.fillWidth: true
-            visible: row.renaming
-            text: row.name
-            font.pixelSize: 12
-            selectByMouse: true
-            maximumLength: 120
-            background: Item {}
-            onVisibleChanged: if (visible) { forceActiveFocus(); selectAll() }
-            onAccepted: row.renameAccepted(text)
-            Keys.onEscapePressed: row.renameCancelled()
-            onActiveFocusChanged: if (!activeFocus && row.renaming) row.renameAccepted(text)
+            active: row.renaming
+            visible: active
+            sourceComponent: TextField {
+                text: row.name
+                font.pixelSize: 12
+                selectByMouse: true
+                maximumLength: 120
+                background: Item {}
+                Component.onCompleted: { forceActiveFocus(); selectAll() }
+                onAccepted: row.renameAccepted(text)
+                Keys.onEscapePressed: row.renameCancelled()
+                onActiveFocusChanged: if (!activeFocus && row.renaming) row.renameAccepted(text)
+            }
         }
         Label {
             visible: !row.renaming
@@ -134,25 +139,28 @@ FocusScope {
         }
         onCanceled: { dragging = false; dragged = false; row.dragCancelled() }
     }
-    ToolButton {
-        id: appendButton
-        objectName: "appendPlaylistButton"
+    // Also built only when shown.
+    Loader {
         anchors.right: parent.right
         anchors.rightMargin: 4
         anchors.verticalCenter: parent.verticalCenter
         width: 20; height: 20
-        padding: 0
-        visible: !row.renaming && (hover.hovered || row.selected || row.activeFocus)
-        enabled: row.canAppend && row.entryCount > 0
-        text: "+"
-        font.pixelSize: 15
-        display: AbstractButton.TextOnly
-        flat: true
-        Accessible.name: qsTr("Append to “%1”").arg(row.destinationName)
-        ToolTip.visible: hovered
-        ToolTip.delay: 500
-        ToolTip.text: row.entryCount === 0 ? qsTr("This playlist is empty")
-            : (enabled ? Accessible.name : qsTr("“%1” cannot be edited").arg(row.destinationName))
-        onClicked: row.appendRequested()
+        active: !row.renaming && (hover.hovered || row.selected || row.activeFocus)
+        sourceComponent: ToolButton {
+            id: appendButton
+            objectName: "appendPlaylistButton"
+            padding: 0
+            enabled: row.canAppend && row.entryCount > 0
+            text: "+"
+            font.pixelSize: 15
+            display: AbstractButton.TextOnly
+            flat: true
+            Accessible.name: qsTr("Append to “%1”").arg(row.destinationName)
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
+            ToolTip.text: row.entryCount === 0 ? qsTr("This playlist is empty")
+                : (enabled ? Accessible.name : qsTr("“%1” cannot be edited").arg(row.destinationName))
+            onClicked: row.appendRequested()
+        }
     }
 }

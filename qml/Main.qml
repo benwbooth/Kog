@@ -96,6 +96,7 @@ ApplicationWindow {
     property int playlistMenuPid: -1
     property string playlistAppendTarget: ""
     readonly property var activePlaylistTab: (playlistWorkspace.tabs || []).find(tab => tab.key === playlistWorkspace.active) || ({name: qsTr("Play Queue")})
+    readonly property bool canAppendToActiveTab: canAppendToTab(playlistWorkspace.active)
     readonly property string appendPlaylistLabel: qsTr("Append to “%1”").arg(activePlaylistTab.name)
     property int playlistRenamePid: -1
     property real volumeBeforeMute: 0.75
@@ -981,19 +982,27 @@ ApplicationWindow {
         return []
     }
 
-    function reloadPlaylists() {
-        const items = parsePlaylists()
+    function reloadPlaylists(parsed) {
+        const items = parsed || parsePlaylists()
         const known = {}
         for (const item of items)
             known[item.id] = true
-        playlistsModel.clear()
-        for (const item of items) {
-            playlistsModel.append({
-                pid: item.id,
-                name: item.name,
-                entryCount: item.entryCount
-            })
+        // Updated in place: clearing the model would rebuild every row and
+        // jolt a list being scrolled.
+        for (let i = 0; i < items.length; ++i) {
+            const item = items[i]
+            if (i >= playlistsModel.count) {
+                playlistsModel.append({ pid: item.id, name: item.name, entryCount: item.entryCount })
+                continue
+            }
+            const row = playlistsModel.get(i)
+            if (row.pid !== item.id) playlistsModel.setProperty(i, "pid", item.id)
+            if (row.name !== item.name) playlistsModel.setProperty(i, "name", item.name)
+            if (row.entryCount !== item.entryCount)
+                playlistsModel.setProperty(i, "entryCount", item.entryCount)
         }
+        if (playlistsModel.count > items.length)
+            playlistsModel.remove(items.length, playlistsModel.count - items.length)
         setPlaylistSelectionById(selectedPlaylistIds.filter(pid => known[pid]))
         if (renamingPlaylistId !== -2 && !known[renamingPlaylistId])
             renamingPlaylistId = -2
@@ -3812,7 +3821,7 @@ ApplicationWindow {
                         appController.playlists_revision
                         return root.parsePlaylists()
                     }
-                    onPlaylistsDataChanged: root.reloadPlaylists()
+                    onPlaylistsDataChanged: root.reloadPlaylists(playlistsData)
 
                     ListModel {
                         id: playlistsModel
@@ -3828,6 +3837,10 @@ ApplicationWindow {
                         clip: true
                         model: playlistsModel
                         spacing: 1
+                        // Rows made ahead of the scroll and recycled behind
+                        // it, so scrolling rarely builds a row mid-frame.
+                        reuseItems: true
+                        cacheBuffer: 600
                         // Row height plus spacing, for drop positions.
                         readonly property int rowPitch: 22
                         ScrollBar.vertical: FadingScrollBar {
@@ -3846,7 +3859,7 @@ ApplicationWindow {
                             theme: root.themePalette
                             selected: root.isPlaylistSelected(pid)
                             renaming: root.renamingPlaylistId === pid
-                            canAppend: root.canAppendToTab(root.playlistWorkspace.active)
+                            canAppend: root.canAppendToActiveTab
                             destinationName: root.activePlaylistTab.name
                             onSelectedWithModifiers: modifiers => {
                                 root.selectPlaylistById(pid, modifiers)
