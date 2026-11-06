@@ -2631,8 +2631,10 @@ ApplicationWindow {
             anchors.fill: parent
             anchors.leftMargin: 28
             anchors.rightMargin: 12
-            anchors.topMargin: 6
-            anchors.bottomMargin: 6
+            // The cover runs from the bar's top edge to its bottom; the
+            // other sections center vertically.
+            anchors.topMargin: 1
+            anchors.bottomMargin: 0
             spacing: 12
 
             RowLayout {
@@ -2641,19 +2643,16 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 spacing: 10
 
-                // The cover fills the bar's height.
+                // The cover fills the bar's height, edge to edge.
                 Rectangle {
                     Layout.fillHeight: true
                     Layout.preferredWidth: height
                     Layout.alignment: Qt.AlignVCenter
-                    radius: 8
                     color: root.palette.alternateBase
-                    border.width: 1
-                    border.color: root.palette.mid
 
                     Image {
                         anchors.fill: parent
-                        anchors.margins: appController.current_artwork_path.length > 0 ? 1 : 12
+                        anchors.margins: appController.current_artwork_path.length > 0 ? 0 : 14
                         source: appController.current_artwork_path.length > 0
                             ? "file://" + appController.current_artwork_path
                             : Qt.resolvedUrl("icons/kog.svg")
