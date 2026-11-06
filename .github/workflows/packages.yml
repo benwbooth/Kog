@@ -233,6 +233,12 @@ jobs:
     timeout-minutes: 240
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
+      # The windows-2025 image now exports HOST_CC=cc (a GCC), which cc-rs
+      # prefers for a native build; Kog's C and C++ sources build with MSVC.
+      HOST_CC: cl.exe
+      HOST_CXX: cl.exe
+      CC: cl.exe
+      CXX: cl.exe
       # compress-tools' vcpkg crate probes x64-windows-static-md unless told
       # to use the dynamic triplet that this job installs and packages.
       VCPKGRS_DYNAMIC: "1"
