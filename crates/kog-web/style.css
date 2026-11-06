@@ -4378,52 +4378,53 @@ button.primary:hover:not(:disabled) {
     background: var(--selection);
   }
 
-  /* Flat tabs on the glow: the open one a raised pill with an accent
-   * underline, the others muted until hovered. */
-  .playlist-tabs-bar {
-    background: transparent;
-    border-bottom: 0;
-  }
+}
 
-  .playlist-tabs {
-    padding: 3px 6px 0;
-  }
+/* Flat tabs on the glow, on desktops and phones alike: the open one a
+ * raised pill with an accent underline, the others muted until hovered. */
+.playlist-tabs-bar {
+  background: transparent;
+  border-bottom: 0;
+}
 
-  .playlist-tab,
-  .playlist-tab.active {
-    margin: 0 0 2px;
-    border: 0;
-    border-radius: 6px;
-    box-shadow: none;
-    background: transparent;
-    color: var(--muted);
-  }
+.playlist-tabs {
+  padding: 3px 6px 0;
+}
 
-  .playlist-tab:hover {
-    background: var(--stripe);
-    color: var(--text);
-  }
+.playlist-tab,
+.playlist-tab.active {
+  margin: 0 0 2px;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: none;
+  background: transparent;
+  color: var(--muted);
+}
 
-  .playlist-tab.active {
-    background: var(--alternate);
-    color: var(--text);
-  }
+.playlist-tab:hover {
+  background: var(--stripe);
+  color: var(--text);
+}
 
-  .playlist-tab.active::after {
-    content: "";
-    position: absolute;
-    left: 10px;
-    right: 10px;
-    bottom: -2px;
-    height: 2px;
-    border-radius: 1px;
-    background: var(--highlight);
-  }
+.playlist-tab.active {
+  background: var(--alternate);
+  color: var(--text);
+}
 
-  .playlist-tab button {
-    min-height: 28px;
-    padding: 5px 12px;
-  }
+.playlist-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--highlight);
+}
+
+.playlist-tab button {
+  min-height: 28px;
+  padding: 5px 12px;
 }
 
 /* Folders, and the parent-folder row, drawn as in Qt: Kog's outline folder
@@ -4772,5 +4773,12 @@ button.primary:hover:not(:disabled) {
 
   .now-text .title.marquee {
     text-overflow: ellipsis;
+  }
+}
+
+/* Finger-sized tabs on touch screens. */
+@media (pointer: coarse) {
+  .playlist-tab button {
+    min-height: 36px;
   }
 }
