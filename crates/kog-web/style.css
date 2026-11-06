@@ -4752,26 +4752,26 @@ button.primary:hover:not(:disabled) {
   82%, 100% { transform: translateX(var(--marquee-shift, 0)); }
 }
 
-.now-text .title .title-text {
+.now-text :is(.title, .subtitle, .mobile-now-subtitle) .title-text {
   display: inline-block;
   max-width: none;
 }
 
-.now-text .title.marquee {
+.now-text :is(.title, .subtitle, .mobile-now-subtitle).marquee {
   text-overflow: clip;
 }
 
-.now-text .title.marquee .title-text {
+.now-text :is(.title, .subtitle, .mobile-now-subtitle).marquee .title-text {
   animation: kog-marquee var(--marquee-duration, 6s) ease-in-out infinite alternate;
   will-change: transform;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .now-text .title.marquee .title-text {
+  .now-text :is(.title, .subtitle, .mobile-now-subtitle).marquee .title-text {
     animation: none;
   }
 
-  .now-text .title.marquee {
+  .now-text :is(.title, .subtitle, .mobile-now-subtitle).marquee {
     text-overflow: ellipsis;
   }
 }

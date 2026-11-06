@@ -429,9 +429,8 @@ Rectangle {
         return Math.min(cap, Math.ceil(contentWidth + inset))
     }
 
-    // The width that fits every value but the outliers: the widest value no
-    // more than 1.35 times the 90th-percentile width. Fewer than 8 values fit
-    // the widest. The web player shares this rule (kog_playback_policy::
+    // The width that fits 90% of the values whole: the 90th-percentile
+    // width. Fewer than 8 values fit the widest. The web player shares this rule (kog_playback_policy::
     // column_fit); the terminal player fits every value.
     function typicalWidth(widths) {
         if (widths.length === 0)
@@ -441,12 +440,7 @@ Rectangle {
         if (sorted.length < 8)
             return widest
         const index = Math.min(sorted.length, Math.max(1, Math.ceil(sorted.length * 0.9))) - 1
-        const limit = sorted[index] * 1.35
-        for (let i = sorted.length - 1; i >= 0; --i) {
-            if (sorted[i] <= limit)
-                return sorted[i]
-        }
-        return widest
+        return sorted[index]
     }
 
     function autoFitColumn(identifier) {

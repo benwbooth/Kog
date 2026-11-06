@@ -3,15 +3,12 @@
 //! (The terminal player fits every value.) The Qt header carries the same
 //! rule in QML, in PlaylistHeader's `typicalWidth`.
 
-/// Rows above this percentile are where outliers are looked for.
+/// The share of values that fit whole; the widest rest are cut off.
 const TYPICAL: f64 = 0.9;
-/// A value this much wider than the typical width is an outlier.
-const OUTLIER_FACTOR: f64 = 1.35;
 /// Below this many values there is no telling an outlier from the norm.
 const FEWEST: usize = 8;
 
-/// The width that fits every value but the outliers: the widest value no
-/// more than `OUTLIER_FACTOR` times the 90th-percentile width.
+/// The width that fits 90% of the values whole: the 90th-percentile width.
 pub fn width_without_outliers(widths: &[f64]) -> f64 {
     let mut sorted: Vec<f64> = widths.iter().copied().filter(|width| width.is_finite()).collect();
     if sorted.is_empty() {
@@ -23,8 +20,7 @@ pub fn width_without_outliers(widths: &[f64]) -> f64 {
         return widest;
     }
     let index = ((sorted.len() as f64 * TYPICAL).ceil() as usize).clamp(1, sorted.len()) - 1;
-    let limit = sorted[index] * OUTLIER_FACTOR;
-    sorted.iter().rev().copied().find(|width| *width <= limit).unwrap_or(widest)
+    sorted[index]
 }
 
 #[cfg(test)]
@@ -39,9 +35,9 @@ mod tests {
     }
 
     #[test]
-    fn a_spread_of_ordinary_values_is_fitted_whole() {
+    fn the_widest_tenth_is_cut_off() {
         let widths: Vec<f64> = (0..40).map(|index| 80.0 + index as f64 * 2.0).collect();
-        assert_eq!(width_without_outliers(&widths), 158.0);
+        assert_eq!(width_without_outliers(&widths), 150.0);
     }
 
     #[test]

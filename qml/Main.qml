@@ -291,6 +291,41 @@ ApplicationWindow {
 
     // Earshot's slider: a thin rounded track, filled with the accent up to a
     // white knob that grows a little under the pointer.
+    // Text too long for its space scrolls: it rests, glides to its end,
+    // rests, and glides back.
+    component MarqueeLabel: Item {
+        id: marquee
+        property alias text: marqueeText.text
+        property alias font: marqueeText.font
+        property alias color: marqueeText.color
+        implicitHeight: marqueeText.implicitHeight
+        clip: true
+        readonly property real overflow: Math.max(0, marqueeText.implicitWidth - width)
+        readonly property int glideDuration: Math.max(1500, overflow * 33) // ~30 px/s
+
+        Label {
+            id: marqueeText
+            anchors.verticalCenter: parent.verticalCenter
+            onTextChanged: x = 0
+        }
+
+        SequentialAnimation {
+            running: marquee.overflow > 0 && marquee.visible
+            loops: Animation.Infinite
+            onRunningChanged: if (!running) marqueeText.x = 0
+            PauseAnimation { duration: 2000 }
+            NumberAnimation {
+                target: marqueeText; property: "x"; to: -marquee.overflow
+                duration: marquee.glideDuration; easing.type: Easing.InOutSine
+            }
+            PauseAnimation { duration: 2000 }
+            NumberAnimation {
+                target: marqueeText; property: "x"; to: 0
+                duration: marquee.glideDuration; easing.type: Easing.InOutSine
+            }
+        }
+    }
+
     component KogSlider: Slider {
         id: kogSlider
         readonly property bool dark: root.baseLuminance < 0.5
@@ -2660,56 +2695,19 @@ ApplicationWindow {
                             app: appController
                             dark: root.baseLuminance < 0.5
                         }
-                        // A title too long for its space scrolls: it rests,
-                        // glides to its end, rests, and glides back.
-                        Item {
-                            id: titleMarquee
+                        MarqueeLabel {
                             Layout.fillWidth: true
-                            implicitHeight: titleMarqueeText.implicitHeight
-                            clip: true
-                            readonly property real overflow:
-                                Math.max(0, titleMarqueeText.implicitWidth - width)
-
-                            Label {
-                                id: titleMarqueeText
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: playbackTitle.text
-                                font.pixelSize: 14
-                                color: root.palette.text
-                                onTextChanged: x = 0
-                            }
-
-                            SequentialAnimation {
-                                running: titleMarquee.overflow > 0 && titleMarquee.visible
-                                loops: Animation.Infinite
-                                onRunningChanged: if (!running) titleMarqueeText.x = 0
-                                PauseAnimation { duration: 2000 }
-                                NumberAnimation {
-                                    target: titleMarqueeText
-                                    property: "x"
-                                    to: -titleMarquee.overflow
-                                    // About 30 pixels a second.
-                                    duration: Math.max(1500, titleMarquee.overflow * 33)
-                                    easing.type: Easing.InOutSine
-                                }
-                                PauseAnimation { duration: 2000 }
-                                NumberAnimation {
-                                    target: titleMarqueeText
-                                    property: "x"
-                                    to: 0
-                                    duration: Math.max(1500, titleMarquee.overflow * 33)
-                                    easing.type: Easing.InOutSine
-                                }
-                            }
+                            text: playbackTitle.text
+                            font.pixelSize: 14
+                            color: root.palette.text
                         }
                     }
-                    Label {
+                    MarqueeLabel {
                         Layout.fillWidth: true
                         visible: !root.compactToolbar
                         text: root.footer.trackSubtitle
                         font.pixelSize: 12
                         color: root.mutedText
-                        elide: Text.ElideRight
                     }
                 }
             }

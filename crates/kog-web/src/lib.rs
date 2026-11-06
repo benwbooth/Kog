@@ -2068,7 +2068,7 @@ fn install_title_marquee() {
   if (window.kogTitleMarquee) return;
   window.kogTitleMarquee = true;
   const measure = () => {
-    for (const title of document.querySelectorAll('.now-text .title')) {
+    for (const title of document.querySelectorAll('.now-text .title, .now-text .subtitle, .now-text .mobile-now-subtitle')) {
       const text = title.querySelector('.title-text');
       if (!text) continue;
       const room = title.getBoundingClientRect().right - text.getBoundingClientRect().left;
@@ -7861,8 +7861,8 @@ fn App() -> impl IntoView {
                                 </Show>
                                 <span class="title-text">{move || now_title()}</span>
                             </div>
-                            <div class="subtitle">{move || now_subtitle()}</div>
-                            <div class="mobile-now-subtitle">{move || now_mobile_subtitle()}</div>
+                            <div class="subtitle"><span class="title-text">{move || now_subtitle()}</span></div>
+                            <div class="mobile-now-subtitle"><span class="title-text">{move || now_mobile_subtitle()}</span></div>
                         </div>
                     </div>
 
