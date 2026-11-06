@@ -11,6 +11,15 @@ publish = false
 # workspace, so host builds and the Flatpak vendor list stay unaffected.
 [workspace]
 
+# A smaller app for phones: whole-program optimisation and no symbol names
+# (wasm-bindgen does not need them) take the module from 16 MB to 5 MB.
+# Sixteen codegen units keep a rebuild near a minute; one unit saves only
+# another 0.5 MB and takes 2.5 minutes.
+[profile.release]
+lto = true
+codegen-units = 16
+strip = true
+
 [dependencies]
 kog-inspection = { path = "../kog-inspection" }
 kog-playback-policy = { path = "../kog-playback-policy" }
