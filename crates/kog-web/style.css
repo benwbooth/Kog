@@ -1438,6 +1438,16 @@ body.touch .track .index-cell {
   fill: currentColor;
 }
 
+/* The Random Radio die is drawn with a stroked face and filled pips. */
+.controls .glyph-icon svg [stroke] {
+  stroke: currentColor;
+}
+
+.controls .glyph-icon svg g[fill],
+.controls .glyph-icon svg circle {
+  fill: currentColor;
+}
+
 .controls .play {
   width: 40px;
   height: 40px;

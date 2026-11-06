@@ -63,6 +63,7 @@ mod icons {
     pub const STOP: &str = include_str!("../../../qml/icons/media-playback-stop.svg");
     pub const SKIP_FORWARD: &str = include_str!("../../../qml/icons/media-skip-forward.svg");
     pub const REPEAT: &str = include_str!("../../../qml/icons/media-playlist-repeat.svg");
+    pub const RANDOM_RADIO: &str = include_str!("../../../qml/icons/media-playlist-random.svg");
     /// Desktop's volume icon, plus a muted variant in the same style for the
     /// mute toggle (the desktop keeps the high icon, but a mute button that
     /// never changes reads as broken).
@@ -7937,7 +7938,9 @@ fn App() -> impl IntoView {
                                     let next = !radio_on.get_untracked();
                                     set_radio(next);
                                 }
-                            >"⚄\u{FE0E}"</button>
+                            >
+                                <span class="glyph-icon" inner_html=icons::RANDOM_RADIO></span>
+                            </button>
                         </div>
                         <div class="seek-row">
                             <span class="time elapsed">{move || clock(position.get())}</span>
