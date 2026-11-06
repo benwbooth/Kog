@@ -645,25 +645,46 @@ pub fn parse_box_art_index(html: &str) -> Vec<String> {
         .collect()
 }
 
-/// The listed box art whose title matches `game` loosely, preferring a good
-/// dump, then a USA or World release, then the shortest name.
+/// The listed box art for `game`: one whose title matches loosely if there
+/// is one, else the one sharing the most title words, so a game's music
+/// shows something close (a sequel's or another release's box) rather than
+/// nothing. Among equals it prefers a good dump, then a USA or World
+/// release, then the shortest name.
 pub fn best_box_art<'a>(game: &str, names: &'a [String]) -> Option<&'a str> {
     let wanted = game_title_words(album_lookup_name(game));
-    if wanted.is_empty() {
+    let wanted_words: Vec<&str> = wanted.split(' ').filter(|word| !word.is_empty()).collect();
+    if wanted_words.is_empty() {
         return None;
     }
-    names
+    let rank = |name: &String| {
+        let lower = name.to_lowercase();
+        let flawed = ["[b", "[h", "(beta", "(proto", "(hack", "bootleg"]
+            .iter()
+            .any(|mark| lower.contains(mark));
+        let preferred = lower.contains("(usa") || lower.contains("(world");
+        (flawed, !preferred, name.len())
+    };
+    if let Some(name) = names
         .iter()
         .filter(|name| game_title_words(name) == wanted)
-        .min_by_key(|name| {
-            let lower = name.to_lowercase();
-            let flawed = ["[b", "[h", "(beta", "(proto", "(hack", "bootleg"]
-                .iter()
-                .any(|mark| lower.contains(mark));
-            let preferred = lower.contains("(usa") || lower.contains("(world");
-            (flawed, !preferred, name.len())
+        .min_by_key(|name| rank(name))
+    {
+        return Some(name);
+    }
+    // Shared words over the longer title's word count: at least half, and
+    // at least two words unless the title is a single word.
+    let needed = wanted_words.len().min(2);
+    names
+        .iter()
+        .filter_map(|name| {
+            let words = game_title_words(name);
+            let words: Vec<&str> = words.split(' ').filter(|word| !word.is_empty()).collect();
+            let shared = wanted_words.iter().filter(|word| words.contains(word)).count();
+            let score = shared as f64 / wanted_words.len().max(words.len()) as f64;
+            (shared >= needed && score >= 0.5).then_some((score, name))
         })
-        .map(String::as_str)
+        .max_by(|(a, first), (b, second)| a.total_cmp(b).then_with(|| rank(second).cmp(&rank(first))))
+        .map(|(_, name)| name.as_str())
 }
 
 /// Box art for a platform's games, listed once per run of the program.
@@ -1097,7 +1118,12 @@ mod tests {
             best_box_art("VS. Super Mario Bros", &names),
             Some("Vs. Super Mario Bros. (1986)(Nintendo)(VS UniSystem)")
         );
-        assert_eq!(best_box_art("Super Mario Bros.", &names), None);
+        // No exact title: the closest one, so the cover shows something.
+        assert_eq!(
+            best_box_art("Super Mario Bros. 1/2/Vs", &names),
+            Some("Vs. Super Mario Bros. (1986)(Nintendo)(VS UniSystem)")
+        );
+        assert_eq!(best_box_art("Mega Man", &names), None);
         assert_eq!(game_title_words("The Legend of Zelda"), "legend of zelda");
         assert_eq!(game_title_words("Zelda, The"), "zelda");
     }
