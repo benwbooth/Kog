@@ -36,8 +36,15 @@ static inline FILE *kog_inspection_file(void) {
     static bool opened = false;
     if (!opened) {
         opened = true;
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996) // getenv and fopen: helpers build with /WX.
+#endif
         const char *path = getenv("KOG_CHANNEL_RING");
         if (path && *path) file = fopen(path, "r+b");
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
     }
     return file;
 }
