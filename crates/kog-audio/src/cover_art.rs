@@ -405,6 +405,30 @@ pub fn cache_lookup(cache_dir: &Path, key: &str) -> Option<PathBuf> {
     None
 }
 
+/// How long a search that found no cover is trusted before trying again.
+pub const MISS_RETRY: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+fn miss_path(cache_dir: &Path, key: &str) -> PathBuf {
+    cache_dir.join(format!("{key}.miss"))
+}
+
+/// Remember that downloading found no cover, so replaying the album does not
+/// search every provider again.
+pub fn record_miss(cache_dir: &Path, key: &str) {
+    if std::fs::create_dir_all(cache_dir).is_ok() {
+        let _ = std::fs::write(miss_path(cache_dir, key), b"");
+    }
+}
+
+/// True when a download for `key` found nothing within `MISS_RETRY`.
+pub fn recent_miss(cache_dir: &Path, key: &str) -> bool {
+    std::fs::metadata(miss_path(cache_dir, key))
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age < MISS_RETRY)
+}
+
 /// Validate and persist downloaded or embedded bytes. Runs cache eviction
 /// first so the budget holds even on a full disk of covers.
 pub fn store_cache(cache_dir: &Path, key: &str, bytes: &[u8]) -> Option<PathBuf> {
@@ -954,6 +978,16 @@ mod tests {
         assert!(!left.contains('/') && !left.contains('\0'));
         assert_ne!(left, cache_key("Fumihito Kasatani", "Alisia Dragoon!"));
         assert_ne!(left, cache_key("", "Alisia Dragoon"));
+    }
+
+    #[test]
+    fn misses_are_remembered() {
+        let dir = std::env::temp_dir().join(format!("kog-cover-miss-{}", std::process::id()));
+        assert!(!recent_miss(&dir, "album"));
+        record_miss(&dir, "album");
+        assert!(recent_miss(&dir, "album"));
+        assert!(!recent_miss(&dir, "other"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

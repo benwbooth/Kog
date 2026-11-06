@@ -236,10 +236,10 @@ fn cached_or_downloaded_cover(
     {
         return Some(bytes);
     }
-    if !may_download || !allow_download {
+    if !may_download || !allow_download || cover_art::recent_miss(cache_dir, &key) {
         return None;
     }
-    cover_art::download_cover(
+    let found = cover_art::download_cover(
         file,
         artist,
         &album,
@@ -249,7 +249,11 @@ fn cached_or_downloaded_cover(
             let _ = cover_art::store_cache(cache_dir, &key, &bytes);
             Some(bytes)
         },
-    )
+    );
+    if found.is_none() {
+        cover_art::record_miss(cache_dir, &key);
+    }
+    found
 }
 
 #[cfg(test)]

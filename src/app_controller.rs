@@ -625,6 +625,8 @@ struct CoverArtRequest {
     artist: String,
     album: String,
     cache_dir: PathBuf,
+    // The key the lookup used, so the next play finds what this stores.
+    key: String,
     progress: Arc<std::sync::Mutex<CoverArtProgress>>,
 }
 
@@ -956,8 +958,8 @@ fn fetch_cover(url: &str, max_bytes: u32) -> Result<Vec<u8>, String> {
 }
 
 fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<PathBuf> {
-    let key = kog_audio::cover_art::cache_key(&request.artist, &request.album);
-    kog_audio::cover_art::download_cover(
+    let key = &request.key;
+    let found = kog_audio::cover_art::download_cover(
         &request.file,
         &request.artist,
         &request.album,
@@ -971,8 +973,12 @@ fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<P
             fetch_cover(url, max_bytes).ok()
         },
         || cancel.load(AtomicOrdering::Relaxed),
-        |bytes| kog_audio::cover_art::store_cache(&request.cache_dir, &key, &bytes),
-    )
+        |bytes| kog_audio::cover_art::store_cache(&request.cache_dir, key, &bytes),
+    );
+    if found.is_none() && !cancel.load(AtomicOrdering::Relaxed) {
+        kog_audio::cover_art::record_miss(&request.cache_dir, key);
+    }
+    found
 }
 
 fn run_cover_art_job(
@@ -7102,7 +7108,10 @@ impl qobject::AppController {
                 }
             }
         }
-        if !may_download || !self.as_ref().rust().download_cover_art {
+        if !may_download
+            || !self.as_ref().rust().download_cover_art
+            || kog_audio::cover_art::recent_miss(&cache_dir, &key)
+        {
             return;
         }
         let (sender, receiver) = std::sync::mpsc::sync_channel(2);
@@ -7123,6 +7132,7 @@ impl qobject::AppController {
             artist,
             album,
             cache_dir,
+            key,
             progress,
         };
         if std::thread::Builder::new()

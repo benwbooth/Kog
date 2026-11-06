@@ -2653,6 +2653,9 @@ ApplicationWindow {
                     Image {
                         anchors.fill: parent
                         anchors.margins: appController.current_artwork_path.length > 0 ? 0 : 14
+                        // Room for the "Fetching art" caption below the logo.
+                        anchors.bottomMargin: appController.current_artwork_path.length > 0 ? 0
+                            : appController.cover_art_source.length > 0 ? 20 : 14
                         source: appController.current_artwork_path.length > 0
                             ? "file://" + appController.current_artwork_path
                             : Qt.resolvedUrl("icons/kog.svg")
@@ -2673,26 +2676,24 @@ ApplicationWindow {
                         onClicked: coverArtDialog.open()
                     }
 
-                    // A cover download in progress: a small ring in the
-                    // corner that fills as it works through the providers.
-                    Rectangle {
+                    // A cover download in progress: a faint caption with a
+                    // tiny ring that fills as it works through the providers.
+                    Row {
                         id: coverDownloadBadge
                         readonly property bool active: appController.cover_art_source.length > 0
-                        anchors.right: parent.right
+                        anchors.horizontalCenter: parent.horizontalCenter
                         anchors.bottom: parent.bottom
-                        anchors.margins: 4
-                        width: 20
-                        height: 20
-                        radius: 10
-                        color: Qt.rgba(0, 0, 0, 0.55)
-                        opacity: active ? 1 : 0
+                        anchors.bottomMargin: 4
+                        spacing: 3
+                        opacity: active ? 0.7 : 0
                         visible: opacity > 0
                         Behavior on opacity { NumberAnimation { duration: 250 } }
 
                         Canvas {
                             id: coverDownloadRing
-                            anchors.fill: parent
-                            anchors.margins: 3
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 9
+                            height: 9
                             property real progress: appController.cover_art_progress
                             Behavior on progress { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
                             onProgressChanged: requestPaint()
@@ -2700,17 +2701,23 @@ ApplicationWindow {
                                 const context = getContext("2d")
                                 context.reset()
                                 const middle = width / 2
-                                context.lineWidth = 2
-                                context.strokeStyle = Qt.rgba(1, 1, 1, 0.25)
+                                context.lineWidth = 1.5
+                                context.strokeStyle = Qt.rgba(root.mutedText.r, root.mutedText.g, root.mutedText.b, 0.35)
                                 context.beginPath()
                                 context.arc(middle, middle, middle - 1, 0, Math.PI * 2)
                                 context.stroke()
-                                context.strokeStyle = "white"
+                                context.strokeStyle = root.mutedText
                                 context.beginPath()
                                 context.arc(middle, middle, middle - 1, -Math.PI / 2,
                                     -Math.PI / 2 + Math.PI * 2 * Math.max(0.05, progress))
                                 context.stroke()
                             }
+                        }
+                        Label {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Fetching art")
+                            font.pixelSize: 9
+                            color: root.mutedText
                         }
                     }
 
