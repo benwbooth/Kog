@@ -11,6 +11,9 @@
 #define VERSION "3.0.0"
 #define HAVE_STDINT_H 1
 #define HAVE_STDLIB_H 1
+/* Every supported C library has strtoul; libc68's own declaration of it
+   clashes with MSVC's dllimport one. */
+#define HAVE_STRTOUL 1
 #define HAVE_STRING_H 1
 #define HAVE_LIMITS_H 1
 #define HAVE_ASSERT_H 1

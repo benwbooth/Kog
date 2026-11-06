@@ -7,11 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 
 #include "sc68/sc68.h"
 
-static pthread_once_t once = PTHREAD_ONCE_INIT;
 static int init_result = -1;
 
 static void quiet(const int bit, sc68_t *sc68, const char *fmt, va_list list) {
@@ -26,6 +29,20 @@ static void initialize(void) {
     init.flags.no_save_config = 1;
     init_result = sc68_init(&init);
 }
+
+/* sc68_init runs once per process, from whichever thread opens a file first. */
+#ifdef _WIN32
+static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK initialize_once(PINIT_ONCE flag, PVOID parameter, PVOID *context) {
+    (void)flag; (void)parameter; (void)context;
+    initialize();
+    return TRUE;
+}
+static void initialize_sc68(void) { InitOnceExecuteOnce(&once, initialize_once, NULL, NULL); }
+#else
+static pthread_once_t once = PTHREAD_ONCE_INIT;
+static void initialize_sc68(void) { pthread_once(&once, initialize); }
+#endif
 
 typedef struct KogSc68 {
     sc68_t *sc68;
@@ -45,7 +62,7 @@ static void copy_text(char *out, size_t size, const char *text) {
 /* Open a file's bytes at `track` (0-based). Returns NULL with a message. */
 KogSc68 *kog_sc68_open(const void *data, size_t size, unsigned rate, int track,
                        char *error, size_t error_size) {
-    pthread_once(&once, initialize);
+    initialize_sc68();
     if (init_result != 0) {
         copy_text(error, error_size, "sc68 could not start");
         return NULL;
