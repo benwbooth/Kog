@@ -1647,8 +1647,9 @@ fn metadata_ready(
     cache.contains_key(&key) || failed.contains(&key)
 }
 
-/// No title is visible until the metadata lookup completes. A completed
-/// lookup with no title (or a failed request) uses the filename fallback.
+/// The title once the metadata lookup completes (`None` before then). A
+/// completed lookup with no title, or a failed request, uses the filename.
+/// Rows show the file name while the lookup is pending.
 fn display_title(
     cache: &HashMap<String, Option<MetaRow>>,
     failed: &HashSet<String>,
@@ -4678,7 +4679,10 @@ fn App() -> impl IntoView {
     // re-derives the queue's sort rows and the pane, which is costly with
     // big playlists. The cache is read untracked so applying tags does not
     // refetch; `metadata_round` asks for the next batches instead.
-    const METADATA_BATCH: usize = 100;
+    // The server probes a batch's songs one at a time (a MIDI file takes
+    // ~0.2s) and answers only when all are done, so batches stay small: the
+    // rows on screen come back in a second or two, not after a hundred songs.
+    const METADATA_BATCH: usize = 12;
     const METADATA_BATCHES_IN_FLIGHT: usize = 2;
     let (metadata_round, set_metadata_round) = signal(0_u64);
     // Keys being fetched or waiting to be applied.
@@ -4737,7 +4741,7 @@ fn App() -> impl IntoView {
         let failed = metadata_failed.get_untracked();
         let mut seen = HashSet::new();
         let mut missing = Vec::new();
-        let mut consider = |entry: &Entry| {
+        let mut consider = |entry: &Entry, missing: &mut Vec<Entry>| {
             let key = meta_key(entry);
             if !known.contains_key(&key)
                 && !failed.contains(&key)
@@ -4748,13 +4752,18 @@ fn App() -> impl IntoView {
             }
         };
         let range = row_range.get();
-        all_rows.with(|rows| rows.get(range).into_iter().flatten().for_each(|(_, entry)| consider(entry)));
-        queue.with(|entries| entries.iter().for_each(&mut consider));
-        pane_entries.with(|entries| entries.iter().for_each(&mut consider));
+        all_rows.with(|rows| rows.get(range).into_iter().flatten().for_each(|(_, entry)| consider(entry, &mut missing)));
+        // The rows on screen go in a batch of their own, ahead of the rest.
+        let visible = missing.len();
+        queue.with(|entries| entries.iter().for_each(|entry| consider(entry, &mut missing)));
+        pane_entries.with(|entries| entries.iter().for_each(|entry| consider(entry, &mut missing)));
         let url = format!("{}/api/metadata", base());
         let header = auth().header();
+        let mut first = true;
         while metadata_batches.get_value() < METADATA_BATCHES_IN_FLIGHT && !missing.is_empty() {
-            let chunk: Vec<Entry> = missing.drain(..missing.len().min(METADATA_BATCH)).collect();
+            let size = if first && visible > 0 { visible.min(48) } else { METADATA_BATCH };
+            first = false;
+            let chunk: Vec<Entry> = missing.drain(..missing.len().min(size)).collect();
             let body = serde_json::Value::Array(
                 chunk
                     .iter()
@@ -6121,11 +6130,10 @@ fn App() -> impl IntoView {
         set_columns.set(next);
     };
 
-    // Leave the transport title empty until its metadata lookup completes.
-    // A finished lookup without a title falls back to the filename.
+    // The transport shows the file name until the song's tags arrive.
     let now_title = move || match current_entry() {
         Some(entry) => {
-            display_title(&metadata.get(), &metadata_failed.get(), &entry).unwrap_or_default()
+            display_title(&metadata.get(), &metadata_failed.get(), &entry).unwrap_or_else(|| entry.name.clone())
         }
         None => "Kog".to_owned(),
     };
@@ -7619,7 +7627,9 @@ fn App() -> impl IntoView {
                                                                         </Show>
                                                                     </span>
                                                                     <span class="mobile-track-title">
-                                                                        {move || display_title(&metadata.read(), &metadata_failed.read(), &mobile_title_entry).unwrap_or_default()}
+                                                                        {move || display_title(&metadata.read(), &metadata_failed.read(), &mobile_title_entry)
+                                                                            // Its file name until the tags arrive.
+                                                                            .unwrap_or_else(|| mobile_title_entry.name.clone())}
                                                                     </span>
                                                                 </span>
                                                                 <span class="mobile-track-detail">
@@ -9019,7 +9029,7 @@ fn App() -> impl IntoView {
                                             return None;
                                         }
                                         let value = if id == ColumnId::Title {
-                                            display_title(&cache, &metadata_failed.get(), &entry).unwrap_or_default()
+                                            display_title(&cache, &metadata_failed.get(), &entry).unwrap_or_else(|| entry.name.clone())
                                         } else {
                                             column_text(id, index, &entry, meta.as_ref(), None, false, "")
                                         };
