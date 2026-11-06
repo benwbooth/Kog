@@ -4793,26 +4793,14 @@ button.primary:hover:not(:disabled) {
   }
 }
 
-/* Desktop: the cover fills the transport bar's height, edge to edge. */
+/* Desktop: the cover fills the transport bar's height, edge to edge: as
+   tall as the bar below its 1px top border (8px padding each side of 75px
+   of controls) and pulled into the padding. */
 @media (min-width: 821px) and (pointer: fine), (min-width: 821px) and (pointer: none), (min-width: 1201px) {
-  .transport {
-    align-items: stretch;
-  }
-
-  .transport > * {
-    align-self: center;
-  }
-
-  .transport > .now {
-    align-self: stretch;
-    margin: -8px 0 calc(-8px - env(safe-area-inset-bottom, 0px));
-  }
-
   .transport .now .art {
-    width: auto;
-    height: 100%;
-    min-height: 88px;
-    aspect-ratio: 1;
+    width: 91px;
+    height: 91px;
+    margin: -8px 0;
     border: 0;
     border-radius: 0;
   }
