@@ -262,7 +262,8 @@ pub fn track_cache_key(
     } else if !game_platforms(file).is_empty() {
         // Game music keeps its own entries: its cover is the game's box art,
         // not whatever album a music search matched before box art was tried.
-        (cache_key(artist, &format!("game \0 {lookup_album}")), true)
+        // One per game: rips often credit a different composer per track.
+        (cache_key("", &format!("game \0 {lookup_album}")), true)
     } else {
         (cache_key(artist, lookup_album), true)
     }

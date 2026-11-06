@@ -665,6 +665,7 @@ struct CoverArtState {
     receiver: Receiver<CoverArtResult>,
     cancel: Arc<AtomicBool>,
     generation: u64,
+    key: String,
     progress: Arc<std::sync::Mutex<CoverArtProgress>>,
 }
 
@@ -7060,6 +7061,15 @@ impl qobject::AppController {
     }
 
     fn refresh_cover_art(mut self: Pin<&mut Self>, artist: String, album: String, file: PathBuf) {
+        // The next song of an album whose cover is still downloading keeps
+        // that download instead of starting the search over.
+        let lookup_album = kog_audio::cover_art::fallback_album(&file, &album);
+        if !lookup_album.is_empty() {
+            let (key, _) = cover_art_key(&artist, &album, &lookup_album, &file);
+            if self.as_ref().rust().cover_art.as_ref().is_some_and(|job| job.key == key) {
+                return;
+            }
+        }
         let generation = self.as_ref().rust().cover_art_generation.wrapping_add(1);
         self.as_mut().rust_mut().cover_art_generation = generation;
         if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
@@ -7124,6 +7134,7 @@ impl qobject::AppController {
             receiver,
             cancel: Arc::clone(&cancel),
             generation,
+            key: key.clone(),
             progress: Arc::clone(&progress),
         });
         let request = CoverArtRequest {
