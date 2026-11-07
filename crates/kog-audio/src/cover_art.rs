@@ -184,19 +184,39 @@ pub fn download_cover<T>(
     if cancelled() {
         return None;
     }
-    let query = format!("{artist} {album} cover art")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    // Last resort, an image search, so the cover shows something: the first
+    // results whose title names the album, else the top result. A game is
+    // searched as its box art on its console.
+    let platform = game_platforms(file)
+        .first()
+        .map(|platform| platform.rsplit(" - ").next().unwrap_or(platform).to_owned());
+    let query = match &platform {
+        Some(platform) => format!("{} {platform} box art", album_lookup_name(album)),
+        None => format!("{artist} {album} album cover"),
+    }
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ");
     if let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES)
         && let Ok(html) = String::from_utf8(page)
         && let Some(token) = ddg_token(&html)
         && let Some(results) = fetch(&ddg_image_url(&query, &token), MAX_SEARCH_BYTES)
         && let Ok(text) = String::from_utf8(results)
-        && let Some((title, thumbnail)) = parse_ddg_thumbnail(&text)
-        && titles_match(artist, album, &title, "")
     {
-        return fetch_image!(thumbnail);
+        let images = parse_ddg_images(&text);
+        let lookup = album_lookup_name(album);
+        let matching = images
+            .iter()
+            .filter(|(title, _)| titles_match(artist, lookup, title, ""))
+            .take(2);
+        for (_, image) in matching.chain(images.iter().take(2)) {
+            if cancelled() {
+                return None;
+            }
+            if let Some(result) = fetch_image!(image.clone()) {
+                return Some(result);
+            }
+        }
     }
     None
 }
@@ -951,14 +971,28 @@ pub fn parse_mb_releases(json: &str) -> Vec<(String, String, String)> {
 
 /// (title, proxied thumbnail) of the first DuckDuckGo image hit. Only the
 /// same-host thumbnail is used so the fetch allowlist stays closed.
-pub fn parse_ddg_thumbnail(json: &str) -> Option<(String, String)> {
-    let root: serde_json::Value = serde_json::from_str(json).ok()?;
-    let first = root.get("results")?.as_array()?.first()?;
-    let thumbnail = json_string(first, "thumbnail");
-    if thumbnail.is_empty() || !thumbnail.starts_with("https://duckduckgo.com/") {
-        return None;
-    }
-    Some((json_string(first, "title"), thumbnail))
+/// Image search results as (title, image URL) pairs, in DuckDuckGo's order.
+/// Each image is fetched through DuckDuckGo's image proxy, so only
+/// DuckDuckGo's own hosts are contacted, at the original's resolution.
+pub fn parse_ddg_images(json: &str) -> Vec<(String, String)> {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(results) = root.get("results").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    results
+        .iter()
+        .filter_map(|result| {
+            let image = json_string(result, "image");
+            (image.starts_with("https://") || image.starts_with("http://")).then(|| {
+                (
+                    json_string(result, "title"),
+                    format!("https://external-content.duckduckgo.com/iu/?u={}&f=1", encode(&image)),
+                )
+            })
+        })
+        .collect()
 }
 
 fn normalize(value: &str) -> String {
@@ -1331,14 +1365,15 @@ mod tests {
         let page = r#"<html><script>vqd="4-123abcDEF_-&more";</script></html>"#;
         assert_eq!(ddg_token(page), Some("4-123abcDEF_-&more".to_owned()));
         assert_eq!(ddg_token("<html>none</html>"), None);
-        let parsed = parse_ddg_thumbnail(
-            r#"{"results":[{"title":"Alisia Dragoon boxart","thumbnail":"https://duckduckgo.com/iu/?u=https%3A%2F%2Fx.jpg&f=1"}]}"#,
-        )
-        .expect("parse ddg");
-        assert!(parsed.1.starts_with("https://duckduckgo.com/"));
+        let parsed = parse_ddg_images(
+            r#"{"results":[{"title":"Ultima 5 box","image":"https://media.example/u5.jpg"},{"title":"x","image":"javascript:1"}]}"#,
+        );
         assert_eq!(
-            parse_ddg_thumbnail(r#"{"results":[{"title":"x","thumbnail":"https://evil.example/x.jpg"}]}"#),
-            None
+            parsed,
+            vec![(
+                "Ultima 5 box".to_owned(),
+                "https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fmedia.example%2Fu5.jpg&f=1".to_owned()
+            )]
         );
     }
 

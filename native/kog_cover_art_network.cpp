@@ -23,6 +23,8 @@ bool allowed(const QUrl &url)
         || host == QStringLiteral("archive.org")
         || host.endsWith(QStringLiteral(".archive.org"))
         || host == QStringLiteral("duckduckgo.com")
+        // Image-search results, through DuckDuckGo's image proxy.
+        || host == QStringLiteral("external-content.duckduckgo.com")
         // Game box art for soundtracks.
         || host == QStringLiteral("thumbnails.libretro.com");
 }
