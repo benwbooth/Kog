@@ -4851,7 +4851,9 @@ button.primary:hover:not(:disabled) {
  * a full-width cover, a large left-aligned title, one row of transport
  * controls and a row for radio and volume. The containers inside the player
  * become `display: contents`, so their controls lay out on one grid. */
-.player-header {
+.player-header,
+.mini-meter,
+.player-meter {
   display: none;
 }
 
@@ -4875,10 +4877,10 @@ button.primary:hover:not(:disabled) {
   .transport-compact .transport {
     position: relative;
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) 44px 40px;
+    grid-template-columns: 56px auto minmax(0, 1fr) 44px 40px;
     grid-template-rows: 44px;
     align-items: center;
-    gap: 0 12px;
+    gap: 0;
     margin: 0;
     padding: 8px 12px;
     border: 0;
@@ -4921,13 +4923,22 @@ button.primary:hover:not(:disabled) {
   }
 
   .transport-compact .transport .now-text {
-    grid-column: 2;
+    grid-column: 3;
     min-width: 0;
+    margin-right: 8px;
   }
 
   .transport-compact .now-text .title {
     font-size: 15px;
     font-weight: 600;
+  }
+
+  .transport-compact .mini-meter {
+    grid-column: 2;
+    display: block;
+    width: 24px;
+    height: 18px;
+    margin-right: 8px;
   }
 
   .transport-compact .now-text .mobile-now-subtitle {
@@ -4941,7 +4952,7 @@ button.primary:hover:not(:disabled) {
   }
 
   .transport-compact .controls .play {
-    grid-column: 3;
+    grid-column: 4;
     display: grid;
     place-items: center;
     width: 40px;
@@ -4965,7 +4976,7 @@ button.primary:hover:not(:disabled) {
   }
 
   .transport-compact .controls button:nth-child(5) {
-    grid-column: 4;
+    grid-column: 5;
     display: grid;
     place-items: center;
     width: 40px;
@@ -5038,7 +5049,7 @@ button.primary:hover:not(:disabled) {
     grid-template-areas:
       "head head head head head"
       "art art art art art"
-      "text text text text text"
+      "text text text text meter"
       "seek seek seek seek seek"
       "elapsed elapsed . total total"
       "shuffle prev play next repeat"
@@ -5128,6 +5139,16 @@ button.primary:hover:not(:disabled) {
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+
+  .app:not(.transport-compact) .player-meter {
+    grid-area: meter;
+    display: block;
+    justify-self: end;
+    align-self: start;
+    width: 24px;
+    height: 32px;
+    margin-top: 2px;
   }
 
   .app:not(.transport-compact) .transport .now-text {

@@ -7922,6 +7922,12 @@ fn App() -> impl IntoView {
                                 }
                             />
                         </div>
+                        // Phones: a small waveform before the mini player's
+                        // title, and one beside the full player's.
+                        <Show when=move || playing.get()>
+                            <span class="mini-meter"><RowMeter levels=audio_levels pinned=false height=18.0/></span>
+                            <span class="player-meter"><RowMeter levels=audio_levels pinned=false height=32.0/></span>
+                        </Show>
                         <div class="now-text">
                             // The playing song's waveform leads its title, as on
                             // the playing row.
