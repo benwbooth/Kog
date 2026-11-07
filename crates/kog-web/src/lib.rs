@@ -2024,13 +2024,15 @@ fn draw_web_visualizer(
             let green = (223.0 - 37.0 * fraction).round() as u8;
             let blue = (163.0 + 92.0 * fraction).round() as u8;
             context.set_fill_style_str(&format!("rgb({red},{green},{blue})"));
+            // Mirrored about the middle, as the desktop draws it: the bar
+            // rises above the centre line with a fainter reflection below.
             let bar = f64::from(level.clamp(0.0, 1.0)) * plot_height;
-            context.fill_rect(
-                padding + index as f64 * stride,
-                height - padding - bar,
-                (stride - 2.0).max(1.0),
-                bar,
-            );
+            let x = padding + index as f64 * stride;
+            let bar_width = (stride - 2.0).max(1.0);
+            context.fill_rect(x, height / 2.0 - bar / 2.0, bar_width, bar / 2.0);
+            context.set_global_alpha(0.3);
+            context.fill_rect(x, height / 2.0, bar_width, bar / 2.0);
+            context.set_global_alpha(1.0);
         }
     } else if wave.len() > 1 {
         context.set_stroke_style_str("#42dfa3");
@@ -4851,7 +4853,9 @@ fn App() -> impl IntoView {
 
     let play_row = move |index: usize| {
         if pane_key.get_untracked() == "queue" {
-            backend.send(SessionCommand::Play { index });
+            // As on the desktop: the playing song pauses and resumes, any
+            // other starts.
+            backend.send(SessionCommand::Activate { index });
         } else {
             select_row(index, false, false);
             playlist_workspace.send(kog_playback_policy::workspace::Command::Queue { action: QueueAction::PlayNow });
