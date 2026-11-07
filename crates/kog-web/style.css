@@ -4926,6 +4926,10 @@ button.primary:hover:not(:disabled) {
     grid-column: 3;
     min-width: 0;
     margin-right: 8px;
+    /* The scrolling title stays inside its own column, clear of the
+       waveform before it. */
+    overflow: hidden;
+    clip-path: inset(0);
   }
 
   .transport-compact .now-text .title {
@@ -5148,7 +5152,14 @@ button.primary:hover:not(:disabled) {
     align-self: start;
     width: 24px;
     height: 32px;
-    margin-top: 2px;
+    margin: 18px 12px 0 0;
+    /* Twice the drawn size: 48 by 64. */
+    transform: scale(2);
+  }
+
+  .app:not(.transport-compact) .transport .now-text {
+    overflow: hidden;
+    clip-path: inset(0);
   }
 
   .app:not(.transport-compact) .transport .now-text {
