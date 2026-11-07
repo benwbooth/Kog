@@ -7371,7 +7371,17 @@ fn App() -> impl IntoView {
                             <Show
                                 when=move || all_rows.with(|rows| !rows.is_empty())
                                 fallback=move || view! {
-                                    <Show when=move || !connected.get() || pane_entries.get().is_empty()>
+                                    // Not while a playlist is still arriving: "empty" would
+                                    // flash before its songs appear.
+                                    <Show when=move || {
+                                        !connected.get()
+                                            || (pane_entries.get().is_empty()
+                                                && !playlist_workspace
+                                                    .snapshot()
+                                                    .tabs
+                                                    .iter()
+                                                    .any(|tab| tab.key == pane_key.get() && tab.loading))
+                                    }>
                                         <p class="empty">
                                             {move || if connected.get() {
                                                 if pane_key.get() == "queue" { "Pick a folder in the file tree, or a playlist." }
