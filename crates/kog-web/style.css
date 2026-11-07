@@ -17,6 +17,7 @@
   --base: #000000;
   --field: #0e1016;
   --alternate: #161922;
+  --tab-active: #0d0e12;
   --surface: #000000;
   --text: #f2f3f7;
   --muted: #9aa1b5;
@@ -73,6 +74,7 @@
     --base: #fbfbfe;
     --field: #ffffff;
     --alternate: #ececf4;
+  --tab-active: #dcdde5;
     --surface: #f1f1f7;
     --text: #161822;
     --muted: #5d6478;
@@ -100,6 +102,7 @@
   --base: #fbfbfe;
   --field: #ffffff;
   --alternate: #ececf4;
+  --tab-active: #dcdde5;
   --surface: #f1f1f7;
   --text: #161822;
   --muted: #5d6478;
@@ -4442,7 +4445,7 @@ button.primary:hover:not(:disabled) {
 }
 
 .playlist-tab.active {
-  background: var(--alternate);
+  background: var(--tab-active, var(--alternate));
   color: var(--text);
 }
 
