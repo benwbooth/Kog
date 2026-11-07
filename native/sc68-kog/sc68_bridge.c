@@ -17,6 +17,17 @@
 
 static int init_result = -1;
 
+#ifdef _WIN32
+/* sc68 names itself after its program file with POSIX basename(), which the
+   Windows C library lacks (libc68 only declares a replacement). */
+char *basename(char *path) {
+    char *slash = strrchr(path, '/');
+    char *backslash = strrchr(path, '\\');
+    if (backslash > slash) slash = backslash;
+    return slash ? slash + 1 : path;
+}
+#endif
+
 static void quiet(const int bit, sc68_t *sc68, const char *fmt, va_list list) {
     (void)bit; (void)sc68; (void)fmt; (void)list;
 }
