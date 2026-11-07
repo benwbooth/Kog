@@ -2073,13 +2073,20 @@ fn install_title_marquee() {
     for (const title of document.querySelectorAll('.now-text .title, .now-text .subtitle, .now-text .mobile-now-subtitle')) {
       const text = title.querySelector('.title-text');
       if (!text) continue;
-      const room = title.getBoundingClientRect().right - text.getBoundingClientRect().left;
+      // Measured where the text rests, not where the scroll has moved it,
+      // and only changed when the length really changes: the clock ticking
+      // re-runs this every second, and a new value restarts the scroll.
+      const shifted = new DOMMatrixReadOnly(getComputedStyle(text).transform).m41 || 0;
+      const room = title.getBoundingClientRect().right - (text.getBoundingClientRect().left - shifted);
       const overflow = Math.ceil(text.scrollWidth - room);
       const moving = overflow > 2;
-      title.classList.toggle('marquee', moving);
+      if (title.classList.contains('marquee') !== moving) title.classList.toggle('marquee', moving);
       if (moving) {
-        title.style.setProperty('--marquee-shift', `-${overflow}px`);
-        title.style.setProperty('--marquee-duration', `${Math.max(3, 4 + overflow / 30)}s`);
+        const shift = `-${overflow}px`;
+        if (title.style.getPropertyValue('--marquee-shift') !== shift) {
+          title.style.setProperty('--marquee-shift', shift);
+          title.style.setProperty('--marquee-duration', `${Math.max(3, 4 + overflow / 30)}s`);
+        }
       }
     }
   };
