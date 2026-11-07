@@ -2103,6 +2103,40 @@ fn install_title_marquee() {
     );
 }
 
+/// Phone song rows: a title too long for its row gets a smaller font, down
+/// to a floor, before the ellipsis cuts it; scrolling every row's title would
+/// be restless. Re-measured only when a row's text or width changes.
+fn install_row_title_fit() {
+    let _ = js_sys::eval(
+        r#"(() => {
+  if (window.kogRowTitleFit) return;
+  window.kogRowTitleFit = true;
+  const fit = () => {
+    for (const title of document.querySelectorAll('.mobile-track-title')) {
+      const width = title.clientWidth;
+      const key = `${width}|${title.textContent}`;
+      if (!width || title.dataset.fit === key) continue;
+      title.dataset.fit = key;
+      title.style.fontSize = '';
+      const full = parseFloat(getComputedStyle(title).fontSize);
+      if (title.scrollWidth <= width + 1) continue;
+      const size = Math.max(12, Math.floor(full * width / title.scrollWidth * 10) / 10);
+      title.style.fontSize = `${size}px`;
+    }
+  };
+  let pending = false;
+  const schedule = () => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; fit(); });
+  };
+  new MutationObserver(schedule).observe(document.body, { subtree: true, childList: true, characterData: true });
+  window.addEventListener('resize', schedule);
+  schedule();
+})()"#,
+    );
+}
+
 fn install_cut_off_tooltips() {
     let _ = js_sys::eval(
         r#"(() => {
@@ -2264,6 +2298,7 @@ fn RowMeter(
 fn App() -> impl IntoView {
     install_cut_off_tooltips();
     install_title_marquee();
+    install_row_title_fit();
     // A phone opening the server's own address is already pointed at it.
     let origin = web_sys::window()
         .and_then(|window| window.location().origin().ok())
