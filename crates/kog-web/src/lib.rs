@@ -3016,11 +3016,19 @@ fn App() -> impl IntoView {
                         if tree_search.get_untracked().trim() == trimmed {
                             publish(&rows, progress);
                         }
+                        // Redrawing the results tree is the costly part on a
+                        // phone: redraw at most every 700ms while the walk
+                        // runs, and once more at the end.
+                        let mut published_at = js_sys::Date::now();
+                        let mut unpublished = false;
                         // The desktop's search stops at its own matchLimit;
                         // mirror that 2000 instead of ending after the first
                         // batch, so the same query reaches the same matches.
+                        // Phones stop at 500: more rows than anyone scrolls
+                        // through there, and far quicker to draw.
+                        let limit = if touch_mode { 500 } else { 2000 };
                         let mut offset = rows.len();
-                        while !done && rows.len() < 2000 {
+                        while !done && rows.len() < limit {
                             if tree_search.get_untracked().trim() != trimmed {
                                 break;
                             }
@@ -3051,15 +3059,26 @@ fn App() -> impl IntoView {
                                     if value["limited"].as_bool().unwrap_or(false) {
                                         limited = true;
                                     }
-                                    if tree_search.get_untracked().trim() == trimmed {
+                                    unpublished = true;
+                                    if tree_search.get_untracked().trim() == trimmed
+                                        && js_sys::Date::now() - published_at >= 700.0
+                                    {
                                         publish(&rows, progress);
+                                        published_at = js_sys::Date::now();
+                                        unpublished = false;
                                     }
                                 }
                                 Err(_) => break,
                             }
                         }
-                        if done || rows.len() >= 2000 {
+                        if unpublished && tree_search.get_untracked().trim() == trimmed {
+                            publish(&rows, progress);
+                        }
+                        if done || rows.len() >= limit {
                             set_tree_search_pending.set(false);
+                        }
+                        if rows.len() >= limit && tree_search.get_untracked().trim() == trimmed {
+                            set_search_capped.set(true);
                         }
                     }
                     Err(error) => {
