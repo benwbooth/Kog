@@ -4841,3 +4841,374 @@ button.primary:hover:not(:disabled) {
     height: 70%;
   }
 }
+
+/* ── Phones, in the style of Earshot's mobile player ─────────────────────
+ * A flat mini player above the tabs with a thin progress line, a white round
+ * play button and Next; a full-screen player with a "Playing from" header,
+ * a full-width cover, a large left-aligned title, one row of transport
+ * controls and a row for radio and volume. The containers inside the player
+ * become `display: contents`, so their controls lay out on one grid. */
+.player-header {
+  display: none;
+}
+
+@media (max-width: 820px), (pointer: coarse) and (max-width: 1200px) {
+  .mobile-tabs {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+
+  .mobile-tabs button {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  .mobile-tabs button.active {
+    color: var(--highlight);
+  }
+
+  /* Mini player. */
+  .transport-compact .transport {
+    position: relative;
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 44px 40px;
+    grid-template-rows: 44px;
+    align-items: center;
+    gap: 0 12px;
+    margin: 0;
+    padding: 8px 12px;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: var(--surface);
+    box-shadow: none;
+  }
+
+  .transport-compact .transport::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 0;
+    width: var(--progress, 0%);
+    height: 2px;
+    background: var(--text);
+    transition: width 0.5s linear;
+  }
+
+  .transport-compact .transport .now,
+  .transport-compact .transport-center,
+  .transport-compact .controls {
+    display: contents;
+  }
+
+  .transport-compact .transport .now .art {
+    grid-column: 1;
+    width: 44px;
+    height: 44px;
+    margin: 0;
+    border: 0;
+    border-radius: 6px;
+  }
+
+  .transport-compact .transport .now .art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .transport-compact .transport .now-text {
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .transport-compact .now-text .title {
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .transport-compact .now-text .mobile-now-subtitle {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .transport-compact .controls button {
+    display: none;
+  }
+
+  .transport-compact .controls .play {
+    grid-column: 3;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    justify-self: center;
+    border: 0;
+    border-radius: 50%;
+    background: var(--text);
+    color: var(--window);
+    opacity: 1;
+  }
+
+  .transport-compact .controls .play .glyph-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .controls .play .glyph-icon svg path,
+  .controls .play svg path {
+    fill: var(--window);
+  }
+
+  .transport-compact .controls button:nth-child(5) {
+    grid-column: 4;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+  }
+
+  .transport-compact .controls button:nth-child(5) svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .transport-compact .seek-row,
+  .transport-compact .transport-right,
+  .transport-compact .transport-expand,
+  .transport-compact .transport-collapse {
+    display: none;
+  }
+}
+
+/* Full-screen player: tall enough for the cover. */
+@media (max-width: 820px) and (min-height: 501px), (pointer: coarse) and (max-width: 1200px) and (min-height: 501px) {
+  .app:not(.transport-compact) .transport {
+    position: fixed;
+    z-index: 40;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-rows: auto auto auto auto auto auto auto;
+    grid-template-areas:
+      "head head head head head"
+      "art art art art art"
+      "text text text text text"
+      "seek seek seek seek seek"
+      "elapsed elapsed . total total"
+      "shuffle prev play next repeat"
+      "radio mute volume volume clear";
+    align-content: start;
+    align-items: center;
+    gap: 0;
+    overflow-y: auto;
+    padding: calc(4px + env(safe-area-inset-top, 0px)) 20px calc(20px + env(safe-area-inset-bottom, 0px));
+    border: 0;
+    border-radius: 0;
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--highlight) 30%, var(--window)) 0%,
+      var(--window) 75%);
+    box-shadow: none;
+    animation: none;
+  }
+
+  .app:not(.transport-compact) .player-header {
+    grid-area: head;
+    display: grid;
+    grid-template-columns: 44px 1fr 44px;
+    align-items: center;
+    height: 52px;
+    margin-bottom: 8px;
+  }
+
+  .player-header button {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+  }
+
+  .player-header button svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .player-header-source {
+    display: grid;
+    justify-items: center;
+    line-height: 1.25;
+    min-width: 0;
+  }
+
+  .player-header-source span {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .player-header-source strong {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .app:not(.transport-compact) .transport .now,
+  .app:not(.transport-compact) .transport-center,
+  .app:not(.transport-compact) .controls,
+  .app:not(.transport-compact) .seek-row,
+  .app:not(.transport-compact) .transport-right,
+  .app:not(.transport-compact) .volume-row {
+    display: contents;
+  }
+
+  .app:not(.transport-compact) .transport .art {
+    grid-area: art;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    max-height: 56dvh;
+    justify-self: center;
+    margin: 0 0 20px;
+    border: 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  }
+
+  .app:not(.transport-compact) .transport .art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .app:not(.transport-compact) .transport .now-text {
+    grid-area: text;
+    min-width: 0;
+    text-align: left;
+    margin-bottom: 14px;
+  }
+
+  .app:not(.transport-compact) .transport .now-text .title {
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  .app:not(.transport-compact) .transport .now-text .subtitle,
+  .app:not(.transport-compact) .transport .now-text .mobile-now-subtitle {
+    display: block;
+    font-size: 16px;
+    color: var(--muted);
+  }
+
+  .app:not(.transport-compact) .transport .now-text .mobile-now-subtitle {
+    display: none;
+  }
+
+  .app:not(.transport-compact) .seek {
+    grid-area: seek;
+    width: 100%;
+    margin: 0;
+  }
+
+  .app:not(.transport-compact) .seek-row .time {
+    align-self: start;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .app:not(.transport-compact) .seek-row .elapsed {
+    grid-area: elapsed;
+    justify-self: start;
+  }
+
+  .app:not(.transport-compact) .seek-row .total {
+    grid-area: total;
+    justify-self: end;
+  }
+
+  .app:not(.transport-compact) .controls button {
+    display: grid;
+    place-items: center;
+    justify-self: center;
+    width: 48px;
+    height: 48px;
+    margin: 8px 0;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+  }
+
+  .app:not(.transport-compact) .controls button svg {
+    width: 28px;
+    height: 28px;
+  }
+
+  .app:not(.transport-compact) .controls .shuffle { grid-area: shuffle; }
+  .app:not(.transport-compact) .controls button:nth-child(2) { grid-area: prev; }
+  .app:not(.transport-compact) .controls button:nth-child(4) { display: none; }
+  .app:not(.transport-compact) .controls button:nth-child(5) { grid-area: next; }
+  .app:not(.transport-compact) .controls .repeat { grid-area: repeat; }
+  .app:not(.transport-compact) .controls .radio { grid-area: radio; }
+
+  .app:not(.transport-compact) .controls .shuffle svg,
+  .app:not(.transport-compact) .controls .repeat svg,
+  .app:not(.transport-compact) .controls .radio svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .app:not(.transport-compact) .controls .play {
+    grid-area: play;
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    background: var(--text);
+    color: var(--window);
+    opacity: 1;
+  }
+
+  .app:not(.transport-compact) .controls .play svg {
+    width: 30px;
+    height: 30px;
+  }
+
+  .app:not(.transport-compact) .song-count,
+  .app:not(.transport-compact) .transport-status,
+  .app:not(.transport-compact) .transport-expand,
+  .app:not(.transport-compact) .transport-collapse,
+  .app:not(.transport-compact) .volume-tip {
+    display: none;
+  }
+
+  .app:not(.transport-compact) .mute {
+    grid-area: mute;
+    justify-self: center;
+  }
+
+  .app:not(.transport-compact) .volume-wrap {
+    grid-area: volume;
+    width: 100%;
+  }
+
+  .app:not(.transport-compact) .volume {
+    width: 100%;
+  }
+
+  .app:not(.transport-compact) .clear-list {
+    grid-area: clear;
+    justify-self: center;
+  }
+}

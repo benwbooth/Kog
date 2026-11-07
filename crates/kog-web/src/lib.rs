@@ -78,6 +78,7 @@ mod icons {
     pub const FOLDER_OPEN: &str = include_str!("../../../qml/icons/folder-open.svg");
     pub const VIEW_LIST_TREE: &str = include_str!("../../../qml/icons/view-list-tree.svg");
     pub const CLEAR_LIST: &str = include_str!("../../../qml/icons/edit-clear-list.svg");
+    pub const CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>"#;
     pub const QUEUE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M3 5h13v2H3zm0 6h13v2H3zm0 6h9v2H3zm13-3 6 4-6 4z"/></svg>"#;
     /// Per-format tree art, the same files the Qt tree shows
     /// (qml/icons/kog-format-*.svg), inlined so the stylesheet can tint them
@@ -7849,7 +7850,44 @@ fn App() -> impl IntoView {
 
                 <div class="player-scrim" on:click=move |_| set_transport_compact.set(true)></div>
 
-                <footer class="transport">
+                <footer
+                    class="transport"
+                    // The mini player's progress line on phones.
+                    style=move || {
+                        let end = duration.get();
+                        let fill = if end.is_finite() && end > 0.0 {
+                            (position.get() / end).clamp(0.0, 1.0) * 100.0
+                        } else {
+                            0.0
+                        };
+                        format!("--progress: {fill:.2}%")
+                    }
+                >
+                    // The full-screen player's header on phones: close, where
+                    // the music plays from, and the queue.
+                    <div class="player-header">
+                        <button
+                            type="button"
+                            class="player-header-close"
+                            aria-label="Minimize player"
+                            on:click=move |_| set_transport_compact.set(true)
+                            inner_html=icons::CHEVRON_DOWN
+                        ></button>
+                        <div class="player-header-source">
+                            <span>"Playing from"</span>
+                            <strong>{move || if radio_on.get() { "Random Radio" } else { "Play Queue" }}</strong>
+                        </div>
+                        <button
+                            type="button"
+                            class="player-header-queue"
+                            aria-label="Show the queue"
+                            on:click=move |_| {
+                                set_mobile_view.set(MobileView::Queue);
+                                set_transport_compact.set(true);
+                            }
+                            inner_html=icons::QUEUE
+                        ></button>
+                    </div>
                     <div
                         class="now"
                         on:click=move |_| {
