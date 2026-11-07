@@ -12,3 +12,9 @@ rustc-wrapper = ""
 HOST_CC = "cc"
 HOST_CXX = "c++"
 CC_KNOWN_WRAPPER_CUSTOM = ""
+
+# Windows: Furnace's libraries link as they are (see build_furnace in
+# crates/kog-native/build.rs), so a chip core vendored by both Furnace and
+# another decoder may be defined twice; keep the first definition.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/FORCE:MULTIPLE"]

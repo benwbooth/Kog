@@ -1718,6 +1718,27 @@ fn build_furnace() {
         .build_target("kog_furnace")
         .build();
     let build = output.join("build");
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        // MSVC has no `ld -r` or objcopy to merge Furnace and hide its
+        // clashing copies. Its linker only takes an object from a library to
+        // resolve a symbol still missing, so a chip core another decoder
+        // already brought in is simply not taken again; the executables link
+        // with /FORCE:MULTIPLE (.cargo/config.toml) for the rare partial
+        // overlap.
+        for name in ["kog_furnace", "fmt", "fftw3"] {
+            let library = find_file(&build, &format!("{name}.lib"))
+                .unwrap_or_else(|| panic!("Furnace's build did not produce {name}.lib"));
+            println!("cargo:rustc-link-search=native={}", library.parent().unwrap().display());
+            println!("cargo:rustc-link-lib=static={name}");
+        }
+        println!("cargo:rustc-link-lib=z");
+        // Furnace's Windows code finds its config folder through the shell.
+        println!("cargo:rustc-link-lib=shell32");
+        println!("cargo:rustc-link-lib=shlwapi");
+        watch_native("../../native/furnace-kog");
+        println!("cargo:rerun-if-changed=../../native/furnace/src");
+        return;
+    }
     // Furnace vendors chip cores and helpers (blip_buf, emu2413, Nuked-OPL3,
     // reSIDfp...) that other decoders link too. Merge it into one object, then
     // make Furnace's copies of anything clashing private to it. (Hiding
@@ -1829,6 +1850,16 @@ fn build_furnace() {
     println!("cargo:rustc-link-lib=z");
     watch_native("../../native/furnace-kog");
     println!("cargo:rerun-if-changed=../../native/furnace/src");
+}
+
+/// The first file called `name` under `directory`, searched depth first.
+fn find_file(directory: &Path, name: &str) -> Option<PathBuf> {
+    let mut entries: Vec<_> = fs::read_dir(directory).ok()?.flatten().map(|entry| entry.path()).collect();
+    entries.sort();
+    if let Some(found) = entries.iter().find(|path| path.is_file() && path.file_name().is_some_and(|file| file == name)) {
+        return Some(found.clone());
+    }
+    entries.iter().filter(|path| path.is_dir()).find_map(|path| find_file(path, name))
 }
 
 fn build_psf2_helper() {
