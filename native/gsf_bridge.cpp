@@ -464,8 +464,8 @@ extern "C" size_t kog_gsf_inspect(KogGsf* decoder, KogVoice* out, size_t capacit
         auto& v = voices.add(i == 0 ? "GBA Pulse 1" : "GBA Pulse 2", 0,
             audio.enable && playing[i], 131072.0 / (2048 - c.control.frequency),
             c.envelope.currentVolume / 15.0f, float(right[i]) - float(left[i]));
-        std::snprintf(v.instrument, sizeof(v.instrument), "Pulse duty %d", c.envelope.duty);
-        std::snprintf(v.details, sizeof(v.details),
+        snprintf(v.instrument, sizeof(v.instrument), "Pulse duty %d", c.envelope.duty);
+        snprintf(v.details, sizeof(v.details),
             "Period=%d | Volume=%d | Envelope=%d step %d direction %u | Length=%d | Sweep=%d shift %d direction %u | Routing=%u/%u",
             c.control.frequency, c.envelope.currentVolume, c.envelope.initialVolume, c.envelope.stepTime,
             unsigned(c.envelope.direction), c.control.length, c.sweep.time, c.sweep.shift,
@@ -474,10 +474,10 @@ extern "C" size_t kog_gsf_inspect(KogGsf* decoder, KogVoice* out, size_t capacit
     auto& wave = voices.add("GBA Wave", 0, audio.enable && psg.playingCh3,
         65536.0 / (2048 - psg.ch3.rate), psg.ch3.volume / 4.0f,
         float(psg.ch3Right) - float(psg.ch3Left));
-    std::snprintf(wave.details, sizeof(wave.details), "Period=%d | Volume=%d | Length=%u | Bank=%u | Size=%u", psg.ch3.rate, psg.ch3.volume, psg.ch3.length, unsigned(psg.ch3.bank), unsigned(psg.ch3.size));
+    snprintf(wave.details, sizeof(wave.details), "Period=%d | Volume=%d | Length=%u | Bank=%u | Size=%u", psg.ch3.rate, psg.ch3.volume, psg.ch3.length, unsigned(psg.ch3.bank), unsigned(psg.ch3.size));
     auto& noise = voices.add("GBA Noise", 1, audio.enable && psg.playingCh4, 0,
         psg.ch4.envelope.currentVolume / 15.0f, float(psg.ch4Right) - float(psg.ch4Left));
-    std::snprintf(noise.details, sizeof(noise.details), "Divisor=%d | Shift=%d | Width=%u | LFSR=%04X | Envelope=%d step %d direction %u | Length=%d",
+    snprintf(noise.details, sizeof(noise.details), "Divisor=%d | Shift=%d | Width=%u | LFSR=%04X | Envelope=%d step %d direction %u | Length=%d",
         psg.ch4.ratio, psg.ch4.frequency, unsigned(psg.ch4.power), psg.ch4.lfsr,
         psg.ch4.envelope.currentVolume, psg.ch4.envelope.stepTime, unsigned(psg.ch4.envelope.direction), psg.ch4.length);
     const GBAAudioFIFO* fifos[] = {&audio.chA, &audio.chB};
@@ -491,8 +491,8 @@ extern "C" size_t kog_gsf_inspect(KogGsf* decoder, KogVoice* out, size_t capacit
         auto& v = voices.add(i == 0 ? "GBA Direct Sound A" : "GBA Direct Sound B", 4,
             audio.enable && (fifoLeft[i] || fifoRight[i]) && peak > 0, 0, peak,
             float(fifoRight[i]) - float(fifoLeft[i]));
-        std::snprintf(v.instrument, sizeof(v.instrument), "Software-mixed PCM");
-        std::snprintf(v.details, sizeof(v.details), "DMA source=%d | Timer=%u | FIFO read/write=%d/%d | Sample=%08X | Remaining=%d | Routing=%u/%u",
+        snprintf(v.instrument, sizeof(v.instrument), "Software-mixed PCM");
+        snprintf(v.details, sizeof(v.details), "DMA source=%d | Timer=%u | FIFO read/write=%d/%d | Sample=%08X | Remaining=%d | Routing=%u/%u",
             c.dmaSource, unsigned(fifoTimer[i]), c.fifoRead, c.fifoWrite, c.internalSample, c.internalRemaining,
             unsigned(fifoLeft[i]), unsigned(fifoRight[i]));
     }
