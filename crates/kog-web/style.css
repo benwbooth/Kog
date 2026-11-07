@@ -860,6 +860,21 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+.cover-dialog .cover-reject {
+  margin-top: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cover-dialog .cover-reject:hover {
+  color: var(--text);
+}
+
 .cover-dialog .cover-subtitle {
   margin: 0;
   max-width: 100%;

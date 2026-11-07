@@ -1478,6 +1478,36 @@ pub async fn cancel_search(
     axum::Json(serde_json::json!({ "ok": true })).into_response()
 }
 
+/// `POST /api/art/reject` — the listener says a file's cover is wrong: it is
+/// never served again and the next `GET /api/art` looks for another.
+pub async fn reject_art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -> Response {
+    if query.kind.as_deref().unwrap_or("local") != "local" {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let library = state.library.clone();
+    let file = tokio::task::spawn_blocking(move || {
+        library
+            .resolve(query.path.as_deref())
+            .ok()
+            .filter(|file| file.is_file())
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(file) = file else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let result = state.covers.lookup(file, state.streams.clone(), false);
+    let crate::covers::CoverResult::Ready(bytes) = crate::covers::wait(result).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let covers = state.covers.clone();
+    match tokio::task::spawn_blocking(move || covers.reject(&bytes)).await {
+        Ok(true) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 /// `GET /api/art` — local, cached, or downloaded cover art for one library
 /// file, addressed like streaming (`kind`, `path`). A track without artwork
 /// answers 404. Background clients receive 202 while the lookup is pending.
@@ -2626,6 +2656,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/library/search/cancel", post(cancel_search))
         .route("/api/media/download", get(media_download))
         .route("/api/art", get(art))
+        .route("/api/art/reject", post(reject_art))
         .route("/api/metadata", get(metadata_one).post(metadata_batch))
         .route("/api/expand", post(expand_entries))
         .route("/api/playlists", get(list_playlists).post(create_playlist))

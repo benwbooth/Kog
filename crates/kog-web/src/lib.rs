@@ -4860,6 +4860,9 @@ fn App() -> impl IntoView {
 
     // Missing art is searched in the background. A single short-polling
     // fetch supplies the thumbnail, enlarged cover and Media Session image.
+    // Bumped when the listener rejects a cover, so the image is asked for
+    // again instead of coming from the browser's cache.
+    let (art_revision, set_art_revision) = signal(0u32);
     let art_request = Memo::new(move |_| {
         if !connected.get() {
             return None;
@@ -4868,14 +4871,41 @@ fn App() -> impl IntoView {
             .filter(|entry| !entry.is_dir())
             .map(|entry| {
                 format!(
-                    "{}/api/art?kind={}&path={}&token={}&background=true",
+                    "{}/api/art?kind={}&path={}&token={}&background=true&revision={}",
                     base(),
                     url_encode(&entry.kind),
                     url_encode(&entry.path),
                     url_encode(&token.get()),
+                    art_revision.get(),
                 )
             })
     });
+    let reject_cover = {
+        let base = base.clone();
+        let auth = auth.clone();
+        move || {
+        let Some(entry) = queue.with_untracked(|q| q.get(current.get_untracked()).cloned()) else {
+            return;
+        };
+        let url = format!(
+            "{}/api/art/reject?kind={}&path={}&token={}",
+            base(),
+            url_encode(&entry.kind),
+            url_encode(&entry.path),
+            url_encode(&token.get_untracked()),
+        );
+        let header = auth().header();
+        leptos::task::spawn_local(async move {
+            match post_json(url, header, serde_json::json!({})).await {
+                Ok(_) => {
+                    set_message.set("Looking for a different cover".to_owned());
+                    set_art_revision.update(|revision| *revision = revision.wrapping_add(1));
+                }
+                Err(error) => set_message.set(error),
+            }
+        });
+        }
+    };
     let art_source = artwork::source(art_request);
     let art_src = move || art_source.get();
 
@@ -8382,6 +8412,14 @@ fn App() -> impl IntoView {
                         />
                         <p class="cover-title">{move || now_title()}</p>
                         <p class="cover-subtitle">{move || now_subtitle()}</p>
+                        <button
+                            class="cover-reject"
+                            title="Never show this image again and search for another cover"
+                            on:click=move |_| {
+                                reject_cover();
+                                set_cover_open.set(false);
+                            }
+                        >"Wrong cover – find another"</button>
                     </div>
                 </Show>
 

@@ -473,16 +473,35 @@ pub fn is_rejected(cache_dir: &Path, bytes: &[u8]) -> bool {
 /// the next lookup moves on to the next source. Works for downloaded,
 /// embedded and folder art alike.
 pub fn reject_cached_cover(cache_dir: &Path, path: &Path) -> bool {
-    use std::io::Write;
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
+    reject_cover(cache_dir, &bytes) && std::fs::remove_file(path).is_ok()
+}
+
+/// Mark these image bytes as a wrong cover and delete every cached copy.
+pub fn reject_cover(cache_dir: &Path, bytes: &[u8]) -> bool {
+    use std::io::Write;
+    let hash = image_hash(bytes);
+    if std::fs::create_dir_all(cache_dir).is_err() {
+        return false;
+    }
     let appended = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(cache_dir.join(REJECTED_COVERS))
-        .and_then(|mut list| writeln!(list, "{}", image_hash(&bytes)));
-    appended.is_ok() && std::fs::remove_file(path).is_ok()
+        .and_then(|mut list| writeln!(list, "{hash}"));
+    if let Ok(entries) = std::fs::read_dir(cache_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if entry.file_name() != REJECTED_COVERS
+                && std::fs::read(&path).is_ok_and(|cached| cached == bytes)
+            {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    appended.is_ok()
 }
 
 /// Validate and persist downloaded or embedded bytes. Runs cache eviction

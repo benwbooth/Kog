@@ -141,6 +141,21 @@ enum Prepared {
 }
 
 impl CoverService {
+    /// The listener marked these bytes a wrong cover: never serve them again
+    /// and forget finished lookups, so the next request searches afresh.
+    pub(crate) fn reject(&self, bytes: &[u8]) -> bool {
+        if !cover_art::reject_cover(&self.cache_dir, bytes) {
+            return false;
+        }
+        for jobs in [&self.tracks, &self.albums] {
+            jobs.0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .retain(|_, job| *job.result.borrow() == CoverResult::Pending);
+        }
+        true
+    }
+
     pub(crate) fn lookup(
         self: &Arc<Self>,
         file: PathBuf,
@@ -152,9 +167,11 @@ impl CoverService {
             .get_or_start(track_key(&file, allow_download), async move {
                 let permit = service.probes.clone().acquire_owned().await.ok()?;
                 let probe_file = file.clone();
+                let probe_cache_dir = service.cache_dir.clone();
                 let prepared = tokio::task::spawn_blocking(move || {
                     if let Some(bytes) = cover_art::embedded_cover_bytes(&probe_file)
                         .or_else(|| cover_art::sibling_cover_bytes(&probe_file))
+                        .filter(|bytes| !cover_art::is_rejected(&probe_cache_dir, bytes))
                     {
                         return Some(Prepared::Local(Bytes::from(bytes)));
                     }
