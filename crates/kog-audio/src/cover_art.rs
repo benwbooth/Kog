@@ -84,15 +84,16 @@ pub fn download_cover<T>(
         if cancelled() {
             return None;
         }
-        if let Some(names) = box_art_index(platform, &fetch)
-            && let Some(name) = best_box_art(album, &names)
-            && let Some(result) = fetch_image!(format!(
-                "{LIBRETRO_THUMBNAILS}/{}/Named_Boxarts/{}.png",
-                path_encode(platform),
-                path_encode(name)
-            ))
-        {
-            return Some(result);
+        // A few of the best matches, so a rejected box gives way to the next.
+        if let Some(names) = box_art_index(platform, &fetch) {
+            for name in box_art_matches(album, &names).into_iter().take(4) {
+                if cancelled() {
+                    return None;
+                }
+                if let Some(result) = fetch_image!(box_art_url(platform, name)) {
+                    return Some(result);
+                }
+            }
         }
     }
     if let Some(json) = fetch(&deezer_search_url(artist, album), MAX_SEARCH_BYTES)
@@ -187,16 +188,7 @@ pub fn download_cover<T>(
     // Last resort, an image search, so the cover shows something: the first
     // results whose title names the album, else the top result. A game is
     // searched as its box art on its console.
-    let platform = game_platforms(file)
-        .first()
-        .map(|platform| platform.rsplit(" - ").next().unwrap_or(platform).to_owned());
-    let query = match &platform {
-        Some(platform) => format!("{} {platform} box art", album_lookup_name(album)),
-        None => format!("{artist} {album} album cover"),
-    }
-    .split_whitespace()
-    .collect::<Vec<_>>()
-    .join(" ");
+    let query = image_search_query(file, artist, album);
     if let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES)
         && let Ok(html) = String::from_utf8(page)
         && let Some(token) = ddg_token(&html)
@@ -739,16 +731,17 @@ pub fn parse_box_art_index(html: &str) -> Vec<String> {
         .collect()
 }
 
-/// The listed box art for `game`: one whose title matches loosely if there
-/// is one, else the one sharing the most title words, so a game's music
-/// shows something close (a sequel's or another release's box) rather than
-/// nothing. Among equals it prefers a good dump, then a USA or World
-/// release, then the shortest name.
-pub fn best_box_art<'a>(game: &str, names: &'a [String]) -> Option<&'a str> {
+/// The listed box art for `game`, best first: titles that match loosely,
+/// then titles that match once the subtitle is dropped, then titles sharing
+/// most of their words, so a game's music shows something close (a sequel's
+/// or another release's box) rather than nothing. Among equals a good dump
+/// comes first, then a USA or World release, then the lowest part number
+/// ("Part 1" before "Part 2"), then the shortest name.
+pub fn box_art_matches<'a>(game: &str, names: &'a [String]) -> Vec<&'a str> {
     let wanted = game_title_words(album_lookup_name(game));
     let wanted_words: Vec<&str> = wanted.split(' ').filter(|word| !word.is_empty()).collect();
     if wanted_words.is_empty() {
-        return None;
+        return Vec::new();
     }
     let rank = |name: &String| {
         let lower = name.to_lowercase();
@@ -756,43 +749,170 @@ pub fn best_box_art<'a>(game: &str, names: &'a [String]) -> Option<&'a str> {
             .iter()
             .any(|mark| lower.contains(mark));
         let preferred = lower.contains("(usa") || lower.contains("(world");
-        (flawed, !preferred, name.len())
+        let part = game_title_words(name)
+            .split(' ')
+            .skip(wanted_words.len())
+            .find_map(|word| word.parse::<u32>().ok())
+            .unwrap_or(0);
+        (flawed, !preferred, part, name.len())
     };
-    if let Some(name) = names
-        .iter()
-        .filter(|name| game_title_words(name) == wanted)
-        .min_by_key(|name| rank(name))
-    {
-        return Some(name);
-    }
+    let mut exact: Vec<&String> = names.iter().filter(|name| game_title_words(name) == wanted).collect();
+    exact.sort_by_key(|name| rank(name));
     // The game's title without its subtitle: "Ultima 5" for "Ultima V -
     // Warriors of Destiny" (libretro writes a title's ":" as "_").
-    if let Some(name) = names
+    let mut main_title: Vec<&String> = names
         .iter()
         .filter(|name| {
             let title = without_tag_groups(name);
             let main = title.split([':', '_']).next().unwrap_or_default();
             let main = main.split(" - ").next().unwrap_or_default();
-            game_title_words(main) == wanted
+            game_title_words(main) == wanted && game_title_words(name) != wanted
         })
-        .min_by_key(|name| rank(name))
-    {
-        return Some(name);
-    }
-    // Shared words over the longer title's word count: at least half, and
-    // at least two words unless the title is a single word.
-    let needed = wanted_words.len().min(2);
-    names
+        .collect();
+    main_title.sort_by_key(|name| rank(name));
+    // Shared words over the longer title's word count, ignoring little words
+    // ("Day of the Viper" is not close to "Day of the Tentacle"): at least
+    // half, and at least two words unless the title is a single word.
+    const LITTLE: [&str; 8] = ["of", "the", "a", "an", "and", "in", "to", "on"];
+    let significant = |words: &str| -> Vec<String> {
+        words
+            .split(' ')
+            .filter(|word| !word.is_empty() && !LITTLE.contains(word))
+            .map(str::to_owned)
+            .collect()
+    };
+    let wanted_significant = significant(&wanted);
+    let needed = wanted_significant.len().min(2);
+    let mut close: Vec<(f64, &String)> = names
         .iter()
+        .filter(|name| !exact.contains(name) && !main_title.contains(name))
         .filter_map(|name| {
-            let words = game_title_words(name);
-            let words: Vec<&str> = words.split(' ').filter(|word| !word.is_empty()).collect();
-            let shared = wanted_words.iter().filter(|word| words.contains(word)).count();
-            let score = shared as f64 / wanted_words.len().max(words.len()) as f64;
-            (shared >= needed && score >= 0.5).then_some((score, name))
+            let words = significant(&game_title_words(name));
+            let shared = wanted_significant.iter().filter(|word| words.contains(word)).count();
+            let score = shared as f64 / wanted_significant.len().max(words.len()).max(1) as f64;
+            (needed > 0 && shared >= needed && score >= 0.5).then_some((score, name))
         })
-        .max_by(|(a, first), (b, second)| a.total_cmp(b).then_with(|| rank(second).cmp(&rank(first))))
-        .map(|(_, name)| name.as_str())
+        .collect();
+    close.sort_by(|(a, first), (b, second)| b.total_cmp(a).then_with(|| rank(first).cmp(&rank(second))));
+    exact
+        .into_iter()
+        .chain(main_title)
+        .chain(close.into_iter().map(|(_, name)| name))
+        .map(String::as_str)
+        .collect()
+}
+
+/// The best of `box_art_matches`.
+pub fn best_box_art<'a>(game: &str, names: &'a [String]) -> Option<&'a str> {
+    box_art_matches(game, names).into_iter().next()
+}
+
+fn box_art_url(platform: &str, name: &str) -> String {
+    format!(
+        "{LIBRETRO_THUMBNAILS}/{}/Named_Boxarts/{}.png",
+        path_encode(platform),
+        path_encode(name)
+    )
+}
+
+/// A cover the listener can pick by hand: where it came from, what the
+/// source calls it, and the image.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoverCandidate {
+    pub source: &'static str,
+    pub title: String,
+    pub url: String,
+}
+
+/// Every cover the sources offer for an album, for choosing by hand when the
+/// automatic pick is wrong: game box art, Deezer and Apple Music albums, and
+/// image-search results. Only listings are fetched, not the images.
+pub fn cover_candidates(
+    file: &Path,
+    artist: &str,
+    album: &str,
+    fetch: impl Fn(&str, u32) -> Option<Vec<u8>> + Sync,
+) -> Vec<CoverCandidate> {
+    let mut candidates = Vec::new();
+    let lookup = album_lookup_name(album);
+    for platform in game_platforms(file) {
+        if let Some(names) = box_art_index(platform, &fetch) {
+            for name in box_art_matches(album, &names).into_iter().take(8) {
+                candidates.push(CoverCandidate {
+                    source: "Box art",
+                    title: name.to_owned(),
+                    url: box_art_url(platform, name),
+                });
+            }
+        }
+    }
+    let json = |url: String| -> serde_json::Value {
+        fetch(&url, MAX_SEARCH_BYTES)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    };
+    let deezer = json(deezer_search_url(artist, lookup));
+    for entry in deezer.get("data").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        let url = json_string(entry, "cover_xl");
+        if !url.is_empty() {
+            let by = entry.get("artist").map(|artist| json_string(artist, "name")).unwrap_or_default();
+            candidates.push(CoverCandidate {
+                source: "Deezer",
+                title: format!("{} – {by}", json_string(entry, "title")),
+                url,
+            });
+        }
+    }
+    let itunes = json(itunes_search_url(artist, lookup));
+    for entry in itunes.get("results").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        let url = json_string(entry, "artworkUrl100").replace("100x100bb", "600x600bb");
+        if !url.is_empty() {
+            candidates.push(CoverCandidate {
+                source: "Apple Music",
+                title: format!("{} – {}", json_string(entry, "collectionName"), json_string(entry, "artistName")),
+                url,
+            });
+        }
+    }
+    let query = image_search_query(file, artist, album);
+    if let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES)
+        && let Ok(html) = String::from_utf8(page)
+        && let Some(token) = ddg_token(&html)
+        && let Some(results) = fetch(&ddg_image_url(&query, &token), MAX_SEARCH_BYTES)
+        && let Ok(text) = String::from_utf8(results)
+    {
+        for (title, url) in parse_ddg_images(&text).into_iter().take(12) {
+            candidates.push(CoverCandidate { source: "Image search", title, url });
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|candidate| seen.insert(candidate.url.clone()));
+    candidates
+}
+
+/// What the image-search fallback asks for: a game's box art on its
+/// console, or an album's cover.
+fn image_search_query(file: &Path, artist: &str, album: &str) -> String {
+    let platform = game_platforms(file)
+        .first()
+        .map(|platform| platform.rsplit(" - ").next().unwrap_or(platform).to_owned());
+    match &platform {
+        Some(platform) => format!("{} {platform} box art", album_lookup_name(album)),
+        None => format!("{artist} {album} album cover"),
+    }
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// Undo a rejection: these bytes may be stored and shown again.
+pub fn unreject_cover(cache_dir: &Path, bytes: &[u8]) {
+    let hash = image_hash(bytes);
+    let path = cache_dir.join(REJECTED_COVERS);
+    if let Ok(list) = std::fs::read_to_string(&path) {
+        let kept: Vec<&str> = list.lines().filter(|line| *line != hash).collect();
+        let _ = std::fs::write(&path, kept.iter().map(|line| format!("{line}\n")).collect::<String>());
+    }
 }
 
 /// Box art for a platform's games, listed once per run of the program.

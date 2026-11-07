@@ -1565,6 +1565,100 @@ ApplicationWindow {
             }
         }
     }
+    // Every cover the sources offer for the playing song's album, rejected
+    // ones included, to pick by hand.
+    Dialog {
+        id: coverChooser
+        anchors.centerIn: parent
+        width: Math.min(760, root.width - 48)
+        height: Math.min(600, root.height - 48)
+        modal: true
+        title: qsTr("Choose a Cover")
+        standardButtons: Dialog.Cancel
+        onOpened: appController.find_cover_candidates()
+        readonly property var candidates: {
+            try { return JSON.parse(appController.cover_candidates_json) } catch (e) { return [] }
+        }
+
+        contentItem: Item {
+            BusyIndicator {
+                anchors.centerIn: parent
+                running: appController.cover_candidates_loading
+                visible: running
+            }
+            Label {
+                anchors.centerIn: parent
+                visible: !appController.cover_candidates_loading && coverChooser.candidates.length === 0
+                text: qsTr("No covers found")
+                color: root.mutedText
+            }
+            GridView {
+                id: coverGrid
+                anchors.fill: parent
+                clip: true
+                cellWidth: 150
+                cellHeight: 182
+                model: coverChooser.candidates
+                ScrollBar.vertical: FadingScrollBar {}
+                delegate: Item {
+                    required property var modelData
+                    width: coverGrid.cellWidth
+                    height: coverGrid.cellHeight
+
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.margins: 4
+                        radius: 6
+                        color: candidateHover.hovered ? root.palette.button : "transparent"
+
+                        Image {
+                            id: candidateImage
+                            x: 6; y: 6
+                            width: parent.width - 12
+                            height: width
+                            source: modelData.url
+                            sourceSize.width: 260
+                            sourceSize.height: 260
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            mipmap: true
+                        }
+                        BusyIndicator {
+                            anchors.centerIn: candidateImage
+                            width: 24; height: 24
+                            running: candidateImage.status === Image.Loading
+                            visible: running
+                        }
+                        Label {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: candidateImage.bottom
+                            anchors.margins: 6
+                            text: modelData.source
+                            font.pixelSize: 10
+                            color: root.mutedText
+                            elide: Text.ElideRight
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                        HoverHandler { id: candidateHover }
+                        ToolTip.visible: candidateHover.hovered && modelData.title.length > 0
+                        ToolTip.delay: 500
+                        ToolTip.text: modelData.title
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: candidateImage.status === Image.Ready
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                appController.choose_cover(modelData.url)
+                                coverChooser.close()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
 
     Dialog {
         id: coverArtDialog
@@ -2670,22 +2764,30 @@ ApplicationWindow {
                             : Qt.resolvedUrl("icons/kog.svg")
                         sourceSize.width: 160
                         sourceSize.height: 160
+                        // A chosen cover replaces the file at the same path.
+                        cache: false
                         fillMode: Image.PreserveAspectFit
                         mipmap: true
                         asynchronous: true
                         Accessible.name: qsTr("Album cover")
                     }
 
+                    // Right-click works with no cover too, so a cover can
+                    // always be chosen by hand.
                     MouseArea {
                         anchors.fill: parent
-                        enabled: appController.current_artwork_path.length > 0
+                        enabled: appController.current_index >= 0
                         acceptedButtons: Qt.LeftButton | Qt.RightButton
                         cursorShape: Qt.PointingHandCursor
                         Accessible.name: qsTr("Show album cover enlarged")
                         Accessible.role: Accessible.Button
                         onClicked: mouse => {
-                            if (mouse.button === Qt.RightButton) coverArtMenu.popup()
-                            else coverArtDialog.open()
+                            if (mouse.button === Qt.RightButton)
+                                coverArtMenu.popup()
+                            else if (appController.current_artwork_path.length > 0)
+                                coverArtDialog.open()
+                            else
+                                coverChooser.open()
                         }
                     }
 
@@ -2693,11 +2795,17 @@ ApplicationWindow {
                         id: coverArtMenu
                         MenuItem {
                             text: qsTr("Show Enlarged")
+                            enabled: appController.current_artwork_path.length > 0
                             onTriggered: coverArtDialog.open()
                         }
                         MenuItem {
                             text: qsTr("Wrong Cover – Find Another")
+                            enabled: appController.current_artwork_path.length > 0
                             onTriggered: appController.reject_current_cover()
+                        }
+                        MenuItem {
+                            text: qsTr("Choose Cover…")
+                            onTriggered: coverChooser.open()
                         }
                     }
 

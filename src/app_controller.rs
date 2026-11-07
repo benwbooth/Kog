@@ -44,6 +44,8 @@ pub mod qobject {
         #[qproperty(QString, current_artwork_path)]
         #[qproperty(QString, cover_art_source)]
         #[qproperty(f64, cover_art_progress)]
+        #[qproperty(QString, cover_candidates_json)]
+        #[qproperty(bool, cover_candidates_loading)]
         #[qproperty(bool, download_cover_art)]
         #[qproperty(bool, radio_active)]
         #[qproperty(QString, current_genre)]
@@ -504,6 +506,10 @@ pub mod qobject {
         fn poll_cover_art(self: Pin<&mut AppController>);
         #[qinvokable]
         fn reject_current_cover(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn find_cover_candidates(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn choose_cover(self: Pin<&mut AppController>, url: &QString);
     }
 }
 
@@ -2008,6 +2014,10 @@ pub struct AppControllerRust {
     current_artwork_path: QString,
     cover_art_source: QString,
     cover_art_progress: f64,
+    cover_candidates_json: QString,
+    cover_candidates_loading: bool,
+    cover_candidates: Option<Receiver<Vec<kog_audio::cover_art::CoverCandidate>>>,
+    cover_choice: Option<Receiver<Option<PathBuf>>>,
     radio_active: bool,
     radio: Option<RadioState>,
     cover_art: Option<CoverArtState>,
@@ -2275,6 +2285,10 @@ impl Default for AppControllerRust {
             current_artwork_path: QString::default(),
             cover_art_source: QString::default(),
             cover_art_progress: 0.0,
+            cover_candidates_json: QString::from("[]"),
+            cover_candidates_loading: false,
+            cover_candidates: None,
+            cover_choice: None,
             radio_active: false,
             radio: None,
             cover_art: None,
@@ -7042,7 +7056,116 @@ impl qobject::AppController {
             .refresh_cover_art(track.artist.clone(), track.album.clone(), file);
     }
 
+    /// List every cover the sources offer for the playing song, for the
+    /// cover chooser. Results arrive through `poll_cover_art`.
+    pub fn find_cover_candidates(mut self: Pin<&mut Self>) {
+        let current = usize::try_from(self.as_ref().rust().current_index)
+            .ok()
+            .and_then(|index| self.as_ref().rust().tracks.get(index).cloned());
+        self.as_mut().set_cover_candidates_json(QString::from("[]"));
+        let Some(track) = current else {
+            return;
+        };
+        let file = track.source.path.clone();
+        let artist = track.artist.clone();
+        let album = kog_audio::cover_art::fallback_album(&file, &track.album);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.as_mut().rust_mut().cover_candidates = Some(receiver);
+        self.as_mut().set_cover_candidates_loading(true);
+        let spawned = std::thread::Builder::new()
+            .name("kog-cover-candidates".to_owned())
+            .spawn(move || {
+                let candidates = kog_audio::cover_art::cover_candidates(&file, &artist, &album, |url, max_bytes| {
+                    fetch_cover(url, max_bytes).ok()
+                });
+                let _ = sender.send(candidates);
+            });
+        if spawned.is_err() {
+            self.as_mut().rust_mut().cover_candidates = None;
+            self.as_mut().set_cover_candidates_loading(false);
+        }
+    }
+
+    /// Use the cover the listener picked in the chooser for the playing
+    /// song's album, even one rejected before.
+    pub fn choose_cover(mut self: Pin<&mut Self>, url: &QString) {
+        let current = usize::try_from(self.as_ref().rust().current_index)
+            .ok()
+            .and_then(|index| self.as_ref().rust().tracks.get(index).cloned());
+        let Some(track) = current else {
+            return;
+        };
+        let file = track.source.path.clone();
+        let album = kog_audio::cover_art::fallback_album(&file, &track.album);
+        let (key, _) = cover_art_key(&track.artist, &track.album, &album, &file);
+        if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
+            job.cancel.store(true, AtomicOrdering::Relaxed);
+        }
+        let url = url.to_string();
+        let cache_dir = cover_art_cache_dir();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.as_mut().rust_mut().cover_choice = Some(receiver);
+        self.as_mut().set_status(qstring("Downloading the chosen cover"));
+        let _ = std::thread::Builder::new()
+            .name("kog-cover-choice".to_owned())
+            .spawn(move || {
+                let stored = fetch_cover(&url, kog_audio::cover_art::MAX_COVER_BYTES)
+                    .ok()
+                    .filter(|bytes| kog_audio::cover_art::sniff_image_kind(bytes).is_some())
+                    .and_then(|bytes| {
+                        kog_audio::cover_art::unreject_cover(&cache_dir, &bytes);
+                        for extension in ["jpg", "png"] {
+                            let _ = std::fs::remove_file(cache_dir.join(format!("{key}.{extension}")));
+                        }
+                        kog_audio::cover_art::clear_miss(&cache_dir, &key);
+                        kog_audio::cover_art::store_cache(&cache_dir, &key, &bytes)
+                    });
+                let _ = sender.send(stored);
+            });
+    }
+
     pub fn poll_cover_art(mut self: Pin<&mut Self>) {
+        let listed = self
+            .as_ref()
+            .rust()
+            .cover_candidates
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok());
+        if let Some(candidates) = listed {
+            let json = serde_json::Value::Array(
+                candidates
+                    .iter()
+                    .map(|candidate| {
+                        serde_json::json!({
+                            "source": candidate.source,
+                            "title": candidate.title,
+                            "url": candidate.url,
+                        })
+                    })
+                    .collect(),
+            );
+            self.as_mut().rust_mut().cover_candidates = None;
+            self.as_mut().set_cover_candidates_json(qstring(json.to_string()));
+            self.as_mut().set_cover_candidates_loading(false);
+        }
+        let chosen = self
+            .as_ref()
+            .rust()
+            .cover_choice
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok());
+        if let Some(stored) = chosen {
+            self.as_mut().rust_mut().cover_choice = None;
+            match stored {
+                Some(path) => {
+                    // A new path each time so QML reloads the image.
+                    self.as_mut().set_current_artwork_path(QString::default());
+                    self.as_mut().set_current_artwork_path(qstring(path.to_string_lossy()));
+                    self.as_mut().set_status(qstring("Cover changed"));
+                }
+                None => self.as_mut().set_status(qstring("That cover could not be downloaded")),
+            }
+        }
         let progress = self
             .as_ref()
             .rust()
