@@ -5053,7 +5053,7 @@ button.primary:hover:not(:disabled) {
     grid-template-areas:
       "head head head head head"
       "art art art art art"
-      "text text text text meter"
+      "meter text text text text"
       "seek seek seek seek seek"
       "elapsed elapsed . total total"
       "shuffle prev play next repeat"
@@ -5148,18 +5148,24 @@ button.primary:hover:not(:disabled) {
   .app:not(.transport-compact) .player-meter {
     grid-area: meter;
     display: block;
-    justify-self: end;
+    justify-self: start;
     align-self: start;
     width: 24px;
     height: 32px;
-    margin: 18px 12px 0 0;
-    /* Twice the drawn size: 48 by 64. */
+    margin: 4px 0 0;
+    /* Twice the drawn size: 48 by 64, before the title. */
     transform: scale(2);
+    transform-origin: top left;
   }
 
   .app:not(.transport-compact) .transport .now-text {
     overflow: hidden;
     clip-path: inset(0);
+  }
+
+  /* The title takes the whole row while nothing plays. */
+  .app:not(.transport-compact) .transport:not(:has(.player-meter)) .now-text {
+    grid-column: 1 / -1;
   }
 
   .app:not(.transport-compact) .transport .now-text {
