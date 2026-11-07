@@ -1,6 +1,6 @@
 [package]
 name = "kog-native"
-version = "0.11.2"
+version = "0.11.3"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Kog's bundled C and C++ decoder libraries, built on their own so Rust changes never rebuild them"
