@@ -2103,9 +2103,10 @@ fn install_title_marquee() {
     );
 }
 
-/// Phone song rows: a title too long for its row gets a smaller font, down
-/// to a floor, before the ellipsis cuts it; scrolling every row's title would
-/// be restless. Re-measured only when a row's text or width changes.
+/// Phone song rows: a title slightly too long for its row gets a smaller
+/// font, down to 13px; a longer one wraps onto a second line instead.
+/// Scrolling every row's title would be restless. Re-measured only when a
+/// row's text or width changes.
 fn install_row_title_fit() {
     let _ = js_sys::eval(
         r#"(() => {
@@ -2119,9 +2120,15 @@ fn install_row_title_fit() {
       title.dataset.fit = key;
       title.style.fontSize = '';
       const full = parseFloat(getComputedStyle(title).fontSize);
-      if (title.scrollWidth <= width + 1) continue;
-      const size = Math.max(12, Math.floor(full * width / title.scrollWidth * 10) / 10);
-      title.style.fontSize = `${size}px`;
+      // Measured on one line; the stylesheet lets it wrap.
+      title.style.whiteSpace = 'nowrap';
+      const needed = title.scrollWidth;
+      title.style.whiteSpace = '';
+      if (needed <= width + 1) continue;
+      // A little smaller keeps it on one line; more than that, it wraps
+      // onto a second line at full size instead.
+      const size = Math.floor(full * width / needed * 10) / 10;
+      if (size >= 13) title.style.fontSize = `${size}px`;
     }
   };
   let pending = false;
@@ -7771,9 +7778,14 @@ fn App() -> impl IntoView {
                                                                         let meta = meta_for(&cache, &mobile_detail_entry);
                                                                         let artist = meta.as_ref().and_then(|row| row.artist.as_ref().or(row.album_artist.as_ref())).cloned().unwrap_or_default();
                                                                         let album = meta.as_ref().and_then(|row| row.album.as_ref()).cloned().unwrap_or_default();
-                                                                        if artist.is_empty() { album }
-                                                                        else if album.is_empty() { artist }
-                                                                        else { format!("{artist} · {album}") }
+                                                                        // The length closes the line, freeing its
+                                                                        // column for the title.
+                                                                        let length = meta.as_ref().and_then(|row| row.duration).map(clock).unwrap_or_default();
+                                                                        [artist, album, length]
+                                                                            .into_iter()
+                                                                            .filter(|part| !part.is_empty())
+                                                                            .collect::<Vec<_>>()
+                                                                            .join(" · ")
                                                                     }}
                                                                 </span>
                                                             </span>
@@ -8701,6 +8713,25 @@ fn App() -> impl IntoView {
                             }
                         >
                             "Play"
+                        </button>
+                        // Phones have no star on each row; it lives here.
+                        <button
+                            class="menu-item"
+                            on:click={
+                                let toggle_star = toggle_star.clone();
+                                move |_| {
+                                    if let Some((_, _, _, entry)) = song_menu.get_untracked() {
+                                        set_song_menu.set(None);
+                                        let starred = stars.get_untracked().contains(&entry_star_locator(&entry));
+                                        toggle_star(entry, starred);
+                                    }
+                                }
+                            }
+                        >
+                            {move || match song_menu.get() {
+                                Some((_, _, _, entry)) if stars.get().contains(&entry_star_locator(&entry)) => "Remove from Favorites",
+                                _ => "Add to Favorites",
+                            }}
                         </button>
                         <Show when=move || pane_key.get() == "queue">
                         <button class="menu-item" on:click=move |_| {

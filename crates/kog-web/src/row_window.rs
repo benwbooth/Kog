@@ -56,7 +56,8 @@ impl RowWindow {
         let next = Metrics {
             top: node.scroll_top() as f64,
             height,
-            row: if compact { 60.0 } else { 26.0 },
+            // Phones: room for a title on two lines over its detail line.
+            row: if compact { 68.0 } else { 26.0 },
         };
         if self.metrics.get_untracked() != next {
             self.metrics.set(next);
