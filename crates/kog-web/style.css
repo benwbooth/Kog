@@ -4983,6 +4983,41 @@ button.primary:hover:not(:disabled) {
   .transport-compact .transport-collapse {
     display: none;
   }
+  /* Song rows: no tile behind the format icon, Earshot's plain list. */
+  .mobile-track-card {
+    grid-template-columns: 24px minmax(0, 1fr) auto 36px 32px;
+    grid-template-rows: 56px;
+    gap: 0 12px;
+    height: 56px;
+  }
+
+  .mobile-track-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--faint);
+  }
+
+  .mobile-track-title {
+    font-weight: 600;
+  }
+
+  .mobile-track-star,
+  .mobile-track-more {
+    color: var(--faint);
+    font-size: 18px;
+  }
+
+  /* The Kog logo opens the menu, as Earshot's app icon does. */
+  #app-menu-button {
+    background: url("/icons/kog.svg") center / 30px no-repeat;
+  }
+
+  #app-menu-button svg {
+    visibility: hidden;
+  }
 }
 
 /* Full-screen player: tall enough for the cover. */
