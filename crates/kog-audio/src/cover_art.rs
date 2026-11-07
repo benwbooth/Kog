@@ -449,10 +449,50 @@ pub fn recent_miss(cache_dir: &Path, key: &str) -> bool {
         .is_some_and(|age| age < MISS_RETRY)
 }
 
+/// Forget a remembered miss, so the next play searches again.
+pub fn clear_miss(cache_dir: &Path, key: &str) {
+    let _ = std::fs::remove_file(miss_path(cache_dir, key));
+}
+
+/// Hashes of covers the listener marked wrong, one per line. Kept out of
+/// eviction: a rejected cover must stay rejected.
+const REJECTED_COVERS: &str = "rejected-covers.txt";
+
+fn image_hash(bytes: &[u8]) -> String {
+    format!("{:016x}", fnv1a64(bytes))
+}
+
+/// True when the listener marked these exact image bytes as a wrong cover.
+pub fn is_rejected(cache_dir: &Path, bytes: &[u8]) -> bool {
+    let hash = image_hash(bytes);
+    std::fs::read_to_string(cache_dir.join(REJECTED_COVERS))
+        .is_ok_and(|list| list.lines().any(|line| line == hash))
+}
+
+/// Mark a cached cover as wrong: it is deleted and never stored again, so
+/// the next lookup moves on to the next source. Works for downloaded,
+/// embedded and folder art alike.
+pub fn reject_cached_cover(cache_dir: &Path, path: &Path) -> bool {
+    use std::io::Write;
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let appended = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(cache_dir.join(REJECTED_COVERS))
+        .and_then(|mut list| writeln!(list, "{}", image_hash(&bytes)));
+    appended.is_ok() && std::fs::remove_file(path).is_ok()
+}
+
 /// Validate and persist downloaded or embedded bytes. Runs cache eviction
-/// first so the budget holds even on a full disk of covers.
+/// first so the budget holds even on a full disk of covers. A cover the
+/// listener rejected is refused, so a download goes on to the next source.
 pub fn store_cache(cache_dir: &Path, key: &str, bytes: &[u8]) -> Option<PathBuf> {
     let kind = sniff_image_kind(bytes)?;
+    if is_rejected(cache_dir, bytes) {
+        return None;
+    }
     if std::fs::create_dir_all(cache_dir).is_err() {
         return None;
     }
@@ -474,7 +514,7 @@ pub fn evict_cache(cache_dir: &Path, max_bytes: u64) {
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let metadata = entry.metadata().ok()?;
-            if !metadata.is_file() {
+            if !metadata.is_file() || entry.file_name() == REJECTED_COVERS {
                 return None;
             }
             let modified = metadata.modified().ok()?;
@@ -1126,6 +1166,18 @@ mod tests {
         assert_eq!(best_box_art("Mega Man", &names), None);
         assert_eq!(game_title_words("The Legend of Zelda"), "legend of zelda");
         assert_eq!(game_title_words("Zelda, The"), "zelda");
+    }
+
+    #[test]
+    fn rejected_covers_are_never_stored_again() {
+        let dir = std::env::temp_dir().join(format!("kog-cover-reject-{}", std::process::id()));
+        let jpeg = [0xff, 0xd8, 0xff, 0xe0, 1];
+        let stored = store_cache(&dir, "album", &jpeg).unwrap();
+        assert!(reject_cached_cover(&dir, &stored));
+        assert!(cache_lookup(&dir, "album").is_none());
+        assert!(store_cache(&dir, "album", &jpeg).is_none());
+        assert!(store_cache(&dir, "album", &[0xff, 0xd8, 0xff, 0xe0, 2]).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

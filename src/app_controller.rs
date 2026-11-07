@@ -502,6 +502,8 @@ pub mod qobject {
         fn update_download_cover_art(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
         fn poll_cover_art(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn reject_current_cover(self: Pin<&mut AppController>);
     }
 }
 
@@ -7011,6 +7013,33 @@ impl qobject::AppController {
                 track.source.path.clone(),
             );
         }
+    }
+
+    /// The listener says the shown cover is wrong: never show those image
+    /// bytes again and look for the playing song's cover afresh.
+    pub fn reject_current_cover(mut self: Pin<&mut Self>) {
+        let shown = PathBuf::from(self.as_ref().current_artwork_path().to_string());
+        let cache_dir = cover_art_cache_dir();
+        if shown.as_os_str().is_empty()
+            || !kog_audio::cover_art::reject_cached_cover(&cache_dir, &shown)
+        {
+            return;
+        }
+        let current = usize::try_from(self.as_ref().rust().current_index)
+            .ok()
+            .and_then(|index| self.as_ref().rust().tracks.get(index).cloned());
+        let Some(track) = current else {
+            self.as_mut().set_current_artwork_path(QString::default());
+            return;
+        };
+        let file = track.source.path.clone();
+        let album = kog_audio::cover_art::fallback_album(&file, &track.album);
+        let (key, _) = cover_art_key(&track.artist, &track.album, &album, &file);
+        kog_audio::cover_art::clear_miss(&cache_dir, &key);
+        self.as_mut()
+            .set_status(qstring("Looking for a different cover"));
+        self.as_mut()
+            .refresh_cover_art(track.artist.clone(), track.album.clone(), file);
     }
 
     pub fn poll_cover_art(mut self: Pin<&mut Self>) {

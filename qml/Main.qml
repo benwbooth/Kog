@@ -2670,10 +2670,26 @@ ApplicationWindow {
                     MouseArea {
                         anchors.fill: parent
                         enabled: appController.current_artwork_path.length > 0
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
                         cursorShape: Qt.PointingHandCursor
                         Accessible.name: qsTr("Show album cover enlarged")
                         Accessible.role: Accessible.Button
-                        onClicked: coverArtDialog.open()
+                        onClicked: mouse => {
+                            if (mouse.button === Qt.RightButton) coverArtMenu.popup()
+                            else coverArtDialog.open()
+                        }
+                    }
+
+                    Menu {
+                        id: coverArtMenu
+                        MenuItem {
+                            text: qsTr("Show Enlarged")
+                            onTriggered: coverArtDialog.open()
+                        }
+                        MenuItem {
+                            text: qsTr("Wrong Cover – Find Another")
+                            onTriggered: appController.reject_current_cover()
+                        }
                     }
 
                     // A cover download in progress: a faint caption with a
