@@ -666,6 +666,18 @@ impl<T: Item> Session<T> {
     pub fn order(&self) -> &PlaybackOrder {
         &self.order
     }
+    /// The song that should play after the current one ends, without
+    /// advancing anything: clients fetch it ahead so it starts at once.
+    pub fn upcoming(&self) -> Option<usize> {
+        let current = self.current?;
+        if self.order.should_stop_after(current) {
+            return None;
+        }
+        self.order
+            .clone()
+            .next(&self.order_tracks(), Some(current), true)
+            .filter(|index| *index != current)
+    }
     pub fn selection(&self) -> &Selection {
         &self.selection
     }

@@ -4304,6 +4304,41 @@ fn App() -> impl IntoView {
     };
 
     let current_entry = move || queue.get().get(current.get()).cloned();
+    // The next song is fetched while this one plays, so the server has it
+    // encoded and cached by the time it starts: far from the server, a
+    // song would otherwise wait for its encoder and the trip both.
+    let prefetched = StoredValue::new(String::new());
+    Effect::new(move |_| {
+        if !playing.get() {
+            return;
+        }
+        let playing_now = current.get();
+        queue.track();
+        let Some(next) = session_model.with_value(|model| model.upcoming()) else {
+            return;
+        };
+        let Some(entry) = queue.with_untracked(|queue| queue.get(next).cloned()) else {
+            return;
+        };
+        if entry.is_dir() {
+            return;
+        }
+        let url = stream_url(&entry);
+        if prefetched.with_value(|last| last == &url) {
+            return;
+        }
+        prefetched.set_value(url.clone());
+        leptos::task::spawn_local(async move {
+            // Not while the current song's own stream is starting.
+            sleep_ms(4000).await;
+            if current.get_untracked() != playing_now || prefetched.with_value(|last| last != &url) {
+                return;
+            }
+            if let Ok(response) = Request::get(&url).send().await {
+                let _ = response.binary().await;
+            }
+        });
+    });
     // Where in the song the current stream begins. A song still being
     // encoded has no byte ranges, so the browser can only seek within what
     // has arrived; seeking past it asks the server for a stream that starts
