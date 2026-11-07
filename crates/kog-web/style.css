@@ -178,6 +178,14 @@ body {
   margin: 0 2px;
 }
 
+.toolbar .wordmark {
+  flex: none;
+  margin-right: 6px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .icon-button {
   width: 34px;
   height: 34px;
@@ -2190,7 +2198,8 @@ body.touch .track .index-cell {
     grid-column: 2;
   }
 
-  .toolbar .logo {
+  .toolbar .logo,
+  .toolbar .wordmark {
     display: none;
   }
 
@@ -2435,6 +2444,7 @@ body.touch .track .index-cell {
   }
 
   .toolbar .logo,
+  .toolbar .wordmark,
   .toolbar .sidebar-toggle,
   .toolbar .codec,
   .toolbar .server-label {

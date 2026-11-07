@@ -2483,6 +2483,15 @@ ApplicationWindow {
                     onClicked: aboutKog.open()
                 }
             }
+            Label {
+                Layout.alignment: Qt.AlignVCenter
+                Layout.rightMargin: 6
+                text: "Kog"
+                font.pixelSize: 17
+                font.weight: Font.DemiBold
+                color: root.palette.text
+                Accessible.ignored: true
+            }
             ToolbarButton {
                 id: hamburgerButton
                 Layout.preferredWidth: 34

@@ -6321,7 +6321,8 @@ fn App() -> impl IntoView {
                 }
             >
                 <header class="toolbar">
-                    <img class="logo" src="/icons/kog.svg" alt="Kog" />
+                    <img class="logo" src="/icons/kog.svg" alt="" />
+                    <span class="wordmark">"Kog"</span>
                     <button
                         class="flat icon-button"
                         title="Kog menu"

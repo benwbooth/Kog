@@ -1690,7 +1690,7 @@ impl Ui {
             menu_selected: 0,
             menu_page: MenuPage::Main,
             menu_offset: 0,
-            menu_x: 4,
+            menu_x: 7,
             menu_y: 1,
             menu_parents: Vec::new(),
             menu_size: (0, 0),
@@ -3395,7 +3395,7 @@ impl Ui {
         self.menu_open = true;
         self.menu_selected = 0;
         self.menu_offset = 0;
-        self.menu_x = 4;
+        self.menu_x = 7;
         self.menu_y = 1;
     }
 
@@ -6227,7 +6227,7 @@ impl Ui {
             .is_some_and(|(kind, _)| *kind == PromptKind::PlaylistSearch)
             && (draft.is_some() || self.focus == Focus::Library)
         {
-            let x = (size.0 / 2).saturating_sub(17).max(14);
+            let x = (size.0 / 2).saturating_sub(17).max(18);
             Some(SearchBox::new(
                 x - 1,
                 0,
@@ -7730,7 +7730,7 @@ impl Ui {
                 return;
             }
         }
-        if self.menu_open && y == 0 && !(4..8).contains(&x) {
+        if self.menu_open && y == 0 && !(7..11).contains(&x) {
             self.menu_open = false;
             self.menu_parents.clear();
         }
@@ -7748,7 +7748,7 @@ impl Ui {
         }
         if let Some((kind, value)) = self.prompt.as_ref() {
             if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
-                let search_x = (size.0 / 2).saturating_sub(17).max(14);
+                let search_x = (size.0 / 2).saturating_sub(17).max(18);
                 let search_width = size.0.saturating_sub(search_x + 7).min(36);
                 let (row, col, width) = if *kind == PromptKind::Search && layout.show_sidebar {
                     (3, 0, layout.first)
@@ -7957,7 +7957,7 @@ impl Ui {
             return;
         }
         if y == 0 {
-            let search_x = (size.0 / 2).saturating_sub(17).max(14);
+            let search_x = (size.0 / 2).saturating_sub(17).max(18);
             let search_width = size.0.saturating_sub(search_x + 7).min(36);
             if button & 3 == 0 && search_width >= 6 && x == search_x + search_width - 2 {
                 let kind = if !layout.show_sidebar && self.focus == Focus::Library {
@@ -7975,7 +7975,7 @@ impl Ui {
                     return;
                 }
             }
-            if x < 4 {
+            if x < 7 {
                 self.begin_prompt(
                     PromptKind::MusicFolder,
                     self.library
@@ -7983,13 +7983,13 @@ impl Ui {
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default(),
                 );
-            } else if x < 8 {
+            } else if x < 11 {
                 if self.menu_open {
                     self.menu_open = false;
                 } else {
                     self.open_submenu(MenuPage::Main);
                 }
-            } else if x < 12 {
+            } else if x < 15 {
                 self.sidebar_visible = !self.sidebar_visible;
                 if !self.sidebar_visible {
                     self.focus = Focus::Tracks;
@@ -8675,8 +8675,9 @@ impl Ui {
         let mut screen = String::from("\x1b[H\x1b[?25l");
         paint(&mut screen, 1, 1, "", width, Surface::Toolbar, false);
         paint(&mut screen, 1, 2, "⚙", 2, Surface::Accent, true);
-        paint(&mut screen, 1, 6, "≡", 2, Surface::Toolbar, false);
-        paint(&mut screen, 1, 10, "▤", 2, Surface::Toolbar, false);
+        paint(&mut screen, 1, 4, "Kog", 3, Surface::Toolbar, true);
+        paint(&mut screen, 1, 9, "≡", 2, Surface::Toolbar, false);
+        paint(&mut screen, 1, 13, "▤", 2, Surface::Toolbar, false);
         paint(
             &mut screen,
             1,
@@ -8686,7 +8687,7 @@ impl Ui {
             Surface::Toolbar,
             true,
         );
-        let search_x = (width / 2).saturating_sub(17).max(14);
+        let search_x = (width / 2).saturating_sub(17).max(18);
         let search_width = width.saturating_sub(search_x + 7).min(36);
         let playlist_draft = self
             .prompt
