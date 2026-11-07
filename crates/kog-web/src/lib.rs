@@ -7155,6 +7155,9 @@ fn App() -> impl IntoView {
                                                             />
                                                         </Show>
                                                         <span class="count">{count}</span>
+                                                        <span class="mobile-count">
+                                                            {if count == 1 { "1 song".to_owned() } else { format!("{count} songs") }}
+                                                        </span>
                                                         <span
                                                             class="mobile-playlist-more"
                                                             role="button"

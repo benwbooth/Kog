@@ -4853,7 +4853,8 @@ button.primary:hover:not(:disabled) {
  * become `display: contents`, so their controls lay out on one grid. */
 .player-header,
 .mini-meter,
-.player-meter {
+.player-meter,
+.mobile-count {
   display: none;
 }
 
@@ -5036,6 +5037,94 @@ button.primary:hover:not(:disabled) {
   #app-menu-button svg {
     visibility: hidden;
   }
+  /* The playlist list as a plain list, as Earshot lists albums: a cover
+   * tile, the name over its song count, and the ⋯ menu. No cards. */
+  .mobile-playlists .section.playlists .section-body {
+    padding: 8px 0;
+  }
+
+  .mobile-playlists .tree-row.favorite-row,
+  .mobile-playlists .tree-row.playlist-row {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) 44px;
+    grid-template-rows: 1fr 1fr;
+    align-items: center;
+    column-gap: 14px;
+    height: 68px;
+    min-height: 68px;
+    margin: 0;
+    padding: 8px 8px 8px 16px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .mobile-playlists .tree-row.favorite-row:active,
+  .mobile-playlists .tree-row.playlist-row:active {
+    background: var(--alternate);
+  }
+
+  .mobile-playlists .playlist-entry-icon,
+  .mobile-playlists .favorite-star {
+    grid-column: 1;
+    grid-row: 1 / 3;
+    display: grid;
+    place-items: center;
+    width: 52px;
+    height: 52px;
+    border-radius: 6px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--accent2), var(--highlight));
+  }
+
+  .mobile-playlists .favorite-star {
+    font-size: 24px;
+    background: linear-gradient(135deg, #ff5f8f, #ffb347);
+  }
+
+  .mobile-playlists .playlist-entry-icon svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .mobile-playlists .tree-row .label {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: end;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .mobile-playlists .tree-row .count,
+  .mobile-playlists .tree-row .playlist-add {
+    display: none;
+  }
+
+  .mobile-playlists .tree-row .mobile-count {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: start;
+    display: block;
+    margin: 2px 0 0;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  /* Favorites has no count: its name centres on the tile. */
+  .mobile-playlists .tree-row.favorite-row .label {
+    grid-row: 1 / 3;
+    align-self: center;
+  }
+
+  .mobile-playlists .mobile-playlist-more {
+    grid-column: 3;
+    grid-row: 1 / 3;
+  }
+
 }
 
 /* Full-screen player: tall enough for the cover. */
