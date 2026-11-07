@@ -666,14 +666,29 @@ fn without_tag_groups(title: &str) -> String {
 }
 
 /// A title's words for comparing names loosely: case, punctuation, tag
-/// groups and a leading or trailing "The" ignored, "&" read as "and".
-/// "VS. Super Mario Bros" and "Vs. Super Mario Bros. (1986)(Nintendo)"
-/// both give "vs super mario bros".
+/// groups and a leading or trailing "The" ignored, "&" read as "and", and
+/// Roman numerals read as numbers. "VS. Super Mario Bros" and
+/// "Vs. Super Mario Bros. (1986)(Nintendo)" both give "vs super mario bros";
+/// "Ultima V" and "Ultima 5" both give "ultima 5".
 pub fn game_title_words(title: &str) -> String {
+    const ROMAN: [&str; 20] = [
+        "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii", "xiii", "xiv",
+        "xv", "xvi", "xvii", "xviii", "xix", "xx",
+    ];
+    const NUMBERS: [&str; 20] = [
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16",
+        "17", "18", "19", "20",
+    ];
     let base = without_tag_groups(title).to_lowercase().replace('&', " and ");
     let mut words: Vec<&str> = base
         .split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())
+        .map(|word| {
+            ROMAN
+                .iter()
+                .position(|numeral| *numeral == word)
+                .map_or(word, |index| NUMBERS[index])
+        })
         .collect();
     if words.first() == Some(&"the") {
         words.remove(0);
@@ -726,6 +741,20 @@ pub fn best_box_art<'a>(game: &str, names: &'a [String]) -> Option<&'a str> {
     if let Some(name) = names
         .iter()
         .filter(|name| game_title_words(name) == wanted)
+        .min_by_key(|name| rank(name))
+    {
+        return Some(name);
+    }
+    // The game's title without its subtitle: "Ultima 5" for "Ultima V -
+    // Warriors of Destiny" (libretro writes a title's ":" as "_").
+    if let Some(name) = names
+        .iter()
+        .filter(|name| {
+            let title = without_tag_groups(name);
+            let main = title.split([':', '_']).next().unwrap_or_default();
+            let main = main.split(" - ").next().unwrap_or_default();
+            game_title_words(main) == wanted
+        })
         .min_by_key(|name| rank(name))
     {
         return Some(name);
@@ -1184,6 +1213,17 @@ mod tests {
         );
         assert_eq!(best_box_art("Mega Man", &names), None);
         assert_eq!(game_title_words("The Legend of Zelda"), "legend of zelda");
+        let dos = vec![
+            "Ultima IV - Quest of the Avatar".to_owned(),
+            "Ultima V - Warriors of Destiny".to_owned(),
+            "Ultima VII_ Part 1_ The Black Gate + Forge of Virtue".to_owned(),
+            "Ultima Underworld - The Stygian Abyss".to_owned(),
+        ];
+        assert_eq!(best_box_art("Ultima 5", &dos), Some("Ultima V - Warriors of Destiny"));
+        assert_eq!(
+            best_box_art("Ultima 7", &dos),
+            Some("Ultima VII_ Part 1_ The Black Gate + Forge of Virtue")
+        );
         assert_eq!(game_title_words("Zelda, The"), "zelda");
     }
 
