@@ -50,7 +50,7 @@ FocusScope {
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: 8
-        anchors.rightMargin: 36
+        anchors.rightMargin: 42
         spacing: 6
         Image {
             visible: row.favorite
@@ -142,7 +142,8 @@ FocusScope {
     // Also built only when shown.
     Loader {
         anchors.right: parent.right
-        anchors.rightMargin: 4
+        // Clear of the list's 8px scroll bar strip.
+        anchors.rightMargin: 10
         anchors.verticalCenter: parent.verticalCenter
         width: 20; height: 20
         active: !row.renaming && (hover.hovered || row.selected || row.activeFocus)
