@@ -4298,7 +4298,7 @@ ApplicationWindow {
                         id: playlistVerticalScrollBar
                         // Away from the window's right edge, so the pointer
                         // grabs the pill rather than the resize border.
-                        edgeInset: 14
+                        edgeInset: 10
                         onPressedChanged: if (pressed) {
                             playlistKineticWheel.stop()
                             playlistHorizontalWheel.stop()

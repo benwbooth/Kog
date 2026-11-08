@@ -284,7 +284,9 @@ FocusScope {
             delegate: editor.compact ? classicRow : tableRow
             onContentYChanged: { scrollSave.restart(); verticalBar.flash() }
             onContentXChanged: { scrollSave.restart(); horizontalBar.flash() }
-            ScrollBar.vertical: FadingScrollBar { id: verticalBar }
+            // Away from the window's right edge, so the pointer grabs the
+            // pill rather than the window's resize border.
+            ScrollBar.vertical: FadingScrollBar { id: verticalBar; edgeInset: 10 }
             ScrollBar.horizontal: FadingScrollBar { id: horizontalBar }
             footer: Item { width: 1; height: list.horizontalScrollGutter }
             KineticWheelHandler { view: list }
