@@ -25,19 +25,30 @@ ScrollBar {
     // Thin, as on macOS: a 4px pill that widens to 7px under the pointer,
     // in an 8px strip, so it stays clear of buttons at the rows' ends.
     padding: 2
-    implicitWidth: orientation === Qt.Vertical ? 8 : 0
+    // Space kept between the pill and the bar's outer edge, for a bar at
+    // the window's edge, where the window's resize border takes the pointer.
+    property real edgeInset: 0
+    implicitWidth: orientation === Qt.Vertical ? 8 + edgeInset : 0
     implicitHeight: orientation === Qt.Horizontal ? 8 : 0
     background: Item {}
-    contentItem: Rectangle {
-        readonly property real thickness: bar.hovered || bar.pressed ? 7 : 4
-        implicitWidth: bar.orientation === Qt.Vertical ? thickness : 0
-        implicitHeight: bar.orientation === Qt.Horizontal ? thickness : 0
-        x: bar.orientation === Qt.Vertical ? bar.width - width - 1 : 0
-        radius: thickness / 2
-        color: bar.palette.text
-        opacity: bar.pressed ? 0.6 : 0.4
-        Behavior on implicitWidth { NumberAnimation { duration: 120 } }
-        Behavior on implicitHeight { NumberAnimation { duration: 120 } }
+    // The control sizes contentItem to the whole handle area; the pill is
+    // drawn inside it, against the side away from the edge inset.
+    contentItem: Item {
+        implicitWidth: 4
+        implicitHeight: 4
+        Rectangle {
+            readonly property real thickness: bar.hovered || bar.pressed ? 7 : 4
+            readonly property bool vertical: bar.orientation === Qt.Vertical
+            width: vertical ? thickness : parent.width
+            height: vertical ? parent.height : thickness
+            x: vertical ? parent.width - width - bar.edgeInset : 0
+            y: vertical ? 0 : parent.height - height
+            radius: thickness / 2
+            color: bar.palette.text
+            opacity: bar.pressed ? 0.6 : 0.4
+            Behavior on width { enabled: bar.orientation === Qt.Vertical; NumberAnimation { duration: 120 } }
+            Behavior on height { enabled: bar.orientation === Qt.Horizontal; NumberAnimation { duration: 120 } }
+        }
     }
     opacity: hovered || pressed || scrolling ? 1 : 0
     // Quick to appear, slow to fade away.
