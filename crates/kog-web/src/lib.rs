@@ -7854,7 +7854,11 @@ fn App() -> impl IntoView {
                                                                         // The length closes the line, freeing its
                                                                         // column for the title.
                                                                         let length = meta.as_ref().and_then(|row| row.duration).map(clock).unwrap_or_default();
-                                                                        [artist, album, length]
+                                                                        // The album, not the artist: the player's
+                                                                        // song details carry the artist. A song
+                                                                        // with no album still names its artist.
+                                                                        let source = if album.is_empty() { artist } else { album };
+                                                                        [source, length]
                                                                             .into_iter()
                                                                             .filter(|part| !part.is_empty())
                                                                             .collect::<Vec<_>>()
