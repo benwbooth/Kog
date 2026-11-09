@@ -13,10 +13,12 @@ const UNTIMED_LENGTH: Duration = Duration::from_secs(150);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LoopPolicy {
-    /// Play to the loop point once, fading as the song starts over.
+    /// Play to the loop point once, fading as the song starts over. The
+    /// default: a game's loop points are often rough, and a second pass
+    /// through them is where that shows.
+    #[default]
     Once,
     /// Play the loop twice, then fade.
-    #[default]
     Twice,
     /// Keep looping for about this many minutes, then fade.
     Minutes(u32),
@@ -62,7 +64,7 @@ impl LoopPolicy {
 
     /// The next choice, for settings that cycle.
     pub fn next(self) -> Self {
-        let at = CHOICES.iter().position(|choice| *choice == self).unwrap_or(1);
+        let at = CHOICES.iter().position(|choice| *choice == self).unwrap_or(0);
         CHOICES[(at + 1) % CHOICES.len()]
     }
 
@@ -118,14 +120,14 @@ impl LoopPolicy {
 
     fn decode(value: u32) -> Self {
         match value {
-            1 => Self::Once,
+            2 => Self::Twice,
             1001..=1060 => Self::Minutes(value - 1000),
-            _ => Self::Twice,
+            _ => Self::Once,
         }
     }
 }
 
-static CURRENT: AtomicU32 = AtomicU32::new(2);
+static CURRENT: AtomicU32 = AtomicU32::new(1);
 
 /// The policy decoders follow in this process.
 pub fn current() -> LoopPolicy {

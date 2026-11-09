@@ -9,21 +9,35 @@ use rodio::{ChannelCount, Player, SampleRate, Source};
 use crate::decoder::{DecoderBackend, DecoderCapabilities, PlaybackSource, StreamProperties};
 use crate::vgmstream::Vgmstream;
 
-const VGMSTREAM_LOOP_COUNT: f64 = 2.0;
-const VGMSTREAM_FADE: Duration = Duration::from_secs(8);
 const VGMSTREAM_RENDER_FRAMES: usize = 2_048;
+
+/// Formats whose loop points are too unreliable to loop on: they play
+/// straight through once, ignoring the loop policy. Konami's Saturn DVI
+/// streams mark loops that often land mid-phrase or back in the intro.
+const PLAY_THROUGH_ONCE: [&str; 1] = ["dvi"];
 
 pub struct VgmstreamBackend;
 
 impl VgmstreamBackend {
     fn open(source: &PlaybackSource) -> Result<Vgmstream, String> {
-        Vgmstream::open(
-            &source.path,
-            source.subsong,
-            VGMSTREAM_LOOP_COUNT,
-            VGMSTREAM_FADE,
-        )
+        let (loops, fade) = loop_settings(&source.path);
+        Vgmstream::open(&source.path, source.subsong, loops, fade)
     }
+}
+
+/// How many times to play a stream's loop, and its fade: the loop policy,
+/// or exactly once with no fade for formats that play straight through.
+fn loop_settings(path: &Path) -> (f64, Duration) {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if PLAY_THROUGH_ONCE.contains(&extension.as_str()) {
+        return (1.0, Duration::ZERO);
+    }
+    let policy = crate::looping::current();
+    (f64::from(policy.fixed_loops()), policy.fade())
 }
 
 impl DecoderBackend for VgmstreamBackend {
@@ -59,7 +73,8 @@ impl DecoderBackend for VgmstreamBackend {
     }
 
     fn subsong_count(&self, path: &Path) -> Result<Option<u32>, String> {
-        let decoder = Vgmstream::open(path, None, VGMSTREAM_LOOP_COUNT, VGMSTREAM_FADE)?;
+        let (loops, fade) = loop_settings(path);
+        let decoder = Vgmstream::open(path, None, loops, fade)?;
         Ok(Some(decoder.subsong_count()))
     }
 
