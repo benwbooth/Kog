@@ -1,5 +1,6 @@
 //! One cancellable cover lookup for the current track. The resulting blob is
-//! shared by both images and Media Session, without more server requests.
+//! shared by both images and Media Session, without more server requests,
+//! and cached for the page's lifetime by song and by album.
 
 use super::*;
 
@@ -9,7 +10,6 @@ const PLACEHOLDER: &str = "/icons/cover-placeholder.svg";
 struct Loading {
     generation: u64,
     controller: Option<web_sys::AbortController>,
-    object_url: Option<String>,
 }
 
 impl Drop for Loading {
@@ -17,26 +17,69 @@ impl Drop for Loading {
         if let Some(controller) = &self.controller {
             controller.abort();
         }
-        if let Some(url) = &self.object_url {
-            let _ = web_sys::Url::revoke_object_url(url);
-        }
     }
 }
 
-pub fn source(request_url: Memo<Option<String>>) -> Memo<String> {
+/// Covers already fetched, by request URL and by album, kept as object URLs
+/// for the page's lifetime (bounded): the next song of an album shows its
+/// cover at once instead of asking the server again.
+#[derive(Default)]
+struct Covers {
+    by_url: HashMap<String, String>,
+    by_album: HashMap<String, String>,
+    order: Vec<String>,
+}
+
+const CACHED_COVERS: usize = 64;
+
+impl Covers {
+    fn insert(&mut self, url: &str, album: &str, object_url: &str) {
+        if !self.by_url.contains_key(url) {
+            self.order.push(object_url.to_owned());
+        }
+        self.by_url.insert(url.to_owned(), object_url.to_owned());
+        if !album.is_empty() {
+            self.by_album.insert(album.to_owned(), object_url.to_owned());
+        }
+        while self.order.len() > CACHED_COVERS {
+            let old = self.order.remove(0);
+            self.by_url.retain(|_, cached| cached != &old);
+            self.by_album.retain(|_, cached| cached != &old);
+            let _ = web_sys::Url::revoke_object_url(&old);
+        }
+    }
+
+    fn lookup(&self, url: &str, album: &str) -> Option<String> {
+        self.by_url
+            .get(url)
+            .or_else(|| (!album.is_empty()).then(|| self.by_album.get(album)).flatten())
+            .cloned()
+    }
+}
+
+/// `request_url` is the cover request for the current song, with a key for
+/// its album (artist and album title; empty when unknown).
+pub fn source(request_url: Memo<Option<(String, String)>>) -> Memo<String> {
     let loading = StoredValue::new_local(Loading::default());
+    let covers = StoredValue::new_local(Covers::default());
     let resolved = RwSignal::new(None::<(String, String)>);
     Effect::new(move |_| {
-        let url = request_url.get();
+        let request = request_url.get();
         loading.update_value(|state| {
-            *state = Loading {
-                generation: state.generation.wrapping_add(1),
-                controller: web_sys::AbortController::new().ok(),
-                object_url: None,
-            };
+            if let Some(controller) = &state.controller {
+                controller.abort();
+            }
+            state.generation = state.generation.wrapping_add(1);
+            state.controller = web_sys::AbortController::new().ok();
         });
-        resolved.set(None);
-        let Some(url) = url else { return };
+        let Some((url, album)) = request else {
+            resolved.set(None);
+            return;
+        };
+        if let Some(object_url) = covers.with_value(|covers| covers.lookup(&url, &album)) {
+            resolved.set(Some((url, object_url)));
+            return;
+        }
         let (generation, signal) = loading.with_value(|state| {
             (
                 state.generation,
@@ -67,6 +110,9 @@ pub fn source(request_url: Memo<Option<String>>) -> Memo<String> {
                     continue;
                 }
                 if response.status() != 200 {
+                    // No cover for this song: the placeholder, not the last
+                    // song's cover.
+                    resolved.set(Some((url, PLACEHOLDER.to_owned())));
                     return;
                 }
                 let mime = response
@@ -91,20 +137,20 @@ pub fn source(request_url: Memo<Option<String>>) -> Memo<String> {
                 let Ok(object_url) = web_sys::Url::create_object_url_with_blob(&blob) else {
                     return;
                 };
-                loading.update_value(|state| state.object_url = Some(object_url.clone()));
+                covers.update_value(|covers| covers.insert(&url, &album, &object_url));
                 resolved.set(Some((url, object_url)));
                 return;
             }
         });
     });
-    Memo::new(move |_| {
-        let url = request_url.get();
-        resolved.with(|resolved| {
-            resolved
-                .as_ref()
-                .filter(|(request, _)| url.as_ref() == Some(request))
-                .map(|(_, object_url)| object_url.clone())
-                .unwrap_or_else(|| PLACEHOLDER.to_owned())
+    // While the next cover loads, the last one stays up rather than flashing
+    // the placeholder; a new album's cover replaces it as soon as it arrives.
+    Memo::new(move |previous: Option<&String>| {
+        let current = request_url.get();
+        resolved.with(|resolved| match (resolved, &current) {
+            (Some((request, object_url)), Some((url, _))) if request == url => object_url.clone(),
+            (_, None) => PLACEHOLDER.to_owned(),
+            _ => previous.cloned().unwrap_or_else(|| PLACEHOLDER.to_owned()),
         })
     })
 }

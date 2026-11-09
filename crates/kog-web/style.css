@@ -5410,3 +5410,9 @@ button.primary:hover:not(:disabled) {
     justify-self: center;
   }
 }
+
+/* iOS sets the volume with its buttons only: no slider that does nothing. */
+.volume-row.volume-fixed .mute,
+.volume-row.volume-fixed .volume-wrap {
+  display: none;
+}

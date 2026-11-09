@@ -2582,6 +2582,14 @@ fn App() -> impl IntoView {
     let (sort_key, set_sort_key) = signal(SortKey::Index);
     let (sort_asc, set_sort_asc) = signal(true);
     let (volume, set_volume) = signal(restored.volume.unwrap_or(0.9).clamp(0.0, 1.0));
+    // iPhone and iPad Safari ignore a page's audio volume (it is always the
+    // hardware buttons'), so a volume slider there would do nothing.
+    let volume_fixed = web_sys::HtmlAudioElement::new()
+        .map(|probe| {
+            probe.set_volume(0.5);
+            probe.volume() > 0.9
+        })
+        .unwrap_or(false);
     let (volume_before_mute, set_volume_before_mute) = signal(0.9_f64);
     let (position, set_position) = signal(0.0_f64);
     // The media element's own duration, reset per track. ADTS and FLAC report
@@ -4974,14 +4982,25 @@ fn App() -> impl IntoView {
         queue.with(|q| q.get(current.get()).cloned())
             .filter(|entry| !entry.is_dir())
             .map(|entry| {
-                format!(
+                let url = format!(
                     "{}/api/art?kind={}&path={}&token={}&background=true&revision={}",
                     base(),
                     url_encode(&entry.kind),
                     url_encode(&entry.path),
                     url_encode(&token.get()),
                     art_revision.get(),
-                )
+                );
+                // Songs of one album in one folder share a cover: the next
+                // one shows it at once instead of asking the server again.
+                let album = meta_for(&metadata.read(), &entry)
+                    .and_then(|row| row.album)
+                    .filter(|album| !album.trim().is_empty())
+                    .map(|album| {
+                        let folder = entry.path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or_default();
+                        format!("{}|{folder}|{album}", art_revision.get())
+                    })
+                    .unwrap_or_default();
+                (url, album)
             })
     });
     let reject_cover = {
@@ -8193,7 +8212,7 @@ fn App() -> impl IntoView {
                                 if seconds > 0.0 { format!("{songs} · {}", clock(seconds)) } else { songs }
                             }}
                         </div>
-                        <div class="volume-row">
+                        <div class="volume-row" class:volume-fixed=volume_fixed>
                             <button
                                 class="flat clear-list"
                                 title=if touch_mode { "Clear queue" } else { "Clear Play Queue" }
