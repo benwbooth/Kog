@@ -7,10 +7,13 @@
 # afterwards. A failed build leaves the app you already have running alone, so
 # you are never left without a window.
 #
-# Run inside the dev shell (`nix develop`, then `scripts/dev.sh`).
+# The default (no options) hands off to devloop (~/src/home-services/devloop):
+# the same optimized, incremental build the Kog launcher runs, restarted on
+# every change, with QML edits picked up by a restart alone. Its log:
+# `devloop logs kog`. The other modes run here, inside 'nix develop'.
 #
 # Usage:
-#   scripts/dev.sh                     # debug build, run, restart on change
+#   scripts/dev.sh                     # build, run, restart on change (devloop)
 #   scripts/dev.sh --release           # release build
 #   scripts/dev.sh --check             # cargo check only (no link, no app)
 #   scripts/dev.sh --test              # rerun the workspace tests on change
@@ -18,10 +21,7 @@
 #   scripts/dev.sh --step              # one build-and-restart pass
 #   scripts/dev.sh -- <app args...>    # pass arguments through to the app
 #
-# The app's own output goes to target/dev-app.log.
-#
-# Debug builds go through scripts/shared-build.sh, which is what lets `nix
-# build` and the system package reuse them. target/debug links to that build.
+# Outside devloop, the app's own output goes to target/dev-app.log.
 
 set -uo pipefail
 
@@ -47,6 +47,13 @@ while (( $# )); do
   esac
   shift
 done
+
+# The everyday loop (build, run, restart on change) is devloop's: the same
+# build the Kog launcher runs (~/src/home-services/devloop). --check, --test
+# and --release keep their own loops below.
+if [[ $mode == run && $profile == debug && $step == 0 ]]; then
+  exec "$HOME/src/home-services/devloop/devloop" dev kog "${app_args[@]}"
+fi
 
 if [[ -z "${KOG_CARGO_VENDOR:-}" ]]; then
   echo "this dev shell is out of date: leave it and start 'nix develop' again." >&2
@@ -88,14 +95,6 @@ web_assets_stale() {
 }
 
 cargo_command=(cargo)
-if [[ "$profile" == "debug" ]]; then
-  cargo_command=(scripts/shared-build.sh "$root")
-  if [[ ! -L target/debug ]]; then
-    mkdir -p target /var/tmp/cargo-nix/kog/target/debug
-    rm -rf target/debug
-    ln -s /var/tmp/cargo-nix/kog/target/debug target/debug
-  fi
-fi
 
 # True when watchexec reports only .qml edits and this is a debug run.
 qml_only_change() {

@@ -143,13 +143,10 @@
                 pkgs.pkg-config
                 pkgs.clang
                 pkgs.mold
-                pkgs.rsync
                 pkgs.qt6.wrapQtAppsHook
               ];
               buildInputs = kogLibraries;
               inherit KOG_CARGO_VENDOR KOG_PKG_CONFIG_PATH LIBCLANG_PATH;
-              # By path: util-linux as an input would change what build scripts see.
-              KOG_FLOCK = "${pkgs.util-linux}/bin/flock";
               QMAKE = "${qtEnv}/bin/qmake";
               # Cargo invokes CMake/Ninja for decoder libraries; they must not
               # replace Cargo's top-level configure/build/install phases.
@@ -173,15 +170,20 @@
                 mkdir -p crates/kog-server/web
                 cp -r ${kogWeb}/. crates/kog-server/web/
                 chmod -R u+w crates/kog-server/web
-                # A build script rerun by a different user can't reuse the
-                # other's output directory, so build privately if this fails.
-                export KOG_WORK_DIR=/var/tmp/cargo-nix/kog
-                if ! { [ -w /var/tmp/cargo-nix ] && bash scripts/shared-build.sh . build --workspace --bins; }; then
-                  export KOG_WORK_DIR=$TMPDIR/cargo-nix
-                  bash scripts/shared-build.sh . build --workspace --bins
-                fi
+                # Vendored crates, mold, and the same compilers and pkg-config
+                # path as the dev shell.
+                export CARGO_HOME="$TMPDIR/cargo-home"
+                mkdir -p "$CARGO_HOME"
+                cp "$KOG_CARGO_VENDOR/config.toml" "$CARGO_HOME/config.toml"
+                export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+                export PKG_CONFIG_PATH="$(<"$KOG_PKG_CONFIG_PATH")"
+                export PKG_CONFIG_PATH_x86_64_unknown_linux_gnu="$PKG_CONFIG_PATH"
+                export CC=gcc CXX=g++ AR=ar
+                unset CFLAGS CXXFLAGS LDFLAGS ARFLAGS PKG_CONFIG_LIBDIR KOG_QML_DIR
+                # The dev profile is release-grade (see Cargo.toml).
+                cargo build --workspace --bins --offline --locked
                 mkdir -p bin
-                cp "$KOG_WORK_DIR"/target/debug/{kog,kog-tui,kog-server} bin/
+                cp target/debug/{kog,kog-tui,kog-server} bin/
                 runHook postBuild
               '';
               installPhase = ''

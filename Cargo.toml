@@ -58,26 +58,20 @@ cmake = "0.1.58"
 cxx-qt-build = { version = "0.10.0", features = ["link_qt_object_files"] }
 pkg-config = "0.3.32"
 
-# Development builds optimise the audio engine and every dependency: the
-# emulators (reSIDfp, mGBA, Nuked cores …) and the resampler run inside the
-# audio callback, and unoptimised they cannot keep up with real time, so
-# heavier songs underrun and play nothing. The UI crates stay quick to build.
-# Nobody debugs Kog with a debugger: without debug info the binary is a
-# fraction of the size and links in seconds instead of minutes.
-# This profile also builds the system package, which reuses the dev build, so
-# Kog's own crates get a light pass and nothing keeps symbols.
-[profile.dev]
-debug = 0
-strip = true
-opt-level = 1
-
-[profile.dev.package."*"]
-opt-level = 2
-
-[profile.dev.package.kog-audio]
-opt-level = 2
-
 [dev-dependencies]
 # The UI crate's tests reuse engine test fixtures; the feature is only
 # active for test builds, never in release artifacts.
 kog-audio = { path = "crates/kog-audio", features = ["test-util"] }
+
+# One build for everything: devloop (the app you run), cargo run, cargo test
+# and the editor all use this profile, so they share target/debug. It's
+# release-grade (optimized, no debug info) and stays incremental, so a small
+# change rebuilds in seconds. (Kog's emulators and resampler run in the audio
+# callback and can't keep up unoptimized.) `cargo build --release` is only for
+# packaging.
+[profile.dev]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = true

@@ -2582,12 +2582,26 @@ fn App() -> impl IntoView {
     let (sort_key, set_sort_key) = signal(SortKey::Index);
     let (sort_asc, set_sort_asc) = signal(true);
     let (volume, set_volume) = signal(restored.volume.unwrap_or(0.9).clamp(0.0, 1.0));
-    // iPhone and iPad Safari ignore a page's audio volume (it is always the
-    // hardware buttons'), so a volume slider there would do nothing.
-    let volume_fixed = web_sys::HtmlAudioElement::new()
-        .map(|probe| {
-            probe.set_volume(0.5);
-            probe.volume() > 0.9
+    // iPhone and iPad browsers ignore a page's audio volume (it is always
+    // the hardware buttons'), so a volume slider there would do nothing.
+    // Recent iOS reports back whatever volume was set, so ask what the
+    // device is: an iPad asking for a desktop page says "Macintosh" but has
+    // a touch screen.
+    let volume_fixed = web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"navigator".into()).ok())
+        .map(|navigator| {
+            let agent = js_sys::Reflect::get(&navigator, &"userAgent".into())
+                .ok()
+                .and_then(|agent| agent.as_string())
+                .unwrap_or_default();
+            let touch_points = js_sys::Reflect::get(&navigator, &"maxTouchPoints".into())
+                .ok()
+                .and_then(|points| points.as_f64())
+                .unwrap_or(0.0);
+            agent.contains("iPhone")
+                || agent.contains("iPad")
+                || agent.contains("iPod")
+                || (agent.contains("Macintosh") && touch_points > 1.0)
         })
         .unwrap_or(false);
     let (volume_before_mute, set_volume_before_mute) = signal(0.9_f64);

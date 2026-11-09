@@ -38,11 +38,10 @@ links a very large Qt binary. After that:
   libraries.
 - `--check` compiles no binary at all, so it is the quickest way to chase a type
   error.
-- `scripts/dev.sh` builds in `/var/tmp/cargo-nix/kog`, and `target/debug` links
-  there. `nix build` and the system package use the same directory, so they
-  reuse the dev build, but `nix build` itself is slow to iterate with: it copies
-  `native/` into the store first. Running `cargo` by hand in the checkout builds
-  separately into `target/`; use `scripts/shared-build.sh . <command>` instead.
+- `scripts/dev.sh` hands off to devloop (`~/src/home-services/devloop`), which
+  builds in `target/` and is also what the Kog launcher runs. `cargo` by hand,
+  `cargo test` and the editor share that same `target/debug`: the dev profile
+  is release-grade (optimized, no debug info, incremental).
 
 For an existing checkout, initialize the native sources first:
 
