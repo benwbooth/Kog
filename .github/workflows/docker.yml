@@ -1,0 +1,110 @@
+name: Server Docker image
+
+# Builds Kog's headless server into a Docker image and publishes it to
+# ghcr.io/benwbooth/kog-server. Run by hand only: either from source at a ref,
+# or (much quicker) from an existing release's server bundle.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Use this release's server bundle instead of building (for example v0.11.3)
+        type: string
+        default: ""
+      source_ref:
+        description: Source to build when no release is given (branch, tag or commit)
+        type: string
+        default: main
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ inputs.release_tag || inputs.source_ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE: ghcr.io/benwbooth/kog-server
+
+jobs:
+  image:
+    name: Build and publish kog-server image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag || inputs.source_ref }}
+          submodules: ${{ inputs.release_tag == '' && 'recursive' || 'false' }}
+
+      - name: Download the release's server bundle
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist/cli
+          gh release download "${{ inputs.release_tag }}" --repo "${{ github.repository }}" \
+            --pattern 'Kog-*-linux-x86_64-server.tar.gz' --dir dist/cli
+
+      - name: Install build dependencies
+        if: inputs.release_tag == ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake curl file libarchive-dev libasound2-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswresample-dev \
+            ninja-build patchelf pkg-config zlib1g-dev mold
+
+      - name: Install Rust
+        if: inputs.release_tag == ''
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        if: inputs.release_tag == ''
+        with:
+          shared-key: kog-linux
+          save-if: ${{ true }}
+
+      - name: Build web frontend
+        if: inputs.release_tag == ''
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.121 --locked
+          crates/kog-web/build.sh
+
+      - name: Build server bundle
+        if: inputs.release_tag == ''
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: |
+          cargo build --release --locked -p kog-terminal --bins
+          packaging/cli/package.sh linux x86_64
+
+      - name: Unpack the bundle into the build context
+        id: bundle
+        run: |
+          archive="$(ls dist/cli/Kog-*-linux-x86_64-server.tar.gz | head -n1)"
+          tar -C dist/cli -xzf "$archive"
+          mv dist/cli/Kog-*-linux-x86_64-server server
+          version="$(basename "$archive" | sed -E 's/^Kog-([^-]+)-.*/\1/')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.bundle.outputs.version }}
+            ${{ env.IMAGE }}:${{ steps.bundle.outputs.version }}-${{ steps.bundle.outputs.sha }}
