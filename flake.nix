@@ -199,6 +199,31 @@
             # release jobs build it, then the package build embeds it.
             kog-web = kogWeb;
             inherit compiled;
+            # The headless server alone, so its closure leaves Qt out.
+            kog-server = pkgs.runCommand "kog-server-${compiled.version}" { } ''
+              install -Dm755 ${compiled}/bin/kog-server $out/bin/kog-server
+            '';
+            # The server as a Docker image for a home server:
+            #   nix build .#docker && docker load < result
+            # Settings, library database and covers live in /config, /data
+            # and /cache (the XDG folders); mount them to keep them.
+            docker = pkgs.dockerTools.buildLayeredImage {
+              name = "kog-server";
+              tag = "latest";
+              contents = [ pkgs.cacert pkgs.dockerTools.fakeNss ];
+              extraCommands = "mkdir -p tmp config data cache && chmod 1777 tmp config data cache";
+              config = {
+                Entrypoint = [ "${inputs.self.packages.${system}.kog-server}/bin/kog-server" ];
+                ExposedPorts = { "8420/tcp" = { }; };
+                Env = [
+                  "XDG_CONFIG_HOME=/config"
+                  "XDG_DATA_HOME=/data"
+                  "XDG_CACHE_HOME=/cache"
+                  "HOME=/data"
+                  "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                ];
+              };
+            };
             # The revision lives here rather than in the compiled package, so
             # a commit that doesn't change the source reuses the compile.
             default = pkgs.symlinkJoin {
