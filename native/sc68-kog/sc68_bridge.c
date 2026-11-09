@@ -63,6 +63,9 @@ typedef struct KogSc68 {
     char title[256], artist[256], album[256], hardware[64];
     short *pcm;
     int pcm_frames;
+    /* sc68 has stopped the track. Its music is unloaded then, and another
+       sc68_process call would read through the freed track and crash. */
+    int ended;
     char error[256];
 } KogSc68;
 
@@ -137,6 +140,7 @@ long kog_sc68_render(KogSc68 *song, float *output, int frames) {
         song->pcm = grown;
         song->pcm_frames = frames;
     }
+    if (song->ended) return 0;
     int n = 0;
     /* A pass can produce nothing (the track just started or changed). */
     for (int pass = 0; pass < 64 && n == 0; ++pass) {
@@ -146,7 +150,11 @@ long kog_sc68_render(KogSc68 *song, float *output, int frames) {
             snprintf(song->error, sizeof(song->error), "%s", sc68_error(song->sc68) ? sc68_error(song->sc68) : "sc68 failed");
             return -1;
         }
-        if (n == 0 && (code & SC68_END)) return 0;
+        if (code & SC68_END) {
+            /* The last of the track's sound, if any, is still returned. */
+            song->ended = 1;
+            break;
+        }
     }
     for (int i = 0; i < n * 2; ++i) output[i] = song->pcm[i] / 32768.0f;
     return n;
