@@ -39,6 +39,10 @@ const REQUESTED_CHECK: Duration = Duration::from_secs(2);
 /// A pause between two lookups, so this worker never crowds out covers that
 /// a listener is waiting for.
 const LOOKUP_PAUSE: Duration = Duration::from_millis(100);
+/// How many lookups the worker starts ahead of the one it waits for: most of
+/// a lookup is reading the song (some formats are played through to learn
+/// their tags) or waiting on a cover site, which a few can do at once.
+const LOOKUP_AHEAD: usize = 3;
 /// While filling in every song, the worker checks this often (in songs)
 /// whether the playlists changed, to redo the changed tiles first.
 const FILL_CHANGE_CHECK: usize = 16;
@@ -487,6 +491,26 @@ impl Worker {
         }
     }
 
+    /// Start looking up `song`'s cover without waiting for it; [`Self::cover`]
+    /// then joins the running lookup.
+    fn prefetch(&self, song: &str, allow_download: bool) {
+        let library = self.library.clone();
+        let covers = self.covers.clone();
+        let streams = self.streams.clone();
+        let path = song.to_owned();
+        tokio::spawn(async move {
+            let file = tokio::task::spawn_blocking(move || {
+                library.resolve(Some(&path)).ok().filter(|file| file.is_file())
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(file) = file {
+                drop(covers.lookup(file, streams, allow_download));
+            }
+        });
+    }
+
     /// The covers of up to [`COVERS_PER_PLAYLIST`] of `songs`, each a
     /// different image, found one lookup at a time. Reports progress
     /// through `found`.
@@ -498,10 +522,16 @@ impl Worker {
         mut found: impl FnMut(&[(String, u64)]),
     ) -> Vec<(String, u64)> {
         let mut chosen = Vec::<(String, u64)>::new();
-        for song in songs {
+        let mut started = 0;
+        for (index, song) in songs.iter().enumerate() {
             if chosen.len() >= COVERS_PER_PLAYLIST {
                 break;
             }
+            for ahead in songs.iter().take(index + 1 + LOOKUP_AHEAD).skip(started.max(index + 1)) {
+                self.prefetch(ahead, allow_download);
+            }
+            started = started.max(index + 1 + LOOKUP_AHEAD);
+            let song = song.clone();
             let Some(bytes) = self.cover(service, &song, allow_download).await else { continue };
             let print = image_print(&bytes);
             if !chosen.iter().any(|(_, seen)| *seen == print) {
@@ -567,10 +597,17 @@ async fn run(
                         .collect();
                     fill.sort_by_key(|(_, _, _, short)| !short);
                     'fill: for (id, songs, key, mut short) in fill {
-                        for song in songs {
+                        let mut started = 0;
+                        for (index, song) in songs.iter().enumerate() {
                             if !short && !service.needs_lookup(song, allow_download) {
                                 continue;
                             }
+                            for ahead in songs.iter().take(index + 1 + LOOKUP_AHEAD).skip(started.max(index + 1)) {
+                                if short || service.needs_lookup(ahead, allow_download) {
+                                    worker.prefetch(ahead, allow_download);
+                                }
+                            }
+                            started = started.max(index + 1 + LOOKUP_AHEAD);
                             checked += 1;
                             if checked % FILL_CHANGE_CHECK == 0 && worker.stamp().await != stamp {
                                 interrupted = true;
