@@ -2348,13 +2348,13 @@ fn App() -> impl IntoView {
     let (password, set_password) = signal(String::new());
     let (use_basic, set_use_basic) = signal(false);
     let (theme, set_theme) = signal(load("kog.theme").unwrap_or_else(|| "system".to_owned()));
-    // Phones' playlist list tiles: "cover" (one album cover from the
-    // playlist's songs), "grid" (four different ones), or "symbol" (the
-    // plain playlist mark). Per device, like the colours.
+    // Phones' playlist list tiles: "grid" (four different album covers
+    // from the playlist's songs, the default), "cover" (one), or "symbol"
+    // (the plain playlist mark). Per device, like the colours.
     let (playlist_icons, set_playlist_icons) = signal(
         load("kog.playlist-icons")
             .filter(|mode| matches!(mode.as_str(), "cover" | "grid" | "symbol"))
-            .unwrap_or_else(|| "cover".to_owned()),
+            .unwrap_or_else(|| "grid".to_owned()),
     );
     let (codec, set_codec) = signal(load("kog.codec").unwrap_or_else(|| "aac".to_owned()));
     let (connected, set_connected) = signal(false);
@@ -2590,6 +2590,12 @@ fn App() -> impl IntoView {
     // Browsing down on a phone leaves a small now-playing strip; scrolling
     // back up or tapping its expand button restores seeking and volume.
     let (transport_compact, set_transport_compact) = signal(true);
+    // Swiping the full-screen player down: how far it has been pulled (px),
+    // and the gesture in progress (start y, start time, whether it is a
+    // downward drag yet). Let go far or fast enough and it closes.
+    let sheet_drag = RwSignal::new(0.0_f64);
+    let sheet_dragging = RwSignal::new(false);
+    let sheet_touch = StoredValue::new(None::<(f64, f64, f64, bool)>);
     // Touch mode: coarse-pointer devices (phones, tablets) get single-tap
     // activation — taps play and enqueue, so nothing requires a double
     // click, a hold, or a drag. Holds still open the context menus.
@@ -2615,6 +2621,17 @@ fn App() -> impl IntoView {
             .flatten()
         {
             let _ = body.class_list().add_1("touch");
+        }
+        // No pinch-to-zoom: iOS Safari ignores the viewport's
+        // user-scalable=no, but cancelling its gesture events stops it.
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            let cancel = Closure::<dyn FnMut(web_sys::Event)>::new(|event: web_sys::Event| {
+                event.prevent_default();
+            });
+            for name in ["gesturestart", "gesturechange"] {
+                let _ = document.add_event_listener_with_callback(name, cancel.as_ref().unchecked_ref());
+            }
+            cancel.forget();
         }
     }
     // One-line outcomes for actions the pane itself shows nothing about,
@@ -8121,7 +8138,86 @@ fn App() -> impl IntoView {
                         } else {
                             0.0
                         };
-                        format!("--progress: {fill:.2}%")
+                        format!("--progress: {fill:.2}%; --sheet-drag: {:.1}px", sheet_drag.get())
+                    }
+                    class:sheet-dragging=move || sheet_dragging.get()
+                    on:touchstart=move |ev: web_sys::TouchEvent| {
+                        sheet_touch.set_value(None);
+                        if !touch_mode || transport_compact.get_untracked() || ev.touches().length() != 1 {
+                            return;
+                        }
+                        // Sliders and the seek bar keep their own drags, and a
+                        // player scrolled down scrolls back up first.
+                        let target = ev.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok());
+                        let on_control = target
+                            .as_ref()
+                            .and_then(|element| element.closest("input, select, canvas, .seek-row, .waveform").ok().flatten())
+                            .is_some();
+                        let scrolled = ev
+                            .current_target()
+                            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                            .is_some_and(|element| element.scroll_top() > 0);
+                        if on_control || scrolled {
+                            return;
+                        }
+                        let Some(touch) = ev.touches().get(0) else { return };
+                        sheet_touch.set_value(Some((
+                            touch.client_x() as f64,
+                            touch.client_y() as f64,
+                            js_sys::Date::now(),
+                            false,
+                        )));
+                    }
+                    on:touchmove=move |ev: web_sys::TouchEvent| {
+                        let Some((x0, y0, t0, dragging)) = sheet_touch.get_value() else { return };
+                        let Some(touch) = ev.touches().get(0) else { return };
+                        let dx = touch.client_x() as f64 - x0;
+                        let dy = touch.client_y() as f64 - y0;
+                        if !dragging {
+                            if dy.abs() < 8.0 && dx.abs() < 8.0 {
+                                return;
+                            }
+                            // Sideways or upward: not a dismiss.
+                            if dy <= 0.0 || dx.abs() > dy {
+                                sheet_touch.set_value(None);
+                                return;
+                            }
+                            sheet_touch.set_value(Some((x0, y0, t0, true)));
+                            sheet_dragging.set(true);
+                        }
+                        ev.prevent_default();
+                        sheet_drag.set(dy.max(0.0));
+                    }
+                    on:touchend=move |_| {
+                        let Some((_, _, t0, dragging)) = sheet_touch.get_value() else { return };
+                        sheet_touch.set_value(None);
+                        if !dragging {
+                            return;
+                        }
+                        sheet_dragging.set(false);
+                        let pulled = sheet_drag.get_untracked();
+                        let speed = pulled / (js_sys::Date::now() - t0).max(1.0);
+                        if pulled > 140.0 || (pulled > 40.0 && speed > 0.6) {
+                            // Slide the rest of the way down, then become the
+                            // mini player.
+                            let height = web_sys::window()
+                                .and_then(|window| window.inner_height().ok())
+                                .and_then(|height| height.as_f64())
+                                .unwrap_or(900.0);
+                            sheet_drag.set(height);
+                            leptos::task::spawn_local(async move {
+                                let _ = sleep_ms(200).await;
+                                set_transport_compact.set(true);
+                                sheet_drag.set(0.0);
+                            });
+                        } else {
+                            sheet_drag.set(0.0);
+                        }
+                    }
+                    on:touchcancel=move |_| {
+                        sheet_touch.set_value(None);
+                        sheet_dragging.set(false);
+                        sheet_drag.set(0.0);
                     }
                 >
                     // The full-screen player's header on phones: close, where
@@ -8594,8 +8690,8 @@ fn App() -> impl IntoView {
                                     set_playlist_icons.set(value);
                                 }
                             >
-                                <option value="cover">"One album cover"</option>
                                 <option value="grid">"Four album covers"</option>
+                                <option value="cover">"One album cover"</option>
                                 <option value="symbol">"Playlist symbol"</option>
                             </select>
                         </label>
