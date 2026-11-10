@@ -3663,8 +3663,6 @@ fn App() -> impl IntoView {
             let token = token.get_untracked();
             leptos::task::spawn_local(async move {
                 let mut delay = artwork::TILE_POLL_MS;
-                // Tiles whose images didn't all load, retried a few polls.
-                let mut retries = HashMap::<i64, u32>::new();
                 loop {
                     if mobile_view.get_untracked() != MobileView::Playlists
                         || playlist_icons.get_untracked() != mode
@@ -3679,36 +3677,33 @@ fn App() -> impl IntoView {
                     };
                     let items = value["playlists"].as_array().cloned().unwrap_or_default();
                     let mut pending = false;
+                    let mut changed = Vec::new();
                     for item in &items {
                         pending |= item["pending"].as_bool().unwrap_or(false);
                         let id = item["id"].as_i64().unwrap_or_default();
-                        let paths: Vec<String> = item["covers"]
+                        // The server keeps each tile's images, different ones,
+                        // under names that never change: the browser loads
+                        // them all at once and keeps them.
+                        let covers: Vec<String> = item["covers"]
                             .as_array()
                             .map(|covers| {
                                 covers
                                     .iter()
-                                    .filter_map(|cover| cover["path"].as_str().map(str::to_owned))
+                                    .filter_map(|cover| cover["image"].as_str())
+                                    .take(want)
+                                    .map(|image| artwork::playlist_cover_url(&server, &token, image))
                                     .collect()
                             })
                             .unwrap_or_default();
-                        let key = format!("{mode}|{server}|{}", paths.join("\n"));
-                        if playlist_tiles.with_untracked(|tiles| tiles.get(&id).map(|(loaded, _)| loaded) == Some(&key)) {
-                            continue;
+                        if playlist_tiles.with_untracked(|tiles| tiles.get(&id).map(|(_, shown)| shown) != Some(&covers)) {
+                            changed.push((id, covers));
                         }
-                        let expected = paths.len().min(want);
-                        let covers = artwork::playlist_covers(server.clone(), token.clone(), paths, want).await;
-                        // A tile short of what the server named is shown as
-                        // it is but not remembered as loaded, so the next
-                        // poll tries its missing images again.
-                        let short = covers.len() < expected && {
-                            let tries = retries.entry(id).or_default();
-                            *tries += 1;
-                            *tries <= 3
-                        };
-                        pending |= short;
-                        let key = if short { String::new() } else { key };
+                    }
+                    if !changed.is_empty() {
                         playlist_tiles.update(|tiles| {
-                            tiles.insert(id, (key, covers));
+                            for (id, covers) in changed {
+                                tiles.insert(id, (String::new(), covers));
+                            }
                         });
                     }
                     // A playlist the server hasn't seen yet is still to come.

@@ -6,16 +6,21 @@
 //! different folders until four different covers are found. Then every
 //! other song of every playlist, so all their covers are found and
 //! downloaded into the cover cache before anyone plays them. Clients read
-//! which songs a tile shows from `GET /api/playlists/covers` and load those
-//! images through `/api/art` as usual.
+//! which songs a tile shows from `GET /api/playlists/covers`. The worker
+//! keeps each tile's images in a folder beside the cover cache, served as
+//! they are by `GET /api/playlist-covers/{image}` (no lookup, cacheable for
+//! good, since an image's name is its fingerprint), and remembers the tiles
+//! and the songs it has looked up there too, so a restarted server shows
+//! every tile at once and carries on where it stopped.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, Weak};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use axum::extract::State;
+use axum::extract::{Path as UrlPath, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use kog_core::db::StoredEntry;
 use tokio::sync::Notify;
@@ -40,8 +45,15 @@ const FILL_CHANGE_CHECK: usize = 16;
 
 /// Favorites, which are the stars rather than a stored playlist.
 const FAVORITES: i64 = 0;
+/// The folder, beside the cover cache, holding the tiles' images and what
+/// the worker found.
+const TILE_DIRECTORY: &str = "playlist-tiles";
+const TILES_FILE: &str = "tiles.json";
+const LOOKED_UP_FILE: &str = "looked-up.json";
+/// The fill pass writes down the songs it has looked up every this many.
+const LOOKED_UP_SAVE: usize = 64;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct Tile {
     /// What the covers were (or are being) found for: the candidate songs
     /// and the download setting. A different key means the tile is stale.
@@ -67,7 +79,7 @@ impl Tile {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Tiles {
     /// In display order: Favorites first, then the playlists.
     order: Vec<i64>,
@@ -84,6 +96,14 @@ pub(crate) struct PlaylistCovers {
     /// Songs already looked up (found, missing, or unreadable) with this
     /// download setting, so neither pass asks again.
     looked_up: Mutex<(bool, HashSet<String>)>,
+    /// Where the tiles' images and the worker's progress are kept.
+    dir: OnceLock<PathBuf>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LookedUp {
+    allow_download: bool,
+    songs: HashSet<String>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -114,17 +134,38 @@ fn candidates(songs: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// FNV-1a, which (unlike the standard hasher) stays the same across builds:
+/// keys and image names are kept on disk.
+fn fnv(hash: u64, bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(hash, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3))
+}
+
+const FNV_START: u64 = 0xcbf2_9ce4_8422_2325;
+
 fn tile_key(songs: &[String], allow_download: bool) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    songs.hash(&mut hasher);
-    allow_download.hash(&mut hasher);
-    hasher.finish()
+    let hash = songs
+        .iter()
+        .fold(FNV_START, |hash, song| fnv(fnv(hash, song.as_bytes()), &[0]));
+    fnv(hash, &[u8::from(allow_download)])
 }
 
 fn image_print(bytes: &[u8]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
+    fnv(FNV_START, bytes)
+}
+
+/// An image's name in the tile folder and in `/api/playlist-covers`.
+fn image_name(print: u64) -> String {
+    format!("{print:016x}")
+}
+
+/// Write `contents` whole or not at all.
+fn write_file(path: &Path, contents: &[u8]) {
+    let temporary = path.with_extension("tmp");
+    if std::fs::write(&temporary, contents).is_ok() && std::fs::rename(&temporary, path).is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
 }
 
 /// Every playlist's songs, Favorites first.
@@ -151,11 +192,116 @@ impl PlaylistCovers {
         if state.playlist_covers.started.swap(true, Ordering::SeqCst) {
             return;
         }
+        let dir = state
+            .covers
+            .cache_dir()
+            .parent()
+            .map(|parent| parent.join(TILE_DIRECTORY))
+            .unwrap_or_else(|| std::env::temp_dir().join("kog-playlist-tiles"));
+        state.playlist_covers.restore(&dir);
+        let _ = state.playlist_covers.dir.set(dir);
         let this = Arc::downgrade(&state.playlist_covers);
         let library = state.library.clone();
         let covers = state.covers.clone();
         let streams = state.streams.clone();
         tokio::spawn(run(this, library, covers, streams));
+    }
+
+    /// Take up what an earlier run of the server found: its tiles (those
+    /// whose images are all still there) and the songs it looked up.
+    fn restore(&self, dir: &Path) {
+        if let Some(mut tiles) = std::fs::read(dir.join(TILES_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Tiles>(&bytes).ok())
+        {
+            for tile in tiles.by_id.values_mut() {
+                if tile.covers.len() != tile.prints.len()
+                    || !tile.prints.iter().all(|print| dir.join(image_name(*print)).is_file())
+                {
+                    // Look again, showing nothing broken meanwhile.
+                    *tile = Tile::default();
+                }
+            }
+            *lock(&self.tiles) = tiles;
+        }
+        if let Some(looked_up) = std::fs::read(dir.join(LOOKED_UP_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<LookedUp>(&bytes).ok())
+        {
+            *lock(&self.looked_up) = (looked_up.allow_download, looked_up.songs);
+        }
+    }
+
+    fn save_tiles(&self) {
+        let Some(dir) = self.dir.get() else { return };
+        let Ok(json) = serde_json::to_vec(&*lock(&self.tiles)) else { return };
+        let _ = std::fs::create_dir_all(dir);
+        write_file(&dir.join(TILES_FILE), &json);
+    }
+
+    fn save_looked_up(&self) {
+        let Some(dir) = self.dir.get() else { return };
+        let json = {
+            let looked_up = lock(&self.looked_up);
+            serde_json::to_vec(&serde_json::json!({
+                "allow_download": looked_up.0,
+                "songs": looked_up.1,
+            }))
+        };
+        let Ok(json) = json else { return };
+        let _ = std::fs::create_dir_all(dir);
+        write_file(&dir.join(LOOKED_UP_FILE), &json);
+    }
+
+    /// Keep a tile's image, named by its fingerprint.
+    fn keep_image(&self, print: u64, bytes: &[u8]) {
+        let Some(dir) = self.dir.get() else { return };
+        let path = dir.join(image_name(print));
+        if !path.is_file() {
+            let _ = std::fs::create_dir_all(dir);
+            write_file(&path, bytes);
+        }
+    }
+
+    /// Delete the images no tile shows any more.
+    fn prune_images(&self) {
+        let Some(dir) = self.dir.get() else { return };
+        let shown: HashSet<String> = lock(&self.tiles)
+            .by_id
+            .values()
+            .flat_map(|tile| tile.prints.iter().map(|print| image_name(*print)))
+            .collect();
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.len() == 16 && name.bytes().all(|byte| byte.is_ascii_hexdigit()) && !shown.contains(&name) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// The listener rejected these bytes as a cover: take them off every
+    /// tile now, and look for every tile's covers again.
+    pub(crate) fn rejected(&self, bytes: &[u8]) {
+        let print = image_print(bytes);
+        {
+            let mut tiles = lock(&self.tiles);
+            for tile in tiles.by_id.values_mut() {
+                if let Some(index) = tile.prints.iter().position(|seen| *seen == print) {
+                    tile.prints.remove(index);
+                    tile.covers.remove(index);
+                }
+                // A key no songs hash to: the next pass redoes the tile.
+                tile.key = 0;
+                tile.filled = false;
+            }
+        }
+        *lock(&self.looked_up) = (false, HashSet::new());
+        if let Some(dir) = self.dir.get() {
+            let _ = std::fs::remove_file(dir.join(image_name(print)));
+        }
+        self.save_tiles();
+        self.wake.notify_one();
     }
 
     /// Mark changed playlists pending and drop removed ones. Returns the
@@ -170,7 +316,7 @@ impl PlaylistCovers {
             let songs = candidates(songs);
             let key = tile_key(&songs, allow_download);
             let mut tile = tiles.by_id.remove(&id).unwrap_or_default();
-            if tile.key != key || tile.pending {
+            if tile.key != key || tile.pending || tile.covers.len() != tile.prints.len() {
                 if tile.key != key {
                     tile.filled = false;
                 }
@@ -205,22 +351,44 @@ impl PlaylistCovers {
         lock(&self.tiles).by_id.get(&id).is_some_and(|tile| tile.key == key && tile.short())
     }
 
-    /// The fill pass found `song`'s cover: add it to a short tile if it is a
-    /// different image. Returns whether the tile still takes more.
+    #[cfg(test)]
     fn offer(&self, id: i64, key: u64, song: &str, print: u64) -> bool {
-        let mut tiles = lock(&self.tiles);
-        let Some(tile) = tiles.by_id.get_mut(&id).filter(|tile| tile.key == key) else { return false };
-        if tile.short() && !tile.prints.contains(&print) && !tile.covers.iter().any(|cover| cover == song) {
-            tile.covers.push(song.to_owned());
-            tile.prints.push(print);
+        self.offer_image(id, key, song, print, &[])
+    }
+
+    /// The fill pass found `song`'s cover (`bytes`): add it to a short tile
+    /// if it is a different image, keeping the image. Returns whether the
+    /// tile still takes more.
+    fn offer_image(&self, id: i64, key: u64, song: &str, print: u64, bytes: &[u8]) -> bool {
+        let (added, short) = {
+            let mut tiles = lock(&self.tiles);
+            let Some(tile) = tiles.by_id.get_mut(&id).filter(|tile| tile.key == key) else { return false };
+            let added = tile.short()
+                && !tile.prints.contains(&print)
+                && !tile.covers.iter().any(|cover| cover == song);
+            if added {
+                tile.covers.push(song.to_owned());
+                tile.prints.push(print);
+            }
+            (added, tile.short())
+        };
+        if added && !bytes.is_empty() {
+            self.keep_image(print, bytes);
+            self.save_tiles();
         }
-        tile.short()
+        short
     }
 
     /// The fill pass went through all of playlist `id`'s songs.
     fn filled(&self, id: i64, key: u64) {
-        if let Some(tile) = lock(&self.tiles).by_id.get_mut(&id).filter(|tile| tile.key == key) {
-            tile.filled = true;
+        let changed = lock(&self.tiles)
+            .by_id
+            .get_mut(&id)
+            .filter(|tile| tile.key == key && !tile.filled)
+            .map(|tile| tile.filled = true)
+            .is_some();
+        if changed {
+            self.save_tiles();
         }
     }
 
@@ -238,10 +406,16 @@ impl PlaylistCovers {
                 .map(|(id, tile)| serde_json::json!({
                     "id": id,
                     // Addressed as `/api/art` addresses a song.
+                    // Each with its image, for `/api/playlist-covers/{image}`.
                     "covers": tile
                         .covers
                         .iter()
-                        .map(|path| serde_json::json!({ "kind": "local", "path": path }))
+                        .zip(&tile.prints)
+                        .map(|(path, print)| serde_json::json!({
+                            "kind": "local",
+                            "path": path,
+                            "image": image_name(*print),
+                        }))
                         .collect::<Vec<_>>(),
                     // A short tile may still get more from the fill pass.
                     "pending": tile.pending || tile.short(),
@@ -260,8 +434,11 @@ impl PlaylistCovers {
         !looked_up.1.contains(song)
     }
 
-    fn looked_up(&self, song: String) {
-        lock(&self.looked_up).1.insert(song);
+    /// Returns how many songs have been looked up.
+    fn looked_up(&self, song: String) -> usize {
+        let mut looked_up = lock(&self.looked_up);
+        looked_up.1.insert(song);
+        looked_up.1.len()
     }
 
     /// A client asked: look for changes made through this server soon.
@@ -285,6 +462,11 @@ impl Worker {
     /// The cover of one song, through the ordinary lookup (which answers
     /// from the cover cache, or its record of a miss, without searching).
     async fn cover(&self, service: &PlaylistCovers, song: &str, allow_download: bool) -> Option<axum::body::Bytes> {
+        let looked_up = |service: &PlaylistCovers| {
+            if service.looked_up(song.to_owned()) % LOOKED_UP_SAVE == 0 {
+                service.save_looked_up();
+            }
+        };
         let library = self.library.clone();
         let path = song.to_owned();
         let file = tokio::task::spawn_blocking(move || {
@@ -297,7 +479,7 @@ impl Worker {
             Some(file) => wait(self.covers.lookup(file, self.streams.clone(), allow_download)).await,
             None => CoverResult::Missing,
         };
-        service.looked_up(song.to_owned());
+        looked_up(service);
         tokio::time::sleep(LOOKUP_PAUSE).await;
         match result {
             CoverResult::Ready(bytes) => Some(bytes),
@@ -323,6 +505,7 @@ impl Worker {
             let Some(bytes) = self.cover(service, &song, allow_download).await else { continue };
             let print = image_print(&bytes);
             if !chosen.iter().any(|(_, seen)| *seen == print) {
+                service.keep_image(print, &bytes);
                 chosen.push((song, print));
                 found(&chosen);
             }
@@ -367,15 +550,23 @@ async fn run(
                             })
                             .await;
                         service.update(id, key, &chosen, true);
+                        service.save_tiles();
                     }
                     // Then every other song, until the playlists change
                     // (the next pass resumes after redoing their tiles). A
                     // tile still short of covers takes different ones from
-                    // these, so it looks at every song of its playlist.
+                    // these, so it looks at every song of its playlist; those
+                    // playlists go first, since the listener sees their tiles.
                     let mut checked = 0;
-                    'fill: for (id, songs) in &lists {
-                        let key = service.key(*id);
-                        let mut short = key.is_some_and(|key| service.short(*id, key));
+                    let mut fill: Vec<_> = lists
+                        .iter()
+                        .map(|(id, songs)| {
+                            let key = service.key(*id);
+                            (id, songs, key, key.is_some_and(|key| service.short(*id, key)))
+                        })
+                        .collect();
+                    fill.sort_by_key(|(_, _, _, short)| !short);
+                    'fill: for (id, songs, key, mut short) in fill {
                         for song in songs {
                             if !short && !service.needs_lookup(song, allow_download) {
                                 continue;
@@ -387,12 +578,16 @@ async fn run(
                             }
                             let bytes = worker.cover(&service, song, allow_download).await;
                             if let (true, Some(key), Some(bytes)) = (short, key, bytes) {
-                                short = service.offer(*id, key, song, image_print(&bytes));
+                                short = service.offer_image(*id, key, song, image_print(&bytes), &bytes);
                             }
                         }
                         if let Some(key) = key {
                             service.filled(*id, key);
                         }
+                    }
+                    service.save_looked_up();
+                    if !interrupted {
+                        service.prune_images();
                     }
                 }
                 Err(error) => eprintln!("kog-server: reading playlists for their covers failed: {error}"),
@@ -416,6 +611,34 @@ pub async fn playlist_covers(State(state): State<AppState>) -> Response {
     (
         [("cache-control", "no-store")],
         axum::Json(state.playlist_covers.snapshot()),
+    )
+        .into_response()
+}
+
+/// `GET /api/playlist-covers/{image}` — one of the tiles' images, by the
+/// name `/api/playlists/covers` gave it. The name is the image's fingerprint,
+/// so it never changes and the client may keep it.
+pub async fn playlist_cover_image(State(state): State<AppState>, UrlPath(image): UrlPath<String>) -> Response {
+    let Some(dir) = state.playlist_covers.dir.get().cloned() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if image.len() != 16 || !image.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(Ok(bytes)) = tokio::task::spawn_blocking(move || std::fs::read(dir.join(image))).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = match kog_audio::cover_art::sniff_image_kind(&bytes) {
+        Some(kog_audio::cover_art::ImageKind::Jpeg) => "image/jpeg",
+        Some(kog_audio::cover_art::ImageKind::Png) => "image/png",
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+    (
+        [
+            ("content-type", content_type),
+            ("cache-control", "private, max-age=31536000, immutable"),
+        ],
+        bytes,
     )
         .into_response()
 }
@@ -490,6 +713,50 @@ mod tests {
         // Replanning the same songs keeps it filled.
         assert!(covers.plan(&[(8, songs[..1].to_vec())], false).is_empty());
         assert!(!covers.short(8, work[0].1));
+    }
+
+    #[test]
+    fn a_restarted_server_shows_the_tiles_it_found_before() {
+        let dir = std::env::temp_dir().join(format!("kog-tiles-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let covers = PlaylistCovers::default();
+        covers.dir.set(dir.clone()).unwrap();
+        let songs = vec!["/music/A/1.mp3".to_owned(), "/music/B/1.mp3".to_owned()];
+        let lists = [(0, songs.clone()), (5, songs[..1].to_vec())];
+        let work = covers.plan(&lists, true);
+        let images = [b"\xff\xd8\xff one".as_slice(), b"\xff\xd8\xff two".as_slice()];
+        for (id, key, _) in &work {
+            let found: Vec<_> = songs
+                .iter()
+                .zip(images)
+                .take(if *id == 0 { 2 } else { 1 })
+                .map(|(song, bytes)| {
+                    covers.keep_image(image_print(bytes), bytes);
+                    (song.clone(), image_print(bytes))
+                })
+                .collect();
+            covers.update(*id, *key, &found, true);
+            covers.filled(*id, *key);
+        }
+        covers.looked_up(songs[0].clone());
+        covers.save_looked_up();
+        let before = covers.snapshot();
+        assert_eq!(before["playlists"][0]["covers"][1]["image"], image_name(image_print(images[1])));
+
+        let restarted = PlaylistCovers::default();
+        restarted.restore(&dir);
+        assert_eq!(restarted.snapshot(), before);
+        assert!(restarted.plan(&lists, true).is_empty());
+        assert!(!restarted.needs_lookup(&songs[0], true));
+        assert!(restarted.needs_lookup(&songs[1], true));
+
+        // A tile whose image went missing is looked for again.
+        std::fs::remove_file(dir.join(image_name(image_print(images[1])))).unwrap();
+        let restarted = PlaylistCovers::default();
+        restarted.restore(&dir);
+        assert_eq!(restarted.plan(&lists, true).len(), 1);
+        assert_eq!(restarted.snapshot()["playlists"][1]["covers"][0]["image"], before["playlists"][1]["covers"][0]["image"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

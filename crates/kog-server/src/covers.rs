@@ -170,6 +170,10 @@ fn adopt_album_cover(cache_dir: &Path, key: &str, bytes: Bytes) -> Bytes {
 }
 
 impl CoverService {
+    pub(crate) fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+
     /// The listener marked these bytes a wrong cover: never serve them again
     /// and forget finished lookups, so the next request searches afresh.
     pub(crate) fn reject(&self, bytes: &[u8]) -> bool {

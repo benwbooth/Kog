@@ -1502,7 +1502,16 @@ pub async fn reject_art(State(state): State<AppState>, Query(query): Query<ArtQu
         return StatusCode::NOT_FOUND.into_response();
     };
     let covers = state.covers.clone();
-    match tokio::task::spawn_blocking(move || covers.reject(&bytes)).await {
+    let playlist_covers = state.playlist_covers.clone();
+    match tokio::task::spawn_blocking(move || {
+        let rejected = covers.reject(&bytes);
+        if rejected {
+            playlist_covers.rejected(&bytes);
+        }
+        rejected
+    })
+    .await
+    {
         Ok(true) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -2689,6 +2698,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/expand", post(expand_entries))
         .route("/api/playlists", get(list_playlists).post(create_playlist))
         .route("/api/playlists/covers", get(crate::playlist_covers::playlist_covers))
+        .route("/api/playlist-covers/{image}", get(crate::playlist_covers::playlist_cover_image))
         .route(
             "/api/playlists/{id}",
             get(playlist_entries).delete(delete_playlist),

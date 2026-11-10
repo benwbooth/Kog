@@ -156,14 +156,11 @@ pub fn source(request_url: Memo<Option<(String, String)>>) -> Memo<String> {
 }
 
 /// Playlist tiles on phones. The server picks each tile's songs (different
-/// images, in playlist order) and finds their covers in the background; the
-/// page loads those images, kept for its lifetime by song (one folder can
-/// hold several albums, as C64 tunes filed by musician do) with a
-/// fingerprint of the image, so a grid never shows the same art twice.
-type FolderCover = (u64, String);
-
-thread_local! {
-    static FOLDER_COVERS: RefCell<HashMap<String, FolderCover>> = RefCell::new(HashMap::new());
+/// images, in playlist order), finds their covers in the background, and
+/// keeps the images under names that never change: the page shows them as
+/// they are, and the browser keeps them.
+pub fn playlist_cover_url(base: &str, token: &str, image: &str) -> String {
+    format!("{base}/api/playlist-covers/{}?token={}", url_encode(image), url_encode(token))
 }
 
 /// How soon to ask the server again while it is still finding tile covers,
@@ -176,73 +173,4 @@ pub fn fingerprint(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
     })
-}
-
-/// The cover of the song `path`, addressed as the now-playing art is.
-/// The server has usually found it already; a lookup still running is
-/// polled for a while, then given up on.
-async fn folder_cover(base: &str, token: &str, path: &str) -> Option<FolderCover> {
-    let url = format!(
-        "{base}/api/art?kind=local&path={}&token={}&background=true",
-        url_encode(path),
-        url_encode(token),
-    );
-    for _ in 0..20 {
-        let response = Request::get(&url)
-            .header("X-Kog-Device", &device_id())
-            .send()
-            .await
-            .ok()?;
-        if response.status() == 202 {
-            let _ = sleep_ms(1000).await;
-            continue;
-        }
-        if response.status() != 200 {
-            return None;
-        }
-        let mime = response
-            .headers()
-            .get("content-type")
-            .unwrap_or_else(|| "image/jpeg".to_owned());
-        let bytes = response.binary().await.ok()?;
-        let parts = js_sys::Array::new();
-        parts.push(&js_sys::Uint8Array::from(bytes.as_slice()));
-        let options = web_sys::BlobPropertyBag::new();
-        options.set_type(&mime);
-        let blob = web_sys::Blob::new_with_u8_slice_sequence_and_options(&parts, &options).ok()?;
-        let object_url = web_sys::Url::create_object_url_with_blob(&blob).ok()?;
-        return Some((fingerprint(&bytes), object_url));
-    }
-    None
-}
-
-/// The images of up to `want` of a tile's songs (`paths`, as the server
-/// chose them), each a different cover.
-pub async fn playlist_covers(base: String, token: String, paths: Vec<String>, want: usize) -> Vec<String> {
-    let mut covers = Vec::<FolderCover>::new();
-    for path in paths {
-        if covers.len() >= want {
-            break;
-        }
-        let key = format!("{base}|{path}");
-        let cached = FOLDER_COVERS.with(|cache| cache.borrow().get(&key).cloned());
-        let cover = match cached {
-            Some(cover) => Some(cover),
-            None => {
-                // A miss isn't remembered: the server only names songs whose
-                // covers it has, so a failure here is passing.
-                let cover = folder_cover(&base, &token, &path).await;
-                if let Some(cover) = &cover {
-                    FOLDER_COVERS.with(|cache| cache.borrow_mut().insert(key, cover.clone()));
-                }
-                cover
-            }
-        };
-        if let Some((print, object_url)) = cover
-            && !covers.iter().any(|(seen, _)| *seen == print)
-        {
-            covers.push((print, object_url));
-        }
-    }
-    covers.into_iter().map(|(_, object_url)| object_url).collect()
 }
