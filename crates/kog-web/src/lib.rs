@@ -248,6 +248,38 @@ impl Entry {
     }
 }
 
+/// A phone playlist tile's covers, laid over the plain playlist mark: one
+/// cover, or a 2×2 grid when "Four album covers" is chosen and the playlist
+/// has four different ones (fewer fall back to one). Nothing while they
+/// load or when no song has art, so the mark shows.
+fn playlist_tile(
+    id: i64,
+    mode: ReadSignal<String>,
+    tiles: RwSignal<HashMap<i64, (String, Vec<String>)>>,
+) -> impl IntoView {
+    move || {
+        let mode = mode.get();
+        if mode == "symbol" {
+            return None;
+        }
+        let covers = tiles.with(|tiles| tiles.get(&id).map(|(_, covers)| covers.clone()).unwrap_or_default());
+        if covers.is_empty() {
+            return None;
+        }
+        let grid = mode == "grid" && covers.len() >= 4;
+        let shown = if grid { 4 } else { 1 };
+        Some(view! {
+            <span class="playlist-cover" class:grid=grid aria-hidden="true">
+                {covers
+                    .into_iter()
+                    .take(shown)
+                    .map(|src| view! { <img src=src alt="" draggable="false" /> })
+                    .collect_view()}
+            </span>
+        })
+    }
+}
+
 /// One rendered tree line: a flattened view of the expanded directories.
 /// The locator fields are carried through so two playlist-expanded rows that
 /// share a path (one per subsong) stay distinct and queue their own track.
@@ -2316,6 +2348,14 @@ fn App() -> impl IntoView {
     let (password, set_password) = signal(String::new());
     let (use_basic, set_use_basic) = signal(false);
     let (theme, set_theme) = signal(load("kog.theme").unwrap_or_else(|| "system".to_owned()));
+    // Phones' playlist list tiles: "cover" (one album cover from the
+    // playlist's songs), "grid" (four different ones), or "symbol" (the
+    // plain playlist mark). Per device, like the colours.
+    let (playlist_icons, set_playlist_icons) = signal(
+        load("kog.playlist-icons")
+            .filter(|mode| matches!(mode.as_str(), "cover" | "grid" | "symbol"))
+            .unwrap_or_else(|| "cover".to_owned()),
+    );
     let (codec, set_codec) = signal(load("kog.codec").unwrap_or_else(|| "aac".to_owned()));
     let (connected, set_connected) = signal(false);
     let (message, set_message) = signal(String::new());
@@ -3530,6 +3570,65 @@ fn App() -> impl IntoView {
             });
         }
     };
+
+    // Phones: the playlist list's tiles show covers from each playlist's
+    // songs. They load when the Playlists view opens, one playlist at a
+    // time, and again when a playlist's song count (or the stars, for
+    // Favorites) changes. Each tile remembers the key it was loaded for.
+    let playlist_tiles = RwSignal::new(HashMap::<i64, (String, Vec<String>)>::new());
+    let tiles_loading = RwSignal::new(false);
+    Effect::new({
+        let get_json = get_json;
+        move |_| {
+            let mode = playlist_icons.get();
+            if mobile_view.get() != MobileView::Playlists
+                || mode == "symbol"
+                || !connected.get()
+                || tiles_loading.get()
+            {
+                return;
+            }
+            let want = if mode == "grid" { 4 } else { 1 };
+            let server = base();
+            let mut lists = vec![(0, format!("{mode}|{}|{server}", stars.with(|stars| stars.len())))];
+            lists.extend(
+                playlists
+                    .get()
+                    .iter()
+                    .map(|(id, _, count)| (*id, format!("{mode}|{count}|{server}"))),
+            );
+            let stale: Vec<(i64, String)> = playlist_tiles.with_untracked(|tiles| {
+                lists
+                    .into_iter()
+                    .filter(|(id, key)| tiles.get(id).map(|(loaded, _)| loaded) != Some(key))
+                    .collect()
+            });
+            if stale.is_empty() {
+                return;
+            }
+            tiles_loading.set(true);
+            let token = token.get_untracked();
+            leptos::task::spawn_local(async move {
+                for (id, key) in stale {
+                    let entries: Vec<Entry> = get_json(format!("/api/playlists/{id}"))
+                        .await
+                        .ok()
+                        .and_then(|value| {
+                            value["entries"]
+                                .as_array()
+                                .map(|items| items.iter().map(entry_from_json).collect())
+                        })
+                        .unwrap_or_default();
+                    let covers =
+                        artwork::playlist_covers(server.clone(), token.clone(), entries, want).await;
+                    playlist_tiles.update(|tiles| {
+                        tiles.insert(id, (key, covers));
+                    });
+                }
+                tiles_loading.set(false);
+            });
+        }
+    });
 
     let move_track = move |from: usize, to: usize| {
         if !playlist_workspace.snapshot().actions.append { return; }
@@ -7159,6 +7258,7 @@ fn App() -> impl IntoView {
                                             >
                                                 <span class="twisty"></span>
                                                 <span class="favorite-star">"★"</span>
+                                                {playlist_tile(0, playlist_icons, playlist_tiles)}
                                                 <span class="label">"Favorites"</span>
                                                 <span
                                                     class="mobile-playlist-more"
@@ -7267,6 +7367,7 @@ fn App() -> impl IntoView {
                                                     >
                                                         <span class="twisty"></span>
                                                         <span class="playlist-entry-icon" aria-hidden="true" inner_html=icons::FMT_PLAYLIST></span>
+                                                        {playlist_tile(drag_id, playlist_icons, playlist_tiles)}
                                                         <Show
                                                             when=move || renaming_playlist.get() == Some(drag_id)
                                                             fallback=move || view! {
@@ -8483,6 +8584,22 @@ fn App() -> impl IntoView {
                                 <option value="dark">"Dark"</option>
                             </select>
                         </label>
+                        <label>
+                            "Playlist icons"
+                            <select
+                                prop:value=move || playlist_icons.get()
+                                on:change=move |event| {
+                                    let value = event_target_value(&event);
+                                    store("kog.playlist-icons", &value);
+                                    set_playlist_icons.set(value);
+                                }
+                            >
+                                <option value="cover">"One album cover"</option>
+                                <option value="grid">"Four album covers"</option>
+                                <option value="symbol">"Playlist symbol"</option>
+                            </select>
+                        </label>
+                        <p class="hint">"On phones, the playlist list shows covers from each playlist's songs: one, or a grid of four different ones."</p>
                         <Show when=move || connected.get() fallback=|| ()>
                             <label>
                                 "MIDI synth"

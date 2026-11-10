@@ -2375,7 +2375,8 @@ body.touch .track .index-cell {
 .mobile-server-icon,
 .mobile-now-subtitle,
 .mobile-playlist-more,
-.playlist-entry-icon {
+.playlist-entry-icon,
+.playlist-cover {
   display: none;
 }
 
@@ -5085,6 +5086,34 @@ button.primary:hover:not(:disabled) {
   .mobile-playlists .playlist-entry-icon svg {
     width: 24px;
     height: 24px;
+  }
+
+  /* Covers from the playlist's songs, laid over the tile (Settings →
+   * Playlist icons): one cover, or a 2×2 grid of four different ones. */
+  .mobile-playlists .playlist-cover {
+    grid-column: 1;
+    grid-row: 1 / 3;
+    z-index: 1;
+    display: grid;
+    width: 52px;
+    height: 52px;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--alternate);
+  }
+
+  .mobile-playlists .playlist-cover.grid {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+
+  .mobile-playlists .playlist-cover img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    object-fit: cover;
   }
 
   .mobile-playlists .tree-row .label {

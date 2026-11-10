@@ -154,3 +154,104 @@ pub fn source(request_url: Memo<Option<(String, String)>>) -> Memo<String> {
         })
     })
 }
+
+/// Playlist tiles on phones: one cover per song folder (the songs of one
+/// album in one folder share a cover), kept for the page's lifetime with a
+/// fingerprint of the image so a grid never shows the same art twice. A
+/// folder without a cover is remembered too, so it isn't asked again.
+type FolderCover = Option<(u64, String)>;
+
+thread_local! {
+    static FOLDER_COVERS: RefCell<HashMap<String, FolderCover>> = RefCell::new(HashMap::new());
+}
+
+/// At most this many folders are tried for one tile, so a long playlist
+/// of songs without art doesn't ask the server for every one.
+const TILE_CANDIDATES: usize = 16;
+
+fn fingerprint(bytes: &[u8]) -> u64 {
+    // FNV-1a: identical images from different folders compare equal.
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// The cover of the song `path`, addressed as the now-playing art is.
+/// Background lookups are polled for a while, then given up on.
+async fn folder_cover(base: &str, token: &str, path: &str) -> FolderCover {
+    let url = format!(
+        "{base}/api/art?kind=local&path={}&token={}&background=true",
+        url_encode(path),
+        url_encode(token),
+    );
+    for _ in 0..20 {
+        let response = Request::get(&url)
+            .header("X-Kog-Device", &device_id())
+            .send()
+            .await
+            .ok()?;
+        if response.status() == 202 {
+            let _ = sleep_ms(1000).await;
+            continue;
+        }
+        if response.status() != 200 {
+            return None;
+        }
+        let mime = response
+            .headers()
+            .get("content-type")
+            .unwrap_or_else(|| "image/jpeg".to_owned());
+        let bytes = response.binary().await.ok()?;
+        let parts = js_sys::Array::new();
+        parts.push(&js_sys::Uint8Array::from(bytes.as_slice()));
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type(&mime);
+        let blob = web_sys::Blob::new_with_u8_slice_sequence_and_options(&parts, &options).ok()?;
+        let object_url = web_sys::Url::create_object_url_with_blob(&blob).ok()?;
+        return Some((fingerprint(&bytes), object_url));
+    }
+    None
+}
+
+/// Up to `want` different covers from a playlist's songs, in playlist
+/// order, one song per folder. Fewer when the playlist has fewer albums
+/// with art.
+pub async fn playlist_covers(base: String, token: String, entries: Vec<Entry>, want: usize) -> Vec<String> {
+    let mut folders = Vec::<(String, String)>::new();
+    for entry in &entries {
+        // Archive members share their container's folder and cover.
+        if entry.kind != "local" && entry.kind != "archive" {
+            continue;
+        }
+        let folder = entry.path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or_default();
+        if folders.iter().any(|(seen, _)| seen == folder) {
+            continue;
+        }
+        folders.push((folder.to_owned(), entry.path.clone()));
+        if folders.len() >= TILE_CANDIDATES {
+            break;
+        }
+    }
+    let mut covers = Vec::<(u64, String)>::new();
+    for (folder, path) in folders {
+        if covers.len() >= want {
+            break;
+        }
+        let key = format!("{base}|{folder}");
+        let cached = FOLDER_COVERS.with(|cache| cache.borrow().get(&key).cloned());
+        let cover = match cached {
+            Some(cover) => cover,
+            None => {
+                let cover = folder_cover(&base, &token, &path).await;
+                FOLDER_COVERS.with(|cache| cache.borrow_mut().insert(key, cover.clone()));
+                cover
+            }
+        };
+        if let Some((print, object_url)) = cover {
+            if !covers.iter().any(|(seen, _)| *seen == print) {
+                covers.push((print, object_url));
+            }
+        }
+    }
+    covers.into_iter().map(|(_, object_url)| object_url).collect()
+}
