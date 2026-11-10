@@ -118,9 +118,19 @@ impl StreamService {
         have: Option<u64>,
         bars: usize,
     ) -> crate::mml::Status {
-        let settings = self.render_settings(key);
+        // A second decode alongside the stream: see `silent_render_settings`.
+        let settings = self.silent_render_settings(key);
         let job_key = format!("{}\0{}\0{}", key.locator, key.render_profile.as_deref().unwrap_or_default(), key.looping);
         self.mml.status(job_key, title, entry, settings, self.scratch.join("mml"), have, bars)
+    }
+
+    /// Settings for a silent decode that runs beside the song's stream (its
+    /// levels, its MML score). The Nuked SC-55 is one shared emulator per ROM
+    /// set and a new render cancels the one in progress, so a second SC-55
+    /// render would cut the stream off a few seconds in; these use the OPL3
+    /// synth instead, which plays the same notes.
+    fn silent_render_settings(&self, key: &StreamKey) -> DecoderSettings {
+        self.render_settings(key).for_recording()
     }
 
     fn render_settings(&self, key: &StreamKey) -> DecoderSettings {
@@ -170,7 +180,7 @@ impl StreamService {
     }
 
     fn write_levels(&self, entry: PlaylistEntry, key: &StreamKey, path: &Path) -> Result<(), String> {
-        let settings = self.render_settings(key);
+        let settings = self.silent_render_settings(key);
         let decoders = DecoderRegistry::new(settings.clone());
         // Archive members live in the registry's workspace, kept to the end.
         let source = resolve_entry(&entry, &decoders, &self.scratch)?;
