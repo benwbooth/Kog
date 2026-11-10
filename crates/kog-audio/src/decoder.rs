@@ -1376,6 +1376,28 @@ impl MidiBackend {
         Ok(soundfont)
     }
 
+    /// The synthesizer this backend renders with: the selected one, or the
+    /// in-process OPL3 synth when the selected one can't run here (no
+    /// SC-55/MT-32 ROM directory, or no SoundFont). OPL3 needs nothing
+    /// user-supplied, so a MIDI still has a length and plays, as on a server
+    /// that doesn't have the desktop's ROMs.
+    fn effective_engine(&self) -> MidiEngine {
+        let engine = self.settings.midi_engine();
+        let available = match engine {
+            MidiEngine::RustySynth => self.settings.soundfont_path().is_some_and(|path| path.is_file()),
+            MidiEngine::Opl3Windows => true,
+            MidiEngine::Sc55 => self.sc55_rom_directory().is_ok(),
+            MidiEngine::Mt32 => self.mt32_rom_directory().is_ok(),
+        };
+        if available { engine } else { MidiEngine::Opl3Windows }
+    }
+
+    fn append_opl3(player: &Player, midi: &[u8]) -> Result<(), String> {
+        let timeline = Arc::new(OplMidiTimeline::parse(midi)?);
+        crate::silence::append_trimmed(player, OplMidiSource::new(timeline)?);
+        Ok(())
+    }
+
     fn open_sc55(&self, path: &Path, midi: &[u8]) -> Result<Sc55, String> {
         let rom_directory = self.sc55_rom_directory()?;
         Sc55::open(midi, path, &rom_directory)
@@ -1421,7 +1443,7 @@ impl MidiBackend {
 
 impl DecoderBackend for MidiBackend {
     fn id(&self) -> &'static str {
-        match self.settings.midi_engine() {
+        match self.effective_engine() {
             MidiEngine::RustySynth => "midi-rustysynth-sf2",
             MidiEngine::Opl3Windows => "midi-opl3windows",
             MidiEngine::Sc55 => "midi-nuked-sc55",
@@ -1430,7 +1452,7 @@ impl DecoderBackend for MidiBackend {
     }
 
     fn display_name(&self) -> &'static str {
-        match self.settings.midi_engine() {
+        match self.effective_engine() {
             MidiEngine::RustySynth => "RustySynth SoundFont",
             MidiEngine::Opl3Windows => "OPL3Windows (Nuked OPL3)",
             MidiEngine::Sc55 => "Nuked SC-55 0.7.0",
@@ -1471,7 +1493,7 @@ impl DecoderBackend for MidiBackend {
         let midi = read_standard_midi_subsong(&source.path, source.subsong)?;
         let title = midi.title.clone();
         let track_number = source.subsong.map(|subsong| subsong + 1);
-        let properties = match self.settings.midi_engine() {
+        let properties = match self.effective_engine() {
             MidiEngine::RustySynth => StreamProperties {
                 duration: Some(load_midi_file(&source.path, &midi.bytes)?.1),
                 sample_rate: Some(MIDI_SAMPLE_RATE),
@@ -1494,7 +1516,6 @@ impl DecoderBackend for MidiBackend {
                 }
             }
             MidiEngine::Sc55 => {
-                self.sc55_rom_directory()?;
                 StreamProperties {
                     duration: Some(crate::sc55::midi_duration(&midi.bytes)?),
                     channels: Some(MIDI_CHANNELS),
@@ -1505,7 +1526,6 @@ impl DecoderBackend for MidiBackend {
                 }
             }
             MidiEngine::Mt32 => {
-                self.mt32_rom_directory()?;
                 StreamProperties {
                     duration: Some(crate::mt32::midi_duration(&midi.bytes)?),
                     sample_rate: Some(crate::mt32::output_sample_rate()),
@@ -1531,24 +1551,29 @@ impl DecoderBackend for MidiBackend {
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         let midi = read_standard_midi_subsong(&source.path, source.subsong)?;
-        match self.settings.midi_engine() {
+        match self.effective_engine() {
             MidiEngine::RustySynth => {
                 let soundfont = self.load_soundfont()?;
                 let (midi_file, duration) = load_midi_file(&source.path, &midi.bytes)?;
                 crate::silence::append_trimmed(player, MidiSource::new(soundfont, midi_file, duration)?);
             }
-            MidiEngine::Opl3Windows => {
-                let timeline = Arc::new(OplMidiTimeline::parse(&midi.bytes)?);
-                crate::silence::append_trimmed(player, OplMidiSource::new(timeline)?);
-            }
-            MidiEngine::Sc55 => {
-                crate::silence::append_trimmed(player, Sc55MidiSource::new(
-                    self.open_sc55(&source.path, &midi.bytes)?,
-                ));
-            }
-            MidiEngine::Mt32 => {
-                crate::silence::append_trimmed(player, self.open_mt32(&midi.bytes)?);
-            }
+            MidiEngine::Opl3Windows => Self::append_opl3(player, &midi.bytes)?,
+            // A ROM folder that is there but won't start the synth (missing
+            // or bad ROM files) also falls back to OPL3.
+            MidiEngine::Sc55 => match self.open_sc55(&source.path, &midi.bytes) {
+                Ok(sc55) => crate::silence::append_trimmed(player, Sc55MidiSource::new(sc55)),
+                Err(error) => {
+                    eprintln!("kog: Nuked SC-55 unavailable, playing MIDI with OPL3: {error}");
+                    Self::append_opl3(player, &midi.bytes)?;
+                }
+            },
+            MidiEngine::Mt32 => match self.open_mt32(&midi.bytes) {
+                Ok(mt32) => crate::silence::append_trimmed(player, mt32),
+                Err(error) => {
+                    eprintln!("kog: Munt MT-32 unavailable, playing MIDI with OPL3: {error}");
+                    Self::append_opl3(player, &midi.bytes)?;
+                }
+            },
         }
         Ok(())
     }
@@ -3319,27 +3344,27 @@ mod tests {
     }
 
     #[test]
-    fn sc55_backend_requires_a_configured_rom_directory() {
-        let path = std::env::temp_dir().join(format!("kog-sc55-midi-{}.mid", std::process::id()));
+    fn midi_backend_falls_back_to_opl3_without_roms_or_soundfont() {
+        let fixture = tempfile::tempdir().expect("create MIDI fallback fixture");
+        let path = fixture.path().join("track.mid");
         write_test_midi(&path);
-        let backend = MidiBackend::new(DecoderSettings::new(None, MidiEngine::Sc55));
-        let error = backend
-            .probe(&PlaybackSource::from_path(path.clone()))
-            .expect_err("missing SC-55 ROM directory");
-        assert!(error.contains("user-supplied Roland ROMs"));
-        std::fs::remove_file(path).ok();
-    }
-
-    #[test]
-    fn mt32_backend_requires_a_configured_rom_directory() {
-        let path = std::env::temp_dir().join(format!("kog-mt32-midi-{}.mid", std::process::id()));
-        write_test_midi(&path);
-        let backend = MidiBackend::new(DecoderSettings::new(None, MidiEngine::Mt32));
-        let error = backend
-            .probe(&PlaybackSource::from_path(path.clone()))
-            .expect_err("missing MT-32 ROM directory");
-        assert!(error.contains("user-supplied Roland ROMs"));
-        std::fs::remove_file(path).ok();
+        let missing = fixture.path().join("missing");
+        for settings in [
+            DecoderSettings::new(None, MidiEngine::Sc55),
+            DecoderSettings::new(None, MidiEngine::Sc55).with_sc55_rom_path(Some(missing.clone())),
+            DecoderSettings::new(None, MidiEngine::Mt32),
+            DecoderSettings::new(None, MidiEngine::Mt32).with_mt32_rom_path(Some(missing.clone())),
+            DecoderSettings::new(None, MidiEngine::RustySynth),
+            DecoderSettings::new(Some(missing.clone()), MidiEngine::RustySynth),
+        ] {
+            let backend = MidiBackend::new(settings);
+            assert_eq!(backend.id(), "midi-opl3windows");
+            let properties = backend
+                .probe(&PlaybackSource::from_path(path.clone()))
+                .expect("probe MIDI with the OPL3 fallback");
+            assert_eq!(properties.duration, Some(Duration::from_millis(500)));
+            assert_eq!(properties.codec.as_deref(), Some("OPL3Windows / Nuked OPL3"));
+        }
     }
 
     #[test]
