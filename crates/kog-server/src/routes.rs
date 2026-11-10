@@ -26,6 +26,8 @@ pub struct AppState {
     pub version: &'static str,
     pub streams: Arc<crate::service::StreamService>,
     pub(crate) covers: Arc<crate::covers::CoverService>,
+    /// Playlist tile covers, found by a background worker.
+    pub(crate) playlist_covers: Arc<crate::playlist_covers::PlaylistCovers>,
     /// Library browsing and the playlist/star store.
     pub library: Arc<crate::api::Library>,
     /// Legacy search plus independent named frontend searches.
@@ -67,6 +69,7 @@ impl AppState {
             version,
             streams: Arc::new(streams),
             covers: Arc::new(crate::covers::CoverService::default()),
+            playlist_covers: Arc::new(crate::playlist_covers::PlaylistCovers::default()),
             library: Arc::new(library),
             search: Arc::new(crate::api::SearchState::default()),
             search_sessions: Arc::new(crate::api::SearchSessions::default()),
@@ -877,6 +880,8 @@ pub async fn serve_with_shutdown(
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|error| format!("binding {address}: {error}"))?;
+    // Find the playlists' covers in the background while the server runs.
+    crate::playlist_covers::PlaylistCovers::start(&state);
     let app = router(state);
     let scheme = if config.tls.mode == crate::TlsMode::Off {
         "http"

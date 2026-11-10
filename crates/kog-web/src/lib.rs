@@ -3589,11 +3589,14 @@ fn App() -> impl IntoView {
     };
 
     // Phones: the playlist list's tiles show covers from each playlist's
-    // songs. They load when the Playlists view opens, one playlist at a
-    // time, and again when a playlist's song count (or the stars, for
-    // Favorites) changes. Each tile remembers the key it was loaded for.
+    // songs. The server finds them in the background; while the Playlists
+    // view is open the page asks it which songs each tile shows, again
+    // when the playlists or the stars change, and gently again while the
+    // server is still working on some. Each tile remembers the songs it
+    // was loaded for, so only changed tiles load their images.
     let playlist_tiles = RwSignal::new(HashMap::<i64, (String, Vec<String>)>::new());
     let tiles_loading = RwSignal::new(false);
+    let tiles_loaded_for = StoredValue::new(String::new());
     Effect::new({
         let get_json = get_json;
         move |_| {
@@ -3605,42 +3608,65 @@ fn App() -> impl IntoView {
             {
                 return;
             }
-            let want = if mode == "grid" { 4 } else { 1 };
             let server = base();
-            let mut lists = vec![(0, format!("{mode}|{}|{server}", stars.with(|stars| stars.len())))];
-            lists.extend(
-                playlists
-                    .get()
-                    .iter()
-                    .map(|(id, _, count)| (*id, format!("{mode}|{count}|{server}"))),
-            );
-            let stale: Vec<(i64, String)> = playlist_tiles.with_untracked(|tiles| {
-                lists
-                    .into_iter()
-                    .filter(|(id, key)| tiles.get(id).map(|(loaded, _)| loaded) != Some(key))
-                    .collect()
+            let stars = stars.with(|stars| {
+                stars.iter().fold(0u64, |sum, star| sum.wrapping_add(artwork::fingerprint(star.as_bytes())))
             });
-            if stale.is_empty() {
+            let lists = playlists.with(|lists| format!("{lists:?}"));
+            let wanted = format!("{mode}|{server}|{stars}|{lists}");
+            if tiles_loaded_for.get_value() == wanted {
                 return;
             }
+            tiles_loaded_for.set_value(wanted);
+            let want = if mode == "grid" { 4 } else { 1 };
             tiles_loading.set(true);
             let token = token.get_untracked();
             leptos::task::spawn_local(async move {
-                for (id, key) in stale {
-                    let entries: Vec<Entry> = get_json(format!("/api/playlists/{id}"))
-                        .await
-                        .ok()
-                        .and_then(|value| {
-                            value["entries"]
-                                .as_array()
-                                .map(|items| items.iter().map(entry_from_json).collect())
-                        })
-                        .unwrap_or_default();
-                    let covers =
-                        artwork::playlist_covers(server.clone(), token.clone(), entries, want).await;
-                    playlist_tiles.update(|tiles| {
-                        tiles.insert(id, (key, covers));
+                let mut delay = artwork::TILE_POLL_MS;
+                loop {
+                    if mobile_view.get_untracked() != MobileView::Playlists
+                        || playlist_icons.get_untracked() != mode
+                    {
+                        // Left the view: load again when it reopens.
+                        tiles_loaded_for.set_value(String::new());
+                        break;
+                    }
+                    let Ok(value) = get_json("/api/playlists/covers".to_owned()).await else {
+                        tiles_loaded_for.set_value(String::new());
+                        break;
+                    };
+                    let items = value["playlists"].as_array().cloned().unwrap_or_default();
+                    let mut pending = false;
+                    for item in &items {
+                        pending |= item["pending"].as_bool().unwrap_or(false);
+                        let id = item["id"].as_i64().unwrap_or_default();
+                        let paths: Vec<String> = item["covers"]
+                            .as_array()
+                            .map(|covers| {
+                                covers
+                                    .iter()
+                                    .filter_map(|cover| cover["path"].as_str().map(str::to_owned))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let key = format!("{mode}|{server}|{}", paths.join("\n"));
+                        if playlist_tiles.with_untracked(|tiles| tiles.get(&id).map(|(loaded, _)| loaded) == Some(&key)) {
+                            continue;
+                        }
+                        let covers = artwork::playlist_covers(server.clone(), token.clone(), paths, want).await;
+                        playlist_tiles.update(|tiles| {
+                            tiles.insert(id, (key, covers));
+                        });
+                    }
+                    // A playlist the server hasn't seen yet is still to come.
+                    pending |= playlists.with_untracked(|lists| {
+                        lists.iter().any(|(id, _, _)| !items.iter().any(|item| item["id"].as_i64() == Some(*id)))
                     });
+                    if !pending {
+                        break;
+                    }
+                    let _ = sleep_ms(delay).await;
+                    delay = (delay * 2).min(artwork::TILE_POLL_MAX_MS);
                 }
                 tiles_loading.set(false);
             });

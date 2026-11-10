@@ -155,21 +155,23 @@ pub fn source(request_url: Memo<Option<(String, String)>>) -> Memo<String> {
     })
 }
 
-/// Playlist tiles on phones: one cover per song folder (the songs of one
-/// album in one folder share a cover), kept for the page's lifetime with a
-/// fingerprint of the image so a grid never shows the same art twice. A
-/// folder without a cover is remembered too, so it isn't asked again.
-type FolderCover = Option<(u64, String)>;
+/// Playlist tiles on phones. The server picks each tile's songs (different
+/// images, in playlist order) and finds their covers in the background; the
+/// page loads those images, kept for its lifetime by folder (the songs of
+/// an album in one folder share a cover) with a fingerprint of the image,
+/// so a grid never shows the same art twice.
+type FolderCover = (u64, String);
 
 thread_local! {
     static FOLDER_COVERS: RefCell<HashMap<String, FolderCover>> = RefCell::new(HashMap::new());
 }
 
-/// At most this many folders are tried for one tile, so a long playlist
-/// of songs without art doesn't ask the server for every one.
-const TILE_CANDIDATES: usize = 16;
+/// How soon to ask the server again while it is still finding tile covers,
+/// doubling up to the maximum.
+pub const TILE_POLL_MS: i32 = 2_000;
+pub const TILE_POLL_MAX_MS: i32 = 15_000;
 
-fn fingerprint(bytes: &[u8]) -> u64 {
+pub fn fingerprint(bytes: &[u8]) -> u64 {
     // FNV-1a: identical images from different folders compare equal.
     bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
@@ -177,8 +179,9 @@ fn fingerprint(bytes: &[u8]) -> u64 {
 }
 
 /// The cover of the song `path`, addressed as the now-playing art is.
-/// Background lookups are polled for a while, then given up on.
-async fn folder_cover(base: &str, token: &str, path: &str) -> FolderCover {
+/// The server has usually found it already; a lookup still running is
+/// polled for a while, then given up on.
+async fn folder_cover(base: &str, token: &str, path: &str) -> Option<FolderCover> {
     let url = format!(
         "{base}/api/art?kind=local&path={}&token={}&background=true",
         url_encode(path),
@@ -213,44 +216,33 @@ async fn folder_cover(base: &str, token: &str, path: &str) -> FolderCover {
     None
 }
 
-/// Up to `want` different covers from a playlist's songs, in playlist
-/// order, one song per folder. Fewer when the playlist has fewer albums
-/// with art.
-pub async fn playlist_covers(base: String, token: String, entries: Vec<Entry>, want: usize) -> Vec<String> {
-    let mut folders = Vec::<(String, String)>::new();
-    for entry in &entries {
-        // Archive members share their container's folder and cover.
-        if entry.kind != "local" && entry.kind != "archive" {
-            continue;
-        }
-        let folder = entry.path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or_default();
-        if folders.iter().any(|(seen, _)| seen == folder) {
-            continue;
-        }
-        folders.push((folder.to_owned(), entry.path.clone()));
-        if folders.len() >= TILE_CANDIDATES {
-            break;
-        }
-    }
-    let mut covers = Vec::<(u64, String)>::new();
-    for (folder, path) in folders {
+/// The images of up to `want` of a tile's songs (`paths`, as the server
+/// chose them), each a different cover.
+pub async fn playlist_covers(base: String, token: String, paths: Vec<String>, want: usize) -> Vec<String> {
+    let mut covers = Vec::<FolderCover>::new();
+    for path in paths {
         if covers.len() >= want {
             break;
         }
+        let folder = path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or_default();
         let key = format!("{base}|{folder}");
         let cached = FOLDER_COVERS.with(|cache| cache.borrow().get(&key).cloned());
         let cover = match cached {
-            Some(cover) => cover,
+            Some(cover) => Some(cover),
             None => {
+                // A miss isn't remembered: the server only names songs whose
+                // covers it has, so a failure here is passing.
                 let cover = folder_cover(&base, &token, &path).await;
-                FOLDER_COVERS.with(|cache| cache.borrow_mut().insert(key, cover.clone()));
+                if let Some(cover) = &cover {
+                    FOLDER_COVERS.with(|cache| cache.borrow_mut().insert(key, cover.clone()));
+                }
                 cover
             }
         };
-        if let Some((print, object_url)) = cover {
-            if !covers.iter().any(|(seen, _)| *seen == print) {
-                covers.push((print, object_url));
-            }
+        if let Some((print, object_url)) = cover
+            && !covers.iter().any(|(seen, _)| *seen == print)
+        {
+            covers.push((print, object_url));
         }
     }
     covers.into_iter().map(|(_, object_url)| object_url).collect()

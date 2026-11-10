@@ -96,7 +96,7 @@ impl Library {
     ///
     /// The path is canonicalised first, so `..` and symlinks cannot escape:
     /// anything outside the root is refused.
-    fn resolve(&self, requested: Option<&str>) -> Result<PathBuf, String> {
+    pub(crate) fn resolve(&self, requested: Option<&str>) -> Result<PathBuf, String> {
         let root = self
             .root()
             .ok_or_else(|| "no music directory is configured".to_owned())?;
@@ -2677,6 +2677,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/metadata", get(metadata_one).post(metadata_batch))
         .route("/api/expand", post(expand_entries))
         .route("/api/playlists", get(list_playlists).post(create_playlist))
+        .route("/api/playlists/covers", get(crate::playlist_covers::playlist_covers))
         .route(
             "/api/playlists/{id}",
             get(playlist_entries).delete(delete_playlist),
