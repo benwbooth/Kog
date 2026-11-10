@@ -422,8 +422,8 @@ mod tests {
         std::fs::create_dir_all(cached_audio.parent().unwrap()).unwrap();
         std::fs::write(cached_audio, b"cached audio").unwrap();
         let app = crate::routes::router(state);
-        tokio::time::timeout(Duration::from_secs(2), async {
-            for _ in 0..8 {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for _ in 0..3 {
                 let response = app
                     .clone()
                     .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())

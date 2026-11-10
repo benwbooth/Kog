@@ -1508,6 +1508,10 @@ pub async fn reject_art(State(state): State<AppState>, Query(query): Query<ArtQu
     }
 }
 
+/// How long a background `/api/art` request waits for its lookup before
+/// answering 202.
+const BACKGROUND_ART_WAIT: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// `GET /api/art` — local, cached, or downloaded cover art for one library
 /// file, addressed like streaming (`kind`, `path`). A track without artwork
 /// answers 404. Background clients receive 202 while the lookup is pending.
@@ -1534,7 +1538,14 @@ pub async fn art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -
         kog_audio::settings::AppSettings::load().download_cover_art,
     );
     let result = if query.background {
-        result.borrow().clone()
+        // A cover the cache already has resolves in milliseconds, but only
+        // once its lookup has run: answering from the first borrow would
+        // say "pending" every time the finished job had been evicted, which
+        // the background playlist-cover worker's churn makes routine, and a
+        // poller would never see the image. Wait briefly for a quick answer.
+        tokio::time::timeout(BACKGROUND_ART_WAIT, crate::covers::wait(result.clone()))
+            .await
+            .unwrap_or_else(|_| result.borrow().clone())
     } else {
         // Existing native clients still receive the final image in one request.
         crate::covers::wait(result).await

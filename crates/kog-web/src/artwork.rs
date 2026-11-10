@@ -157,9 +157,9 @@ pub fn source(request_url: Memo<Option<(String, String)>>) -> Memo<String> {
 
 /// Playlist tiles on phones. The server picks each tile's songs (different
 /// images, in playlist order) and finds their covers in the background; the
-/// page loads those images, kept for its lifetime by folder (the songs of
-/// an album in one folder share a cover) with a fingerprint of the image,
-/// so a grid never shows the same art twice.
+/// page loads those images, kept for its lifetime by song (one folder can
+/// hold several albums, as C64 tunes filed by musician do) with a
+/// fingerprint of the image, so a grid never shows the same art twice.
 type FolderCover = (u64, String);
 
 thread_local! {
@@ -224,8 +224,7 @@ pub async fn playlist_covers(base: String, token: String, paths: Vec<String>, wa
         if covers.len() >= want {
             break;
         }
-        let folder = path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or_default();
-        let key = format!("{base}|{folder}");
+        let key = format!("{base}|{path}");
         let cached = FOLDER_COVERS.with(|cache| cache.borrow().get(&key).cloned());
         let cover = match cached {
             Some(cover) => Some(cover),

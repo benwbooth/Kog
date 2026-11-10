@@ -3663,6 +3663,8 @@ fn App() -> impl IntoView {
             let token = token.get_untracked();
             leptos::task::spawn_local(async move {
                 let mut delay = artwork::TILE_POLL_MS;
+                // Tiles whose images didn't all load, retried a few polls.
+                let mut retries = HashMap::<i64, u32>::new();
                 loop {
                     if mobile_view.get_untracked() != MobileView::Playlists
                         || playlist_icons.get_untracked() != mode
@@ -3693,7 +3695,18 @@ fn App() -> impl IntoView {
                         if playlist_tiles.with_untracked(|tiles| tiles.get(&id).map(|(loaded, _)| loaded) == Some(&key)) {
                             continue;
                         }
+                        let expected = paths.len().min(want);
                         let covers = artwork::playlist_covers(server.clone(), token.clone(), paths, want).await;
+                        // A tile short of what the server named is shown as
+                        // it is but not remembered as loaded, so the next
+                        // poll tries its missing images again.
+                        let short = covers.len() < expected && {
+                            let tries = retries.entry(id).or_default();
+                            *tries += 1;
+                            *tries <= 3
+                        };
+                        pending |= short;
+                        let key = if short { String::new() } else { key };
                         playlist_tiles.update(|tiles| {
                             tiles.insert(id, (key, covers));
                         });

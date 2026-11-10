@@ -49,9 +49,22 @@ struct Tile {
     /// Library paths of the songs whose covers to show, in playlist order,
     /// each a different image.
     covers: Vec<String>,
+    /// Fingerprints of `covers`' images, to add only different ones.
+    prints: Vec<u64>,
     /// Still being worked on; `covers` holds the last finished answer (or
     /// what has been found so far, for a new playlist).
     pending: bool,
+    /// The fill pass went through every song for this key. Until then a tile
+    /// short of [`COVERS_PER_PLAYLIST`] covers takes more from the rest of
+    /// the playlist's songs (one folder can hold several albums, as C64 tunes
+    /// filed by musician do), and counts as pending.
+    filled: bool,
+}
+
+impl Tile {
+    fn short(&self) -> bool {
+        self.covers.len() < COVERS_PER_PLAYLIST && !self.filled
+    }
 }
 
 #[derive(Default)]
@@ -158,6 +171,9 @@ impl PlaylistCovers {
             let key = tile_key(&songs, allow_download);
             let mut tile = tiles.by_id.remove(&id).unwrap_or_default();
             if tile.key != key || tile.pending {
+                if tile.key != key {
+                    tile.filled = false;
+                }
                 tile.key = key;
                 tile.pending = true;
                 work.push((id, key, songs));
@@ -171,16 +187,45 @@ impl PlaylistCovers {
 
     /// Record progress for a playlist, unless it changed meanwhile (then the
     /// next pass has its own work for it).
-    fn update(&self, id: i64, key: u64, covers: &[String], done: bool) {
+    fn update(&self, id: i64, key: u64, covers: &[(String, u64)], done: bool) {
         let mut tiles = lock(&self.tiles);
         if let Some(tile) = tiles.by_id.get_mut(&id).filter(|tile| tile.key == key) {
             // A stale tile keeps its old covers until the new ones are all
             // found, so it doesn't flicker; a new one shows covers as they come.
             if done || tile.covers.len() <= covers.len() {
-                tile.covers = covers.to_vec();
+                tile.covers = covers.iter().map(|(song, _)| song.clone()).collect();
+                tile.prints = covers.iter().map(|(_, print)| *print).collect();
             }
             tile.pending = !done;
         }
+    }
+
+    /// Whether playlist `id`'s tile (for `key`) still takes more covers.
+    fn short(&self, id: i64, key: u64) -> bool {
+        lock(&self.tiles).by_id.get(&id).is_some_and(|tile| tile.key == key && tile.short())
+    }
+
+    /// The fill pass found `song`'s cover: add it to a short tile if it is a
+    /// different image. Returns whether the tile still takes more.
+    fn offer(&self, id: i64, key: u64, song: &str, print: u64) -> bool {
+        let mut tiles = lock(&self.tiles);
+        let Some(tile) = tiles.by_id.get_mut(&id).filter(|tile| tile.key == key) else { return false };
+        if tile.short() && !tile.prints.contains(&print) && !tile.covers.iter().any(|cover| cover == song) {
+            tile.covers.push(song.to_owned());
+            tile.prints.push(print);
+        }
+        tile.short()
+    }
+
+    /// The fill pass went through all of playlist `id`'s songs.
+    fn filled(&self, id: i64, key: u64) {
+        if let Some(tile) = lock(&self.tiles).by_id.get_mut(&id).filter(|tile| tile.key == key) {
+            tile.filled = true;
+        }
+    }
+
+    fn key(&self, id: i64) -> Option<u64> {
+        lock(&self.tiles).by_id.get(&id).map(|tile| tile.key)
     }
 
     fn snapshot(&self) -> serde_json::Value {
@@ -198,7 +243,8 @@ impl PlaylistCovers {
                         .iter()
                         .map(|path| serde_json::json!({ "kind": "local", "path": path }))
                         .collect::<Vec<_>>(),
-                    "pending": tile.pending,
+                    // A short tile may still get more from the fill pass.
+                    "pending": tile.pending || tile.short(),
                 }))
                 .collect::<Vec<_>>(),
         })
@@ -267,19 +313,17 @@ impl Worker {
         service: &PlaylistCovers,
         songs: Vec<String>,
         allow_download: bool,
-        mut found: impl FnMut(&[String]),
-    ) -> Vec<String> {
-        let mut chosen = Vec::<String>::new();
-        let mut prints = Vec::<u64>::new();
+        mut found: impl FnMut(&[(String, u64)]),
+    ) -> Vec<(String, u64)> {
+        let mut chosen = Vec::<(String, u64)>::new();
         for song in songs {
             if chosen.len() >= COVERS_PER_PLAYLIST {
                 break;
             }
             let Some(bytes) = self.cover(service, &song, allow_download).await else { continue };
             let print = image_print(&bytes);
-            if !prints.contains(&print) {
-                prints.push(print);
-                chosen.push(song);
+            if !chosen.iter().any(|(_, seen)| *seen == print) {
+                chosen.push((song, print));
                 found(&chosen);
             }
         }
@@ -325,18 +369,30 @@ async fn run(
                         service.update(id, key, &chosen, true);
                     }
                     // Then every other song, until the playlists change
-                    // (the next pass resumes after redoing their tiles).
+                    // (the next pass resumes after redoing their tiles). A
+                    // tile still short of covers takes different ones from
+                    // these, so it looks at every song of its playlist.
                     let mut checked = 0;
-                    'fill: for song in lists.iter().flat_map(|(_, songs)| songs) {
-                        if !service.needs_lookup(song, allow_download) {
-                            continue;
+                    'fill: for (id, songs) in &lists {
+                        let key = service.key(*id);
+                        let mut short = key.is_some_and(|key| service.short(*id, key));
+                        for song in songs {
+                            if !short && !service.needs_lookup(song, allow_download) {
+                                continue;
+                            }
+                            checked += 1;
+                            if checked % FILL_CHANGE_CHECK == 0 && worker.stamp().await != stamp {
+                                interrupted = true;
+                                break 'fill;
+                            }
+                            let bytes = worker.cover(&service, song, allow_download).await;
+                            if let (true, Some(key), Some(bytes)) = (short, key, bytes) {
+                                short = service.offer(*id, key, song, image_print(&bytes));
+                            }
                         }
-                        checked += 1;
-                        if checked % FILL_CHANGE_CHECK == 0 && worker.stamp().await != stamp {
-                            interrupted = true;
-                            break 'fill;
+                        if let Some(key) = key {
+                            service.filled(*id, key);
                         }
-                        worker.cover(&service, song, allow_download).await;
                     }
                 }
                 Err(error) => eprintln!("kog-server: reading playlists for their covers failed: {error}"),
@@ -400,6 +456,43 @@ mod tests {
     }
 
     #[test]
+    fn a_short_tile_takes_different_covers_from_the_fill_pass_until_filled() {
+        let covers = PlaylistCovers::default();
+        let songs: Vec<String> = (1..=6).map(|n| format!("/c64/Hubbard/{n}.sid")).collect();
+        let work = covers.plan(&[(7, songs.clone())], false);
+        let key = work[0].1;
+        // One folder: the tile pass found only the first song's cover.
+        covers.update(7, key, &[(songs[0].clone(), 10)], true);
+        assert_eq!(covers.snapshot()["playlists"][0]["pending"], true);
+        assert!(covers.short(7, key));
+        assert!(covers.offer(7, key, &songs[0], 10));
+        assert!(covers.offer(7, key, &songs[1], 10)); // the same image
+        assert!(covers.offer(7, key, &songs[2], 11));
+        assert!(covers.offer(7, key, &songs[3], 12));
+        assert!(!covers.offer(7, key, &songs[4], 13));
+        assert!(!covers.offer(7, key, &songs[5], 14));
+        let snapshot = covers.snapshot();
+        let paths: Vec<_> = snapshot["playlists"][0]["covers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|cover| cover["path"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(paths, [&songs[0], &songs[2], &songs[3], &songs[4]]);
+        assert_eq!(snapshot["playlists"][0]["pending"], false);
+
+        // A playlist with fewer albums than that is done once filled.
+        let work = covers.plan(&[(8, songs[..1].to_vec())], false);
+        covers.update(8, work[0].1, &[(songs[0].clone(), 10)], true);
+        assert_eq!(covers.snapshot()["playlists"][0]["pending"], true);
+        covers.filled(8, work[0].1);
+        assert_eq!(covers.snapshot()["playlists"][0]["pending"], false);
+        // Replanning the same songs keeps it filled.
+        assert!(covers.plan(&[(8, songs[..1].to_vec())], false).is_empty());
+        assert!(!covers.short(8, work[0].1));
+    }
+
+    #[test]
     fn a_changed_download_setting_looks_songs_up_again() {
         let covers = PlaylistCovers::default();
         assert!(covers.needs_lookup("/music/A/1.mp3", false));
@@ -414,13 +507,15 @@ mod tests {
         let songs = vec!["/music/A/1.mp3".to_owned()];
         let work = covers.plan(&[(0, songs.clone()), (5, songs.clone())], true);
         assert_eq!(work.len(), 2);
+        let found = [("/music/A/1.mp3".to_owned(), 1)];
         for (id, key, _) in &work {
-            covers.update(*id, *key, &songs, true);
+            covers.update(*id, *key, &found, true);
         }
         assert!(covers.plan(&[(0, songs.clone()), (5, songs.clone())], true).is_empty());
 
         // Playlist 5 changed and 0 was removed from the store's answer.
         let changed = vec!["/music/B/1.mp3".to_owned()];
+        let found_changed = [("/music/B/1.mp3".to_owned(), 2)];
         let work = covers.plan(&[(5, changed.clone())], true);
         assert_eq!(work.len(), 1);
         let snapshot = covers.snapshot();
@@ -429,12 +524,13 @@ mod tests {
         // Until the new covers are all found, the old one stays up.
         covers.update(5, work[0].1, &[], false);
         assert_eq!(covers.snapshot()["playlists"][0]["covers"][0]["path"], "/music/A/1.mp3");
-        covers.update(5, work[0].1, &changed, true);
+        covers.update(5, work[0].1, &found_changed, true);
+        covers.filled(5, work[0].1);
         let snapshot = covers.snapshot();
         assert_eq!(snapshot["playlists"][0]["covers"][0]["path"], "/music/B/1.mp3");
         assert_eq!(snapshot["playlists"][0]["pending"], false);
         // Progress for an outdated key is ignored.
-        covers.update(5, work[0].1 ^ 1, &songs, true);
+        covers.update(5, work[0].1 ^ 1, &found, true);
         assert_eq!(covers.snapshot()["playlists"][0]["covers"][0]["path"], "/music/B/1.mp3");
     }
 }
