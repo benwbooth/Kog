@@ -137,7 +137,36 @@ fn track_key(file: &Path, allow_download: bool) -> String {
 
 enum Prepared {
     Local(Bytes),
-    Album { artist: String, album: String },
+    Album { artist: String, album: String, tagged: bool },
+}
+
+/// The album a song belongs to, for keeping its cover consistent: its folder
+/// and album tag, or just the folder when it has no album tag. Every song of
+/// one album then shows the cover first found for any of them, rather than
+/// each its own embedded picture or search result.
+fn album_cover_key(file: &Path, album: &str) -> String {
+    let folder = file.parent().unwrap_or(file);
+    cover_art::cache_key("album", &format!("{}\0{}", folder.display(), album.trim()))
+}
+
+/// The album's cover, if one of its songs already found it (and the listener
+/// hasn't rejected it since).
+fn album_cover(cache_dir: &Path, key: &str) -> Option<Bytes> {
+    cover_art::cache_lookup(cache_dir, key)
+        .and_then(|path| std::fs::read(path).ok())
+        .filter(|bytes| cover_art::sniff_image_kind(bytes).is_some())
+        .filter(|bytes| !cover_art::is_rejected(cache_dir, bytes))
+        .map(Bytes::from)
+}
+
+/// Make `bytes` the album's cover, unless another of its songs got there
+/// first; returns the album's cover either way.
+fn adopt_album_cover(cache_dir: &Path, key: &str, bytes: Bytes) -> Bytes {
+    if let Some(existing) = album_cover(cache_dir, key) {
+        return existing;
+    }
+    let _ = cover_art::store_cache(cache_dir, key, &bytes);
+    bytes
 }
 
 impl CoverService {
@@ -169,32 +198,46 @@ impl CoverService {
                 let probe_file = file.clone();
                 let probe_cache_dir = service.cache_dir.clone();
                 let prepared = tokio::task::spawn_blocking(move || {
-                    if let Some(bytes) = cover_art::embedded_cover_bytes(&probe_file)
-                        .or_else(|| cover_art::sibling_cover_bytes(&probe_file))
-                        .filter(|bytes| !cover_art::is_rejected(&probe_cache_dir, bytes))
-                    {
-                        return Some(Prepared::Local(Bytes::from(bytes)));
-                    }
-                    let entry = PlaylistEntry::from_locator(
+                    // The album's tag (and the artist, for a search) from
+                    // the song's metadata; a song that can't be read still
+                    // shares its folder's cover.
+                    let properties = PlaylistEntry::from_locator(
                         "local",
                         &probe_file.to_string_lossy(),
                         "",
                         None,
                     )
-                    .ok()?;
-                    let properties = streams.probe_entry(entry).ok()?;
-                    Some(Prepared::Album {
-                        artist: properties.artist.unwrap_or_default(),
-                        album: properties.album.unwrap_or_default(),
-                    })
+                    .ok()
+                    .and_then(|entry| streams.probe_entry(entry).ok());
+                    let tagged = properties.is_some();
+                    let (artist, album) = properties
+                        .map(|properties| {
+                            (properties.artist.unwrap_or_default(), properties.album.unwrap_or_default())
+                        })
+                        .unwrap_or_default();
+                    let album_key = album_cover_key(&probe_file, &album);
+                    if let Some(bytes) = album_cover(&probe_cache_dir, &album_key) {
+                        return Some((album_key, Prepared::Local(bytes)));
+                    }
+                    if let Some(bytes) = cover_art::embedded_cover_bytes(&probe_file)
+                        .or_else(|| cover_art::sibling_cover_bytes(&probe_file))
+                        .filter(|bytes| !cover_art::is_rejected(&probe_cache_dir, bytes))
+                    {
+                        let bytes = adopt_album_cover(&probe_cache_dir, &album_key, Bytes::from(bytes));
+                        return Some((album_key, Prepared::Local(bytes)));
+                    }
+                    Some((album_key, Prepared::Album { artist, album, tagged }))
                 })
                 .await
                 .ok()
                 .flatten();
                 drop(permit);
-                match prepared? {
+                let (album_key, prepared) = prepared?;
+                match prepared {
                     Prepared::Local(bytes) => Some(bytes),
-                    Prepared::Album { artist, album } => {
+                    // Without readable metadata there is nothing to search for.
+                    Prepared::Album { tagged: false, .. } => None,
+                    Prepared::Album { artist, album, .. } => {
                         let lookup_album = cover_art::fallback_album(&file, &album);
                         let (key, _) =
                             cover_art::track_cache_key(&artist, &album, &lookup_album, &file);
@@ -225,7 +268,14 @@ impl CoverService {
                             },
                         );
                         match wait(result).await {
-                            CoverResult::Ready(bytes) => Some(bytes),
+                            CoverResult::Ready(bytes) => {
+                                let cache_dir = service.cache_dir.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    adopt_album_cover(&cache_dir, &album_key, bytes)
+                                })
+                                .await
+                                .ok()
+                            }
                             _ => None,
                         }
                     }
