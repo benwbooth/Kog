@@ -8,14 +8,18 @@
     <meta name="description" content="Kog web player" />
     <!-- Home screen installs: the PNG is what iOS pins (it cannot use the SVG
          favicon), the manifest drives Android and the standalone launch. -->
-    <!-- Match supporting browser chrome to the toolbar in each color scheme. -->
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#202427" />
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e7e9ec" />
+    <!-- Browser chrome above the page (Safari's status bar area) takes the
+         phone toolbar's colour (--window) in each colour scheme, so the two
+         read as one strip. The page updates these when Preferences picks a
+         scheme other than the system's. -->
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f7fb" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <!-- Keep the app below iOS's status bar. The translucent mode draws the
-         toolbar behind the camera area, where iOS obscures/blurs it. -->
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <!-- Home Screen app: the page runs up under iOS's status bar, so the
+         notch area is the toolbar's own background; the toolbar's top
+         padding (the safe-area inset) keeps its controls clear of it. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Kog" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <!-- The ?v busts Safari's touch-icon cache: iOS pins the icon at

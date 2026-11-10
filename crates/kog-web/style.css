@@ -46,24 +46,8 @@
   --sidebar-width: 260px;
   --transport-height: 92px;
   --toolbar-height: 48px;
-  --standalone-top-clearance: 0px;
-  --toolbar-bottom: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px) + var(--standalone-top-clearance));
+  --toolbar-bottom: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px));
   color-scheme: dark;
-}
-
-/* iOS 27 adds a blurred scroll-edge strip to Home Screen web apps. Keep
- * controls below it; Safari tabs and older iOS versions retain their layout.
- * Scroll anchoring is available starting with Safari 27. */
-@media (display-mode: standalone) and (pointer: coarse) and (orientation: portrait) {
-  @supports (overflow-anchor: auto) and (-webkit-touch-callout: none) {
-    :root {
-      --standalone-top-clearance: 16px;
-    }
-
-    html body {
-      background: var(--surface);
-    }
-  }
 }
 
 /* Light colours: after the system unless Preferences picks one (data-theme
@@ -154,7 +138,6 @@ body {
  * them in the shell. Browsers without env() keep the first declaration. */
 .app {
   display: grid;
-  padding-top: var(--standalone-top-clearance);
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--toolbar-height) minmax(0, 1fr) var(--transport-height);
   grid-template-rows: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr)
@@ -2482,7 +2465,13 @@ body.touch .track .index-cell {
     display: grid;
     width: 44px;
     height: 44px;
-    font-size: 22px;
+    color: var(--muted);
+  }
+
+  /* The sort icon matches the server button's gear beside it. */
+  .toolbar .mobile-sort > svg {
+    width: 21px;
+    height: 21px;
   }
 
   .toolbar .server {

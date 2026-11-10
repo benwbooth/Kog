@@ -78,6 +78,7 @@ mod icons {
     pub const FOLDER_OPEN: &str = include_str!("../../../qml/icons/folder-open.svg");
     pub const VIEW_LIST_TREE: &str = include_str!("../../../qml/icons/view-list-tree.svg");
     pub const CLEAR_LIST: &str = include_str!("../../../qml/icons/edit-clear-list.svg");
+    pub const SORT: &str = include_str!("../../../qml/icons/view-sort.svg");
     pub const CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>"#;
     pub const QUEUE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M3 5h13v2H3zm0 6h13v2H3zm0 6h9v2H3zm13-3 6 4-6 4z"/></svg>"#;
     /// Per-format tree art, the same files the Qt tree shows
@@ -1154,6 +1155,45 @@ fn apply_theme(mode: &str) {
         let _ = root.set_attribute("data-theme", mode);
     } else {
         let _ = root.remove_attribute("data-theme");
+    }
+    sync_theme_color(&root, mode == "light" || mode == "dark");
+}
+
+/// Browser chrome above the page takes the phone toolbar's colour. The
+/// page's `theme-color` tags follow the system's scheme; a scheme chosen in
+/// Preferences sets them all to that scheme's toolbar colour instead, and
+/// following the system again restores each tag's own.
+fn sync_theme_color(root: &web_sys::Element, chosen: bool) {
+    let Some(window) = web_sys::window() else { return };
+    let Some(document) = window.document() else { return };
+    let Ok(tags) = document.query_selector_all("meta[name=\"theme-color\"]") else {
+        return;
+    };
+    let toolbar = window
+        .get_computed_style(root)
+        .ok()
+        .flatten()
+        .and_then(|style| style.get_property_value("--window").ok())
+        .map(|colour| colour.trim().to_owned())
+        .filter(|colour| !colour.is_empty());
+    for index in 0..tags.length() {
+        let Some(tag) = tags.item(index).and_then(|node| node.dyn_into::<web_sys::Element>().ok()) else {
+            continue;
+        };
+        // The tag's own colour, kept the first time it is replaced.
+        let own = match tag.get_attribute("data-own-content") {
+            Some(own) => own,
+            None => {
+                let own = tag.get_attribute("content").unwrap_or_default();
+                let _ = tag.set_attribute("data-own-content", &own);
+                own
+            }
+        };
+        let colour = match (&toolbar, chosen) {
+            (Some(toolbar), true) => toolbar.clone(),
+            _ => own,
+        };
+        let _ = tag.set_attribute("content", &colour);
     }
 }
 
@@ -6658,7 +6698,8 @@ fn App() -> impl IntoView {
                         title="Sort queue"
                         aria-label="Sort queue"
                         on:click=move |_| set_mobile_sort_open.set(true)
-                    >"↕"</button>
+                        inner_html=icons::SORT
+                    ></button>
                     <button
                         class="flat icon-button mobile-create-playlist"
                         type="button"
