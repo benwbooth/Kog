@@ -13,7 +13,8 @@
 use std::io::Write;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use axum::body::Bytes;
 use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, StreamProperties};
@@ -49,6 +50,114 @@ pub struct StreamService {
     mml: crate::mml::MmlJobs,
     /// Songs whose level timelines are being worked out right now.
     levels_active: Arc<Mutex<HashSet<String>>>,
+    /// Encodes in progress, by stream stem. A second request for the same
+    /// stream (Safari's range probe, the player's prefetch of a song that
+    /// then starts) reads the encode already running instead of starting
+    /// another decode of the song.
+    active_encodes: Arc<Mutex<HashMap<String, Arc<ActiveEncode>>>>,
+}
+
+/// One encode in progress, as the requests that follow it see it.
+struct ActiveEncode {
+    path: PathBuf,
+    progress: Mutex<EncodeProgress>,
+    changed: Condvar,
+    /// Clients still reading it: the request that started it plus any that
+    /// followed. An SC-55 encode nobody is listening to gives way to the
+    /// next song (see `Sc55Turn`).
+    listeners: AtomicUsize,
+    /// Set when another song needs the SC-55: the encode stops uncached.
+    cancelled: AtomicBool,
+}
+
+#[derive(Default)]
+struct EncodeProgress {
+    written: u64,
+    done: bool,
+    error: Option<String>,
+}
+
+impl ActiveEncode {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            progress: Mutex::default(),
+            changed: Condvar::new(),
+            listeners: AtomicUsize::new(1),
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
+    fn wrote(&self, count: usize) {
+        self.progress.lock().unwrap_or_else(|e| e.into_inner()).written += count as u64;
+        self.changed.notify_all();
+    }
+
+    fn finish(&self, error: Option<String>) {
+        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        progress.done = true;
+        if error.is_some() {
+            progress.error = error;
+        }
+        drop(progress);
+        self.changed.notify_all();
+    }
+
+    fn listener_left(&self) {
+        let _ = self.listeners.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_sub(1));
+    }
+}
+
+/// The server's turn at the Nuked SC-55. The emulator is shared by the whole
+/// process and a new render cancels the one in progress, so two SC-55 songs
+/// encoding at once (the playing song and the next one the player prefetches)
+/// would cut the first off a few seconds in. SC-55 encodes take turns
+/// instead. A waiting song only takes over early when nobody is listening to
+/// the one rendering (the listener skipped it); that encode then stops and is
+/// not cached.
+struct Sc55Turn;
+
+struct Sc55Gate {
+    holder: Mutex<Option<Arc<ActiveEncode>>>,
+    released: Condvar,
+}
+
+fn sc55_gate() -> &'static Sc55Gate {
+    static GATE: OnceLock<Sc55Gate> = OnceLock::new();
+    GATE.get_or_init(|| Sc55Gate { holder: Mutex::new(None), released: Condvar::new() })
+}
+
+impl Sc55Turn {
+    fn take(active: &Arc<ActiveEncode>) -> Self {
+        let gate = sc55_gate();
+        let mut holder = gate.holder.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            match holder.as_ref() {
+                None => {
+                    *holder = Some(active.clone());
+                    return Self;
+                }
+                Some(current) => {
+                    if current.listeners.load(Ordering::Acquire) == 0 {
+                        current.cancelled.store(true, Ordering::Release);
+                    }
+                    holder = gate
+                        .released
+                        .wait_timeout(holder, std::time::Duration::from_millis(250))
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Sc55Turn {
+    fn drop(&mut self) {
+        let gate = sc55_gate();
+        *gate.holder.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        gate.released.notify_all();
+    }
 }
 
 impl StreamService {
@@ -69,6 +178,7 @@ impl StreamService {
             inspection_active: Arc::new(Mutex::new(HashMap::new())),
             mml: crate::mml::MmlJobs::default(),
             levels_active: Arc::default(),
+            active_encodes: Arc::default(),
         }
     }
 
@@ -100,6 +210,9 @@ impl StreamService {
                     return Ok(StreamSource::CachedFrom { path, offset });
                 }
             }
+        }
+        if let Some(following) = self.follow_active(&key) {
+            return Ok(following);
         }
         let decoders = kog_audio::decoder::DecoderRegistry::new(self.decoder_settings.clone());
         let source = resolve_entry(&entry, &decoders, &self.scratch)?;
@@ -288,6 +401,45 @@ impl StreamService {
         self.decoder_settings.set_midi_engine(engine);
     }
 
+    /// Follow the encode of this stream already in progress, if there is one:
+    /// its bytes so far from the cache file, then the rest as they arrive.
+    fn follow_active(&self, key: &StreamKey) -> Option<StreamSource> {
+        let active = self.active_encodes.lock().unwrap_or_else(|e| e.into_inner());
+        let encode = active.get(&key.stem())?.clone();
+        // Opened while the encode is still registered, so before it renames
+        // its file into the cache; the open handle survives the rename.
+        let file = std::fs::File::open(&encode.path).ok()?;
+        encode.listeners.fetch_add(1, Ordering::AcqRel);
+        drop(active);
+        let (sender, receiver) = tokio::sync::mpsc::channel(CHANNEL_DEPTH);
+        let spawned = std::thread::Builder::new()
+            .name("kog-stream-follow".to_owned())
+            .spawn({
+                let encode = encode.clone();
+                move || {
+                    follow_encode(&encode, file, &sender);
+                    encode.listener_left();
+                }
+            });
+        if spawned.is_err() {
+            encode.listener_left();
+            return None;
+        }
+        Some(StreamSource::Encoding { receiver })
+    }
+
+    /// Stop offering an encode to new requests and wake the ones following
+    /// it. Called before a finished encode is moved into the cache, so a
+    /// follower never opens a file that has just been renamed.
+    fn retire_encode(&self, key: &StreamKey, encode: &Arc<ActiveEncode>, error: Option<String>) {
+        let mut active = self.active_encodes.lock().unwrap_or_else(|e| e.into_inner());
+        if active.get(&key.stem()).is_some_and(|current| Arc::ptr_eq(current, encode)) {
+            active.remove(&key.stem());
+        }
+        drop(active);
+        encode.finish(error);
+    }
+
     fn start_encode(
         &self,
         source: PlaybackSource,
@@ -296,23 +448,47 @@ impl StreamService {
     ) -> Result<StreamSource, String> {
         let (sender, receiver) = tokio::sync::mpsc::channel(CHANNEL_DEPTH);
         let (partial_path, partial) = self.cache.create_unique_partial(&key)?;
+        let encode = {
+            let mut active = self.active_encodes.lock().unwrap_or_else(|e| e.into_inner());
+            if active.contains_key(&key.stem()) {
+                // Another request started this stream meanwhile: follow it.
+                drop(active);
+                drop(partial);
+                let _ = std::fs::remove_file(&partial_path);
+                if let Some(following) = self.follow_active(&key) {
+                    return Ok(following);
+                }
+                return Err("the stream's encode ended while starting".to_owned());
+            }
+            let encode = Arc::new(ActiveEncode::new(partial_path.clone()));
+            active.insert(key.stem(), encode.clone());
+            encode
+        };
         let service = self.clone();
+        let encode_handle = encode.clone();
+        let partial_path_handle = partial_path.clone();
+        let key_handle = key.clone();
         // Decoding and encoding are blocking, CPU-bound work: keep them off
         // the async runtime's worker threads.
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("kog-stream-encode".to_owned())
             .spawn(move || {
                 // Holding the registry here keeps any archive extraction
                 // workspace alive for as long as the source needs it.
                 let _decoders = decoders;
-                let result = service.encode_into(source, &key, partial, &partial_path, sender.clone());
+                let result = service.encode_into(source, &key, partial, &partial_path, sender.clone(), &encode);
                 if let Err(error) = &result {
                     let _ = std::fs::remove_file(&partial_path);
                     eprintln!("kog-server: streaming {}: {error}", key.locator);
+                    service.retire_encode(&key, &encode, Some(error.clone()));
                     let _ = sender.blocking_send(Err(std::io::Error::other(error.clone())));
                 }
-            })
-            .map_err(|error| format!("starting the stream encoder: {error}"))?;
+            });
+        if let Err(error) = spawned {
+            self.retire_encode(&key_handle, &encode_handle, Some(error.to_string()));
+            let _ = std::fs::remove_file(&partial_path_handle);
+            return Err(format!("starting the stream encoder: {error}"));
+        }
         Ok(StreamSource::Encoding { receiver })
     }
 
@@ -323,10 +499,16 @@ impl StreamService {
         partial: std::fs::File,
         partial_path: &Path,
         sender: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+        encode: &Arc<ActiveEncode>,
     ) -> Result<(), String> {
         // Freeze the render profile that named this stream and its channel
         // recording, even if the user changes synths during an encode.
         let settings = self.render_settings(key);
+        // Declared before the decoder so it is released after it.
+        let sc55_turn = (key.render_profile.as_deref()
+            == Some(kog_audio::settings::MidiEngine::Sc55.setting_value()))
+        .then(|| Sc55Turn::take(encode));
+        let sc55_failures = kog_audio::decoder::sc55_render_failures();
         let mut pcm = PcmReader::open(source, settings)?.with_leveling(key.leveling);
         if key.start_ms > 0 {
             pcm.seek(std::time::Duration::from_millis(key.start_ms))?;
@@ -342,9 +524,18 @@ impl StreamService {
         let tee = TeeWriter {
             file: partial,
             sender,
+            encode: Some(encode.clone()),
+            client_gone: false,
         };
         let pcm = crate::inspection::CaptureReader::new(pcm, metadata, key.start_ms)?;
         encode_to_writer(key.codec, key.bitrate_kbps, sample_rate, channels, pcm, tee)?;
+        // A cut-short SC-55 render ends its song early and the rest is
+        // silence: don't keep it as the song.
+        if sc55_turn.is_some() && kog_audio::decoder::sc55_render_failures() != sc55_failures {
+            return Err("the Nuked SC-55 render stopped before the song ended".to_owned());
+        }
+        drop(sc55_turn);
+        self.retire_encode(key, encode, None);
         let final_metadata = self.cache.inspection_path(key);
         if !final_metadata.exists() {
             if let Err(error) = std::fs::rename(&metadata_path, &final_metadata) {
@@ -408,19 +599,80 @@ fn adts_offset(path: &Path, start_ms: u64) -> Option<u64> {
 struct TeeWriter {
     file: std::fs::File,
     sender: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+    /// The encode other requests follow, told about every write.
+    encode: Option<Arc<ActiveEncode>>,
+    client_gone: bool,
 }
 
 impl Write for TeeWriter {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if self.encode.as_ref().is_some_and(|encode| encode.cancelled.load(Ordering::Acquire)) {
+            return Err(std::io::Error::other("stopped: nobody was listening and another song needed the SC-55"));
+        }
         self.file.write_all(buffer)?;
-        let _ = self
-            .sender
-            .blocking_send(Ok(Bytes::copy_from_slice(buffer)));
+        if let Some(encode) = &self.encode {
+            encode.wrote(buffer.len());
+        }
+        if !self.client_gone
+            && self.sender.blocking_send(Ok(Bytes::copy_from_slice(buffer))).is_err()
+        {
+            self.client_gone = true;
+            if let Some(encode) = &self.encode {
+                encode.listener_left();
+            }
+        }
         Ok(buffer.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.file.flush()
+    }
+}
+
+/// Send a follower everything the encode has written, waiting for more until
+/// it finishes.
+fn follow_encode(
+    encode: &ActiveEncode,
+    mut file: std::fs::File,
+    sender: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+) {
+    use std::io::Read;
+    let mut sent = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let (written, done, error) = {
+            let mut progress = encode.progress.lock().unwrap_or_else(|e| e.into_inner());
+            while progress.written <= sent && !progress.done {
+                progress = encode.changed.wait(progress).unwrap_or_else(|e| e.into_inner());
+            }
+            (progress.written, progress.done, progress.error.clone())
+        };
+        while sent < written {
+            let want = usize::try_from(written - sent).unwrap_or(usize::MAX).min(buffer.len());
+            match file.read(&mut buffer[..want]) {
+                Ok(0) => {
+                    // Written but not readable yet; look again shortly.
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    break;
+                }
+                Ok(count) => {
+                    sent += count as u64;
+                    if sender.blocking_send(Ok(Bytes::copy_from_slice(&buffer[..count]))).is_err() {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.blocking_send(Err(error));
+                    return;
+                }
+            }
+        }
+        if done {
+            if let Some(error) = error {
+                let _ = sender.blocking_send(Err(std::io::Error::other(error)));
+            }
+            return;
+        }
     }
 }
 
@@ -612,6 +864,8 @@ mod tests {
         let mut tee = TeeWriter {
             file: std::fs::File::create(&path).unwrap(),
             sender,
+            encode: None,
+            client_gone: false,
         };
         tee.write_all(b"first").unwrap();
         drop(receiver); // client went away
@@ -625,6 +879,8 @@ mod tests {
         let mut tee = TeeWriter {
             file: std::fs::File::create(directory.path().join("out2.bin")).unwrap(),
             sender,
+            encode: None,
+            client_gone: false,
         };
         tee.write_all(b"streamed").unwrap();
         let received = receiver.try_recv().unwrap().unwrap();

@@ -2284,6 +2284,16 @@ impl Source for OplMidiSource {
     }
 }
 
+/// SC-55 renders in this process that ended before their song did, as when
+/// another render took over the shared emulator. The source then just ends
+/// early, so a caller that must not keep a cut-short render (the server's
+/// stream cache) compares this before and after.
+static SC55_RENDER_FAILURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn sc55_render_failures() -> u64 {
+    SC55_RENDER_FAILURES.load(std::sync::atomic::Ordering::Acquire)
+}
+
 struct Sc55MidiSource {
     decoder: Sc55,
     duration: Duration,
@@ -2316,6 +2326,7 @@ impl Sc55MidiSource {
                 .truncate(frames * usize::from(MIDI_CHANNELS)),
             Err(error) => {
                 eprintln!("Kog SC-55 playback stopped: {error}");
+                SC55_RENDER_FAILURES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 self.render_error = Some(error);
                 self.interleaved.clear();
             }

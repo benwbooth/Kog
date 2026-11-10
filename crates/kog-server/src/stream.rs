@@ -75,6 +75,12 @@ impl StreamKey {
         if let Some(profile) = &self.render_profile {
             fingerprint.push('\0');
             fingerprint.push_str(profile);
+            // SC-55 streams cached before the server ran one SC-55 render at
+            // a time could have been cut short by another song's render and
+            // padded with silence; v2 records them again.
+            if profile == kog_audio::settings::MidiEngine::Sc55.setting_value() {
+                fingerprint.push_str("\0sc55-v2");
+            }
         }
         // Songs encoded before the setting existed looped twice.
         if self.looping != kog_audio::looping::LoopPolicy::Twice.setting_value() {
