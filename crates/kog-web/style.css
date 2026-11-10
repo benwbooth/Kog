@@ -3207,12 +3207,10 @@ body.touch .track .index-cell {
     height: 21px;
   }
 
+  /* No connection light on the gear: a phone that can't reach Kog can't
+   * show this page either. */
   .toolbar .server-dot {
-    position: absolute;
-    right: 5px;
-    top: 4px;
-    font-size: 11px;
-    line-height: 1;
+    display: none;
   }
 
   .mobile-library .section.files .section-header,
