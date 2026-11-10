@@ -2341,6 +2341,8 @@ fn App() -> impl IntoView {
     // How long looping songs play, shared with the desktop and terminal.
     let (looping, set_looping) = signal(String::new());
     let (looping_options, set_looping_options) = signal(Vec::<(String, String)>::new());
+    // Automatic volume leveling, done by the server as it encodes.
+    let (leveling, set_leveling) = signal(false);
     let (version, set_version) = signal(String::new());
     // Queue indices the pane actions act on. The anchor is a queue index too;
     // Shift-click resolves its range through the current visible row order.
@@ -3608,6 +3610,9 @@ fn App() -> impl IntoView {
                         })
                         .collect();
                     set_looping_options.set(options);
+                }
+                if let Ok(value) = get_json("/api/settings/leveling".to_owned()).await {
+                    set_leveling.set(value["enabled"].as_bool().unwrap_or(false));
                 }
             });
         }
@@ -8535,6 +8540,32 @@ fn App() -> impl IntoView {
                                 </select>
                             </label>
                             <p class="hint">"Where songs that loop (NSF, SPC, VGM and the like) end, from the next song. The desktop and terminal players share it."</p>
+                            <label class="check">
+                                <input
+                                    type="checkbox"
+                                    prop:checked=move || leveling.get()
+                                    on:change=move |event| {
+                                        let checked = event
+                                            .target()
+                                            .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                            .map(|input| input.checked())
+                                            .unwrap_or(false);
+                                        let header = auth().header();
+                                        let url = format!("{}/api/settings/leveling", base());
+                                        leptos::task::spawn_local(async move {
+                                            match post_json(url, header, serde_json::json!({ "enabled": checked })).await {
+                                                Ok(reply) => {
+                                                    set_leveling.set(reply["enabled"].as_bool().unwrap_or(checked));
+                                                    set_message.set(String::new());
+                                                }
+                                                Err(error) => set_message.set(error),
+                                            }
+                                        });
+                                    }
+                                />
+                                "Automatic volume leveling"
+                            </label>
+                            <p class="hint">"Brings every song to about the same loudness, from the next song. The server levels what it streams."</p>
                         </Show>
                         <label class="check">
                             <input

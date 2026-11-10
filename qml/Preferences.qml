@@ -467,6 +467,17 @@ Window {
                                     text: Math.round(root.app.volume * 100) + "%"
                                 }
                             }
+                            PreferenceCheckBox {
+                                text: qsTr("Automatic volume leveling")
+                                checked: root.app.volume_leveling
+                                onToggled: root.app.update_volume_leveling(checked)
+                            }
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                text: qsTr("Brings every song to about the same loudness as it plays, so quiet and loud rips sit together. Quiet passages inside a song stay quiet.")
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
+                            }
                         }
                     }
 

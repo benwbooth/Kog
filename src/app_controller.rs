@@ -80,6 +80,7 @@ pub mod qobject {
         #[qproperty(QString, midi_status)]
         #[qproperty(QString, opening_files_behavior)]
         #[qproperty(QString, loop_policy)]
+        #[qproperty(bool, volume_leveling)]
         #[qproperty(bool, read_cue_sheets_in_folders)]
         #[qproperty(bool, read_playlists_in_folders)]
         #[qproperty(bool, show_tray_icon)]
@@ -486,6 +487,8 @@ pub mod qobject {
         fn select_opening_files_behavior(self: Pin<&mut AppController>, behavior: QString);
         #[qinvokable]
         fn select_loop_policy(self: Pin<&mut AppController>, policy: QString);
+        #[qinvokable]
+        fn update_volume_leveling(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
         fn set_folder_cue_mode(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
@@ -2004,6 +2007,7 @@ pub struct AppControllerRust {
     midi_status: QString,
     opening_files_behavior: QString,
     loop_policy: QString,
+    volume_leveling: bool,
     read_cue_sheets_in_folders: bool,
     read_playlists_in_folders: bool,
     show_tray_icon: bool,
@@ -2275,6 +2279,7 @@ impl Default for AppControllerRust {
             midi_status,
             opening_files_behavior: qstring(app_settings.opening_files_behavior.setting_value()),
             loop_policy: qstring(kog_audio::looping::current().setting_value()),
+            volume_leveling: kog_audio::leveling::current(),
             read_cue_sheets_in_folders: app_settings.read_cue_sheets_in_folders,
             read_playlists_in_folders: app_settings.read_playlists_in_folders,
             show_tray_icon: app_settings.show_tray_icon,
@@ -6919,6 +6924,20 @@ impl qobject::AppController {
             "Looping songs: {} (from the next song)",
             policy.label()
         )));
+    }
+
+    pub fn update_volume_leveling(mut self: Pin<&mut Self>, enabled: bool) {
+        if let Err(error) = kog_audio::leveling::save(enabled) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().rust_mut().playback.set_leveling(enabled);
+        self.as_mut().set_volume_leveling(enabled);
+        self.as_mut().set_status(qstring(if enabled {
+            "Automatic volume leveling on"
+        } else {
+            "Automatic volume leveling off"
+        }));
     }
 
     pub fn set_folder_cue_mode(mut self: Pin<&mut Self>, enabled: bool) {

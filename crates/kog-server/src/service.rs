@@ -317,7 +317,7 @@ impl StreamService {
         // Freeze the render profile that named this stream and its channel
         // recording, even if the user changes synths during an encode.
         let settings = self.render_settings(key);
-        let mut pcm = PcmReader::open(source, settings)?;
+        let mut pcm = PcmReader::open(source, settings)?.with_leveling(key.leveling);
         if key.start_ms > 0 {
             pcm.seek(std::time::Duration::from_millis(key.start_ms))?;
         }

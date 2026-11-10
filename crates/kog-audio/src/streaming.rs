@@ -59,6 +59,9 @@ pub struct PcmReader {
     /// by feeding silence, so end-of-stream has to come from the track's known
     /// duration rather than from the mixer running dry.
     remaining_frames: Option<u64>,
+    /// Automatic volume leveling, for readers that asked for it.
+    leveler: Option<crate::leveling::Leveler>,
+    samples: Vec<f32>,
 }
 
 impl PcmReader {
@@ -121,6 +124,8 @@ impl PcmReader {
             duration,
             total_frames,
             remaining_frames: total_frames,
+            leveler: None,
+            samples: Vec::with_capacity(PULL_BATCH),
         })
     }
 
@@ -141,6 +146,7 @@ impl PcmReader {
             source: mixer_output, inspection: crate::inspection::Monitor::default(), _player: Some(player), _registry: None,
             pending: Vec::with_capacity(PULL_BATCH * 4), position: 0, finished: false,
             duration, total_frames, remaining_frames: total_frames,
+            leveler: None, samples: Vec::with_capacity(PULL_BATCH),
         }
     }
 
@@ -165,7 +171,18 @@ impl PcmReader {
             duration: None,
             total_frames: None,
             remaining_frames: None,
+            leveler: None,
+            samples: Vec::with_capacity(PULL_BATCH),
         }
+    }
+
+    /// Level this stream's loudness (see [`crate::leveling`]). The first
+    /// read measures a couple of seconds ahead so the song starts at its own
+    /// level.
+    pub fn with_leveling(mut self, enabled: bool) -> Self {
+        self.leveler = enabled
+            .then(|| crate::leveling::Leveler::new(STREAM_SAMPLE_RATE, STREAM_CHANNELS));
+        self
     }
 
     pub const fn sample_rate(&self) -> u32 {
@@ -229,16 +246,32 @@ impl PcmReader {
             self.finished = true;
             return;
         }
-        for _ in 0..PULL_BATCH {
+        // A leveled stream measures its opening before sending any of it.
+        let priming = self.leveler.as_ref().is_some_and(|leveler| !leveler.has_estimate());
+        let batch = if priming {
+            let frames = crate::leveling::PRIME_DURATION.as_secs_f64() * f64::from(STREAM_SAMPLE_RATE);
+            frames as usize * usize::from(STREAM_CHANNELS)
+        } else {
+            PULL_BATCH
+        };
+        self.samples.clear();
+        for _ in 0..batch {
             match self.source.next() {
-                Some(sample) => {
-                    self.pending.extend_from_slice(&sample.to_le_bytes());
-                }
+                Some(sample) => self.samples.push(sample),
                 None => {
                     self.finished = true;
                     break;
                 }
             }
+        }
+        if let Some(leveler) = self.leveler.as_mut() {
+            if priming {
+                leveler.prime(&self.samples);
+            }
+            leveler.process(&mut self.samples, 1.0);
+        }
+        for sample in &self.samples {
+            self.pending.extend_from_slice(&sample.to_le_bytes());
         }
         if let Some(remaining) = self.remaining_frames.as_mut() {
             // `pending` is interleaved samples at STREAM_CHANNELS, but the

@@ -10,6 +10,7 @@ use rodio::source::{SeekError, Zero};
 use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source, mixer};
 
 use crate::decoder::{DecoderRegistry, PlaybackSource, SelectedBackend};
+use crate::leveling::{LevelingControl, LevelingSource};
 use kog_core::equalizer::{EqualizerControl, EqualizerSettings, EqualizerSource};
 use kog_core::effects::{EffectsControl, EffectsSettings, EffectsSource};
 
@@ -110,9 +111,17 @@ pub struct PlaybackEngine {
     remote_inspection: Option<crate::inspection::remote::RemoteMonitor>,
     output_device_id: Option<String>,
     volume: f32,
+    leveling: LevelingControl,
+    /// Levels measured for songs played this session, so a song heard
+    /// before starts at its own level instead of finding it again.
+    known_levels: HashMap<PlaybackSource, f64>,
+    leveled_source: Option<PlaybackSource>,
     state: PlaybackState,
     heartbeat: Heartbeat,
 }
+
+/// Songs whose levels are remembered before the memory starts over.
+const KNOWN_LEVELS_LIMIT: usize = 8_192;
 
 /// When the audio device last took samples. A device whose stream stops
 /// asking for audio (some ALSA/PipeWire setups wedge after an underrun) is
@@ -310,6 +319,9 @@ impl PlaybackEngine {
             remote_inspection: None,
             output_device_id,
             volume: 0.75,
+            leveling: LevelingControl::new(crate::leveling::current(), 0.75),
+            known_levels: HashMap::new(),
+            leveled_source: None,
             state: PlaybackState::Stopped,
             heartbeat: Heartbeat::new(),
         }
@@ -332,6 +344,7 @@ impl PlaybackEngine {
         self.equalizer.reset();
         self.effects.reset();
         self.meter.reset();
+        self.start_leveling(source);
         self.inspection = crate::inspection::Monitor::default();
         self.remote_inspection = source.remote_url.as_deref().and_then(crate::inspection::remote::RemoteMonitor::new);
         let backend = match self.decoders.append_observed(source, &player, &self.inspection) {
@@ -341,7 +354,7 @@ impl PlaybackEngine {
                 return Err(error);
             }
         };
-        player.set_volume(self.volume);
+        player.set_volume(self.player_volume());
         player.play();
         self.player = Some(player);
         self.state = PlaybackState::Playing;
@@ -409,9 +422,52 @@ impl PlaybackEngine {
 
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0.0, 1.0);
+        self.leveling.set_volume(self.volume);
         if let Some(player) = self.player.as_ref() {
-            player.set_volume(self.volume);
+            player.set_volume(self.player_volume());
         }
+    }
+
+    /// Turn automatic volume leveling on or off; it applies straight away.
+    pub fn set_leveling(&mut self, enabled: bool) {
+        if self.leveling.enabled() == enabled {
+            return;
+        }
+        if !enabled {
+            self.remember_level();
+        }
+        self.leveling.set_enabled(enabled);
+        if let Some(player) = self.player.as_ref() {
+            player.set_volume(self.player_volume());
+        }
+    }
+
+    pub fn leveling(&self) -> bool {
+        self.leveling.enabled()
+    }
+
+    /// While leveling, the player runs at full volume and the leveler
+    /// applies the listener's volume after measuring the song.
+    fn player_volume(&self) -> f32 {
+        if self.leveling.enabled() { 1.0 } else { self.volume }
+    }
+
+    fn remember_level(&mut self) {
+        let Some(source) = self.leveled_source.take() else { return };
+        if let Some(level) = self.leveling.settled_level() {
+            if self.known_levels.len() >= KNOWN_LEVELS_LIMIT {
+                self.known_levels.clear();
+            }
+            self.known_levels.insert(source, level);
+        }
+    }
+
+    fn start_leveling(&mut self, source: &PlaybackSource) {
+        if self.leveling.enabled() {
+            self.remember_level();
+        }
+        self.leveling.start_song(self.known_levels.get(source).copied());
+        self.leveled_source = Some(source.clone());
     }
 
     pub fn set_equalizer(&self, settings: EqualizerSettings) {
@@ -540,9 +596,12 @@ impl PlaybackEngine {
         let bus = Bus {
             source: Arc::new(Mutex::new(Box::new(HeartbeatSource {
                 input: AudioMeterSource::new(
-                    EffectsSource::new(
-                        EqualizerSource::new(processing_source, self.equalizer.clone()),
-                        self.effects.clone(),
+                    LevelingSource::new(
+                        EffectsSource::new(
+                            EqualizerSource::new(processing_source, self.equalizer.clone()),
+                            self.effects.clone(),
+                        ),
+                        self.leveling.clone(),
                     ),
                     self.meter.clone(),
                 ),

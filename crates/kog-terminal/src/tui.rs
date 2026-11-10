@@ -2834,6 +2834,19 @@ impl Ui {
                     Err(error) => self.status = error,
                 }
             }
+            (MenuPage::Preferences, 21) => {
+                let enabled = !kog_audio::leveling::current();
+                match kog_audio::leveling::save(enabled) {
+                    Ok(()) => {
+                        self.player.set_leveling(enabled);
+                        self.status = format!(
+                            "Automatic volume leveling: {}",
+                            if enabled { "on" } else { "off" }
+                        );
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
             (MenuPage::Preferences, 17) => {
                 self.modal = None;
                 self.effects_view.show(AppSettings::load().effects);
@@ -11117,7 +11130,7 @@ const PLAYBACK_MENU: [&str; 14] = [
     "Clear Queue",
     "Seek to Time…",
 ];
-const PREFERENCES_MENU: [&str; 21] = [
+const PREFERENCES_MENU: [&str; 22] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -11139,6 +11152,7 @@ const PREFERENCES_MENU: [&str; 21] = [
     "Cycle Export Format",
     "Export With Effects On/Off",
     "Cycle Looping Songs",
+    "Volume Leveling On/Off",
 ];
 const SERVER_MENU: [&str; 17] = [
     "Start Server",

@@ -2643,6 +2643,23 @@ pub async fn set_looping_setting(axum::Json(body): axum::Json<serde_json::Value>
     axum::Json(serde_json::json!({ "policy": policy.setting_value() })).into_response()
 }
 
+/// `GET /api/settings/leveling` — whether songs are leveled to one loudness.
+pub async fn leveling_settings() -> Response {
+    axum::Json(serde_json::json!({ "enabled": kog_audio::leveling::current() })).into_response()
+}
+
+/// `POST /api/settings/leveling` — turn automatic volume leveling on or off
+/// for every stream from the next song.
+pub async fn set_leveling_setting(axum::Json(body): axum::Json<serde_json::Value>) -> Response {
+    let Some(enabled) = body["enabled"].as_bool() else {
+        return bad_request("an enabled value is required");
+    };
+    if let Err(error) = kog_audio::leveling::save(enabled) {
+        return bad_request(&error);
+    }
+    axum::Json(serde_json::json!({ "enabled": enabled })).into_response()
+}
+
 pub fn router() -> axum::Router<AppState> {
     use axum::routing::{get, post};
     axum::Router::new()
@@ -2684,6 +2701,10 @@ pub fn router() -> axum::Router<AppState> {
         .route(
             "/api/settings/looping",
             get(looping_settings).post(set_looping_setting),
+        )
+        .route(
+            "/api/settings/leveling",
+            get(leveling_settings).post(set_leveling_setting),
         )
         .route("/api/columns", get(get_columns).post(set_columns))
 }

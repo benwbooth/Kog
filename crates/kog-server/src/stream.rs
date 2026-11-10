@@ -32,6 +32,8 @@ pub struct StreamKey {
     pub start_ms: u64,
     /// The looping setting, which sets where looping songs end.
     pub looping: String,
+    /// Whether automatic volume leveling shapes the audio.
+    pub leveling: bool,
 }
 
 impl StreamKey {
@@ -43,6 +45,7 @@ impl StreamKey {
             render_profile: None,
             start_ms: 0,
             looping: kog_audio::looping::current().setting_value(),
+            leveling: kog_audio::leveling::current(),
         }
     }
 
@@ -77,6 +80,9 @@ impl StreamKey {
         if self.looping != kog_audio::looping::LoopPolicy::Twice.setting_value() {
             fingerprint.push_str("\0looping=");
             fingerprint.push_str(&self.looping);
+        }
+        if self.leveling {
+            fingerprint.push_str("\0leveling=on");
         }
         // Preserve the existing full-track cache identity at position zero.
         if self.start_ms != 0 {

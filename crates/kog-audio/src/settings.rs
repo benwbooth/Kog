@@ -153,6 +153,7 @@ pub struct AppSettings {
 impl AppSettings {
     pub fn load() -> Self {
         crate::looping::load();
+        crate::leveling::load();
         let soundfont_path = std::env::var_os("KOG_SOUNDFONT")
             .map(PathBuf::from)
             .or_else(load_persisted_soundfont)
