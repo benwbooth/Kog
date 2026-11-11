@@ -255,6 +255,18 @@ impl Entry {
 /// has at least two different ones (two or three repeat to fill it; one
 /// shows alone). Nothing while they
 /// load or when no song has art, so the mark shows.
+/// Whether the page is laid out for a phone (the CSS's phone rules apply).
+fn phone_layout() -> bool {
+    web_sys::window()
+        .and_then(|window| {
+            window
+                .match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)")
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|media| media.matches())
+}
+
 fn playlist_tile(
     id: i64,
     mode: ReadSignal<String>,
@@ -3640,9 +3652,10 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Phones: the playlist list's tiles show covers from each playlist's
-    // songs. The server finds them in the background; while the Playlists
-    // view is open the page asks it which songs each tile shows, again
+    // The playlist list's tiles (phones) and icons (the desktop sidebar)
+    // show covers from each playlist's songs. The server finds them in the
+    // background; while the list is on screen (always, on the desktop) the
+    // page asks it which songs each tile shows, again
     // when the playlists or the stars change, and gently again while the
     // server is still working on some. Each tile remembers the songs it
     // was loaded for, so only changed tiles load their images.
@@ -3653,7 +3666,9 @@ fn App() -> impl IntoView {
         let get_json = get_json;
         move |_| {
             let mode = playlist_icons.get();
-            if mobile_view.get() != MobileView::Playlists
+            // Read either way, so a phone opening the list loads its tiles.
+            let list_view = mobile_view.get() == MobileView::Playlists;
+            if (phone_layout() && !list_view)
                 || mode == "symbol"
                 || !connected.get()
                 || tiles_loading.get()
@@ -3676,7 +3691,7 @@ fn App() -> impl IntoView {
             leptos::task::spawn_local(async move {
                 let mut delay = artwork::TILE_POLL_MS;
                 loop {
-                    if mobile_view.get_untracked() != MobileView::Playlists
+                    if (phone_layout() && mobile_view.get_untracked() != MobileView::Playlists)
                         || playlist_icons.get_untracked() != mode
                     {
                         // Left the view: load again when it reopens.

@@ -2391,6 +2391,56 @@ body.touch .track .index-cell {
   display: none;
 }
 
+/* The desktop sidebar's playlists: the playlist mark (Favorites' star) at
+ * the tree's icon size, or covers from the playlist's songs in its place,
+ * one or a 2×2 grid as on the phone's tiles. Kept below the phone rules'
+ * weight, so the phone's tiles keep theirs. */
+@media (min-width: 821px) and (pointer: fine), (min-width: 1201px) {
+  :where(.tree-row.playlist-row) .playlist-entry-icon {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    color: var(--muted);
+  }
+
+  :where(.tree-row.playlist-row) .playlist-entry-icon svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+  }
+
+  :where(.tree-row) .playlist-cover {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    overflow: hidden;
+    border-radius: 3px;
+  }
+
+  :where(.tree-row) .playlist-cover.grid {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+
+  :where(.tree-row) .playlist-cover img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    object-fit: cover;
+  }
+
+  :where(.tree-row:has(.playlist-cover)) .playlist-entry-icon,
+  :where(.tree-row:has(.playlist-cover)) .favorite-star {
+    display: none;
+  }
+}
+
 /* The phone surface has its own navigation and queue presentation. */
 .mobile-title,
 .mobile-sort,
