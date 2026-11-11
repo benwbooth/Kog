@@ -534,7 +534,19 @@ pub fn store_cache(cache_dir: &Path, key: &str, bytes: &[u8]) -> Option<PathBuf>
     }
     evict_cache(cache_dir, MAX_CACHE_BYTES);
     let path = cache_dir.join(format!("{key}.{}", kind.extension()));
-    if std::fs::write(&path, bytes).is_err() {
+    // Through a uniquely named temporary file and a rename: the desktop app
+    // and the server (also from a container) share this folder, and a reader
+    // must never see a half-written cover.
+    let temporary = cache_dir.join(format!(
+        ".{key}.{}.{:x}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default()
+    ));
+    if std::fs::write(&temporary, bytes).is_err() || std::fs::rename(&temporary, &path).is_err() {
+        let _ = std::fs::remove_file(&temporary);
         return None;
     }
     Some(path)

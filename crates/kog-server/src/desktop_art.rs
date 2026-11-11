@@ -136,9 +136,22 @@ fn keep(dir: &Path, name: &str, make: impl FnOnce() -> Option<RgbaImage>) -> Opt
     let mut icon = make()?;
     round_corners(&mut icon);
     std::fs::create_dir_all(dir).ok()?;
-    let temporary = path.with_extension("tmp");
-    icon.save_with_format(&temporary, image::ImageFormat::Png).ok()?;
-    std::fs::rename(&temporary, &path).ok()?;
+    // Named for this process and moment: row workers here and the server
+    // (also from a container) may make the same icon at once.
+    let temporary = path.with_extension(format!(
+        "{}-{:x}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default()
+    ));
+    if icon.save_with_format(&temporary, image::ImageFormat::Png).is_err()
+        || std::fs::rename(&temporary, &path).is_err()
+    {
+        let _ = std::fs::remove_file(&temporary);
+        return None;
+    }
     Some(path)
 }
 

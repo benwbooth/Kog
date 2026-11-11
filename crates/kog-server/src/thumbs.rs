@@ -110,7 +110,7 @@ impl Thumbs {
         if !path.is_file() {
             let small = shrink(cover)?;
             std::fs::create_dir_all(&self.dir).ok()?;
-            let temporary = path.with_extension("tmp");
+            let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
             std::fs::write(&temporary, small).ok()?;
             std::fs::rename(&temporary, &path).ok()?;
         }

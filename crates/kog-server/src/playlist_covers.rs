@@ -172,7 +172,7 @@ fn image_name(print: u64) -> String {
 
 /// Write `contents` whole or not at all.
 fn write_file(path: &Path, contents: &[u8]) {
-    let temporary = path.with_extension("tmp");
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     if std::fs::write(&temporary, contents).is_ok() && std::fs::rename(&temporary, path).is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
