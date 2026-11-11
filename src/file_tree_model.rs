@@ -146,15 +146,41 @@ impl qobject::FileTreeModel {
         QString::from(display_tree_name(&path.to_string()))
     }
 
+    /// A playlist row's format icon. Rows call this from the UI thread for
+    /// every row that scrolls into view, so it goes by the file's name alone:
+    /// asking about the path itself (kogFileIconName checks for a folder)
+    /// would touch the music drive, a spinning disk, once per row.
     pub fn icon_name(&self, path: QString) -> QString {
-        if let Ok(Some(location)) = kog_audio::archive::tree_location(Path::new(&path.to_string()))
-        {
-            if location.directory {
-                return QString::from("folder");
-            }
-            return qobject::themed_file_icon_name(&QString::from(location.entry.as_str()));
+        let path = path.to_string();
+        let name = match kog_audio::archive::tree_location(Path::new(&path)) {
+            Ok(Some(location)) if location.directory => return QString::from("folder"),
+            Ok(Some(location)) => location.entry,
+            _ => path,
+        };
+        let name = Path::new(&name)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or(name);
+        let suffix = Path::new(&name)
+            .extension()
+            .map(|suffix| suffix.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        thread_local! {
+            static ICONS: std::cell::RefCell<std::collections::HashMap<String, String>> =
+                std::cell::RefCell::default();
         }
-        qobject::themed_file_icon_name(&path)
+        if !suffix.is_empty()
+            && let Some(icon) = ICONS.with(|icons| icons.borrow().get(&suffix).cloned())
+        {
+            return QString::from(icon.as_str());
+        }
+        // A bare name: the folder check looks in the working directory,
+        // never the music drive.
+        let icon = qobject::themed_file_icon_name(&QString::from(name.as_str()));
+        if !suffix.is_empty() {
+            ICONS.with(|icons| icons.borrow_mut().insert(suffix, icon.to_string()));
+        }
+        icon
     }
 
     fn set_tree_root(mut self: Pin<&mut Self>, path: PathBuf) {

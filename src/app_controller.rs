@@ -2076,6 +2076,8 @@ pub struct AppControllerRust {
     library_db: kog_core::db::LibraryDb,
     /// The library's data version last seen, to notice outside changes.
     library_version: i64,
+    /// Imports the music folder's playlist files off the UI thread.
+    playlist_folders: crate::playlist_folders::PlaylistFolders,
     /// The playlists' fingerprint last seen, so other library writes do not
     /// reload them.
     library_playlists: String,
@@ -2340,6 +2342,7 @@ impl Default for AppControllerRust {
             filter: String::new(),
             library_db,
             library_version: 0,
+            playlist_folders: crate::playlist_folders::PlaylistFolders::new(),
             library_playlists: String::new(),
             starred: HashSet::new(),
             starred_serial: 0,
@@ -4337,8 +4340,23 @@ impl qobject::AppController {
     /// the server, the terminal player or a script saving playlists. Playlist
     /// files in the music folder's Playlists folders are imported here too.
     pub fn poll_library_changes(mut self: Pin<&mut Self>) {
-        let folders = kog_audio::playlist::watched_playlist_folders(&self.as_ref().rust().directory);
-        let sync = kog_audio::playlist::sync_playlist_folders(&self.as_ref().rust().library_db, &folders);
+        // The folders are read on a thread of their own (the music folder
+        // is often a spinning disk); an in-memory library has none to share,
+        // so it reads them here.
+        let music = self.as_ref().rust().directory.clone();
+        let database = self.as_ref().rust().library_db.path();
+        let sync = if database.is_some() {
+            let mut sync = kog_audio::playlist::PlaylistFolderSync::default();
+            for found in self.as_mut().rust_mut().playlist_folders.poll(music, database) {
+                sync.imported.extend(found.imported);
+                sync.updated.extend(found.updated);
+                sync.failed.extend(found.failed);
+            }
+            sync
+        } else {
+            let folders = kog_audio::playlist::watched_playlist_folders(&music);
+            kog_audio::playlist::sync_playlist_folders(&self.as_ref().rust().library_db, &folders)
+        };
         let version = self.as_ref().rust().library_db.data_version();
         let mut changed = !sync.imported.is_empty() || !sync.updated.is_empty();
         if version != self.as_ref().rust().library_version {

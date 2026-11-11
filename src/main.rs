@@ -3,6 +3,7 @@ mod desktop_art;
 mod desktop_integration;
 mod file_tree_model;
 mod mml_view;
+mod playlist_folders;
 mod rom_import;
 mod skin_library;
 mod tag_editor;
@@ -47,6 +48,10 @@ fn configure_text_rendering() {
     for (name, value) in [
         ("QML_DISABLE_DISTANCEFIELD", "1"),
         ("QSG_DISTANCEFIELD_ANTIALIASING", "gray"),
+        // Kog has no +platform or +locale QML variants, but the engine's
+        // file selector looks for them (five lookups) on every image a
+        // playlist row loads as it scrolls into view.
+        ("QT_NO_BUILTIN_SELECTORS", "1"),
     ] {
         if std::env::var_os(name).is_none() {
             // SAFETY: this runs before Qt, Rodio, or any other worker threads
