@@ -27,7 +27,9 @@ const TAGS_WAIT_MS: i32 = 4000;
 struct Want {
     id: u64,
     url: String,
+    /// The thumbnail's URL, around its name.
     image_base: String,
+    image_query: String,
     song: String,
     album: Option<String>,
     shown: RwSignal<Option<String>>,
@@ -129,6 +131,7 @@ fn request(
         id,
         url,
         image_base: format!("{base}/api/art/thumbs/"),
+        image_query: format!("?token={}", url_encode(token)),
         song: song.to_owned(),
         album,
         shown,
@@ -213,7 +216,7 @@ async fn fetch(want: Want) {
                 .and_then(|body| body["image"].as_str().map(str::to_owned))
                 .filter(|image| image.len() == 16);
             if let Some(image) = image {
-                let url = format!("{}{image}", want.image_base);
+                let url = format!("{}{image}{}", want.image_base, want.image_query);
                 LOADER.with(|loader| {
                     loader
                         .borrow_mut()
