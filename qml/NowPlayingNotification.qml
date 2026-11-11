@@ -290,73 +290,106 @@ Window {
                 }
             }
 
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 3
-                Label {
-                    objectName: "notificationTitle"
-                    Layout.fillWidth: true
-                    text: root.app.now_title
-                    textFormat: Text.PlainText
-                    font.pixelSize: 15
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                    ToolTip.visible: titleHover.hovered && truncated
-                    ToolTip.text: text
-                    ToolTip.delay: 550
-                    HoverHandler { id: titleHover }
-                    TapHandler { onTapped: { root.openPlayer(); root.dismiss() } }
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: root.detail.length > 0 ? root.detail : qsTr("Local music · Kog")
-                    textFormat: Text.PlainText
-                    color: root.palette.placeholderText
-                    font.pixelSize: 12
-                    elide: Text.ElideRight
-                }
-            }
-
+            // The playing song's cover, the same file the transport bar
+            // shows; it binds to the path, so a cover that arrives after
+            // the popup appears fills in. No cover keeps the text-only look.
             RowLayout {
                 Layout.fillWidth: true
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
-                spacing: 4
-                Label {
-                    text: root.timeLabel(root.app.position_seconds)
-                        + " / " + root.timeLabel(root.app.duration_seconds)
-                    color: root.palette.placeholderText
-                    font.pixelSize: 11
+                spacing: 12
+
+                Image {
+                    id: coverArt
+                    objectName: "notificationCover"
+                    readonly property bool hasCover: root.app.current_artwork_path.length > 0
+                    visible: hasCover && status !== Image.Error
+                    Layout.preferredWidth: 88
+                    Layout.preferredHeight: 88
+                    Layout.alignment: Qt.AlignVCenter
+                    source: hasCover ? "file://" + root.app.current_artwork_path : ""
+                    sourceSize.width: 176
+                    sourceSize.height: 176
+                    // A chosen cover replaces the file at the same path.
+                    cache: false
+                    fillMode: Image.PreserveAspectFit
+                    mipmap: true
+                    asynchronous: true
+                    Accessible.name: qsTr("Album cover")
+                    TapHandler { onTapped: { root.openPlayer(); root.dismiss() } }
+                }
+
+                ColumnLayout {
                     Layout.fillWidth: true
-                }
-                TransportButton {
-                    objectName: "notificationPrevious"
-                    iconName: "media-skip-backward"
-                    toolTip: qsTr("Previous")
-                    enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
-                    onClicked: root.app.previous()
-                }
-                TransportButton {
-                    objectName: "notificationPlayPause"
-                    primary: true
-                    iconName: root.playing ? "media-playback-pause" : "media-playback-start"
-                    toolTip: root.playing ? qsTr("Pause") : qsTr("Play")
-                    enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
-                    onClicked: root.app.play_pause()
-                }
-                TransportButton {
-                    objectName: "notificationStop"
-                    iconName: "media-playback-stop"
-                    toolTip: qsTr("Stop")
-                    enabled: root.app.playback_state !== "stopped"
-                    onClicked: root.app.stop()
-                }
-                TransportButton {
-                    objectName: "notificationNext"
-                    iconName: "media-skip-forward"
-                    toolTip: qsTr("Next")
-                    enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
-                    onClicked: root.app.next()
+                    spacing: 10
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 3
+                        Label {
+                            objectName: "notificationTitle"
+                            Layout.fillWidth: true
+                            text: root.app.now_title
+                            textFormat: Text.PlainText
+                            font.pixelSize: 15
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                            ToolTip.visible: titleHover.hovered && truncated
+                            ToolTip.text: text
+                            ToolTip.delay: 550
+                            HoverHandler { id: titleHover }
+                            TapHandler { onTapped: { root.openPlayer(); root.dismiss() } }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: root.detail.length > 0 ? root.detail : qsTr("Local music · Kog")
+                            textFormat: Text.PlainText
+                            color: root.palette.placeholderText
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: coverArt.visible ? 0 : 22
+                        Layout.rightMargin: 22
+                        spacing: 4
+                        Label {
+                            text: root.timeLabel(root.app.position_seconds)
+                                + " / " + root.timeLabel(root.app.duration_seconds)
+                            color: root.palette.placeholderText
+                            font.pixelSize: 11
+                            Layout.fillWidth: true
+                        }
+                        TransportButton {
+                            objectName: "notificationPrevious"
+                            iconName: "media-skip-backward"
+                            toolTip: qsTr("Previous")
+                            enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
+                            onClicked: root.app.previous()
+                        }
+                        TransportButton {
+                            objectName: "notificationPlayPause"
+                            primary: true
+                            iconName: root.playing ? "media-playback-pause" : "media-playback-start"
+                            toolTip: root.playing ? qsTr("Pause") : qsTr("Play")
+                            enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
+                            onClicked: root.app.play_pause()
+                        }
+                        TransportButton {
+                            objectName: "notificationStop"
+                            iconName: "media-playback-stop"
+                            toolTip: qsTr("Stop")
+                            enabled: root.app.playback_state !== "stopped"
+                            onClicked: root.app.stop()
+                        }
+                        TransportButton {
+                            objectName: "notificationNext"
+                            iconName: "media-skip-forward"
+                            toolTip: qsTr("Next")
+                            enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
+                            onClicked: root.app.next()
+                        }
+                    }
                 }
             }
 
