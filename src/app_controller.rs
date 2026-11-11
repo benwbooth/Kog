@@ -517,6 +517,8 @@ pub mod qobject {
         #[qinvokable]
         fn track_cover_at(self: &AppController, index: i32) -> QString;
         #[qinvokable]
+        fn workspace_tab_cover_at(self: &AppController, key: QString, index: i32) -> QString;
+        #[qinvokable]
         fn playlist_icon(self: &AppController, id: i32) -> QString;
         #[qinvokable]
         fn poll_desktop_art(self: Pin<&mut AppController>);
@@ -7251,11 +7253,23 @@ impl qobject::AppController {
     /// up (desktop_art_revision moves when it is found) and for songs
     /// without one. Never waits: lookups run on worker threads.
     pub fn track_cover_at(&self, index: i32) -> QString {
-        let Some(track) = visible_source_index(self, index)
+        visible_source_index(self, index)
             .and_then(|source_index| self.rust().tracks.get(source_index))
-        else {
-            return QString::default();
-        };
+            .map(|track| self.track_cover(track))
+            .unwrap_or_default()
+    }
+
+    /// The same for a playlist tab's row; empty until its tags have loaded
+    /// (they name its album).
+    pub fn workspace_tab_cover_at(&self, key: QString, index: i32) -> QString {
+        self.tab_workspace_tracks(&key.to_string())
+            .and_then(|tracks| usize::try_from(index).ok().and_then(|index| tracks.rows.get(index)))
+            .and_then(|row| row.track.as_ref())
+            .map(|track| self.track_cover(track))
+            .unwrap_or_default()
+    }
+
+    fn track_cover(&self, track: &Track) -> QString {
         if track.source.remote_url.is_some() || track.source.archive_origin.is_some() {
             return QString::default();
         }

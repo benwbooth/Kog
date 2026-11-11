@@ -205,6 +205,8 @@ Item {
         readonly property string coverUrl: {
             if (!cell.coverWanted)
                 return ""
+            // Again when the row's tags arrive, which name its album.
+            root.revision
             root.app.desktop_art_revision
             return String(root.app.track_cover_at(root.rowIndex))
         }
