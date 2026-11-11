@@ -1816,6 +1816,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "image 0.25.10",
  "include_dir",
  "kog-audio",
  "kog-core",

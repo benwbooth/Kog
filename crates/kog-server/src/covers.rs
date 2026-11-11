@@ -144,14 +144,14 @@ enum Prepared {
 /// and album tag, or just the folder when it has no album tag. Every song of
 /// one album then shows the cover first found for any of them, rather than
 /// each its own embedded picture or search result.
-fn album_cover_key(file: &Path, album: &str) -> String {
+pub(crate) fn album_cover_key(file: &Path, album: &str) -> String {
     let folder = file.parent().unwrap_or(file);
     cover_art::cache_key("album", &format!("{}\0{}", folder.display(), album.trim()))
 }
 
 /// The album's cover, if one of its songs already found it (and the listener
 /// hasn't rejected it since).
-fn album_cover(cache_dir: &Path, key: &str) -> Option<Bytes> {
+pub(crate) fn album_cover(cache_dir: &Path, key: &str) -> Option<Bytes> {
     cover_art::cache_lookup(cache_dir, key)
         .and_then(|path| std::fs::read(path).ok())
         .filter(|bytes| cover_art::sniff_image_kind(bytes).is_some())

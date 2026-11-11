@@ -48,6 +48,7 @@ mod menu;
 mod row_window;
 mod persistence;
 mod artwork;
+mod thumbs;
 mod inspection;
 mod mml;
 
@@ -7785,6 +7786,10 @@ fn App() -> impl IntoView {
                                             }
                                         });
                                         let row_filter = Memo::new(move |_| pane_filter.get());
+                                        // Phones show the song's album cover over its
+                                        // format icon once it loads.
+                                        let row_cover = RwSignal::new(None::<String>);
+                                        thumbs::load_for_row(base(), token.get_untracked(), &entry, row_meta, row_cover);
                                         view! {
                                             <button
                                                 class="track"
@@ -8027,7 +8032,23 @@ fn App() -> impl IntoView {
                                                     let mobile_menu_key_entry = mobile_entry.clone();
                                                     view! {
                                                         <span class="mobile-track-card">
-                                                            <span class="mobile-track-icon" inner_html=mobile_icon></span>
+                                                            <span
+                                                                class="mobile-track-icon"
+                                                                class:has-cover=move || row_cover.with(Option::is_some)
+                                                            >
+                                                                <span class="mobile-track-mark" inner_html=mobile_icon></span>
+                                                                {move || row_cover.get().map(|src| view! {
+                                                                    <img
+                                                                        class="mobile-track-cover"
+                                                                        src=src
+                                                                        alt=""
+                                                                        decoding="async"
+                                                                        draggable="false"
+                                                                        // A failed image leaves the icon.
+                                                                        on:error=move |_| row_cover.set(None)
+                                                                    />
+                                                                })}
+                                                            </span>
                                                             <span class="mobile-track-copy">
                                                                 <span class="mobile-track-head">
                                                                     <span

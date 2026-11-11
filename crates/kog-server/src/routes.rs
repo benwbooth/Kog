@@ -28,6 +28,8 @@ pub struct AppState {
     pub(crate) covers: Arc<crate::covers::CoverService>,
     /// Playlist tile covers, found by a background worker.
     pub(crate) playlist_covers: Arc<crate::playlist_covers::PlaylistCovers>,
+    /// Small covers for phone song rows, kept on disk.
+    pub(crate) thumbs: Arc<crate::thumbs::Thumbs>,
     /// Library browsing and the playlist/star store.
     pub library: Arc<crate::api::Library>,
     /// Legacy search plus independent named frontend searches.
@@ -64,11 +66,14 @@ impl AppState {
         library: crate::api::Library,
         radio: crate::radio::Radio,
     ) -> Self {
+        let covers = Arc::new(crate::covers::CoverService::default());
+        let thumbs = Arc::new(crate::thumbs::Thumbs::beside(covers.cache_dir()));
         Self {
             config: Arc::new(RwLock::new(config)),
             version,
             streams: Arc::new(streams),
-            covers: Arc::new(crate::covers::CoverService::default()),
+            covers,
+            thumbs,
             playlist_covers: Arc::new(crate::playlist_covers::PlaylistCovers::default()),
             library: Arc::new(library),
             search: Arc::new(crate::api::SearchState::default()),

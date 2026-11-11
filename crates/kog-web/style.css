@@ -2700,7 +2700,7 @@ body.touch .track .index-cell {
 
   .mobile-track-card {
     display: grid;
-    grid-template-columns: 20px minmax(0, 1fr) 44px 44px;
+    grid-template-columns: 46px minmax(0, 1fr) 44px 44px;
     grid-template-rows: auto auto;
     align-items: center;
     gap: 2px 4px;
@@ -2709,13 +2709,34 @@ body.touch .track .index-cell {
     min-height: 56px;
   }
 
+  /* The album cover, with the format icon in its place until it loads and
+   * for songs without one. */
   .mobile-track-icon {
     grid-column: 1;
     grid-row: 1 / 3;
     position: relative;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    margin-right: 6px;
+    border-radius: 6px;
+    overflow: hidden;
+    color: var(--muted);
+  }
+
+  .mobile-track-mark {
+    position: relative;
     width: 20px;
     height: 20px;
-    color: var(--muted);
+  }
+
+  .mobile-track-cover {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
 
   .mobile-track-icon svg {
@@ -3589,7 +3610,7 @@ body.touch .track .index-cell {
 
 @media (max-width: 359px) {
   .mobile-track-card {
-    grid-template-columns: 20px minmax(0, 1fr) 40px 40px;
+    grid-template-columns: 46px minmax(0, 1fr) 40px 40px;
     gap: 4px;
   }
 

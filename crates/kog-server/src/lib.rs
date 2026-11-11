@@ -16,6 +16,7 @@ pub mod media_filter;
 pub mod mml;
 pub mod persistence;
 mod playlist_covers;
+mod thumbs;
 pub mod radio;
 pub mod radio_client;
 pub mod routes;

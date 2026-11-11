@@ -1503,10 +1503,12 @@ pub async fn reject_art(State(state): State<AppState>, Query(query): Query<ArtQu
     };
     let covers = state.covers.clone();
     let playlist_covers = state.playlist_covers.clone();
+    let thumbs = state.thumbs.clone();
     match tokio::task::spawn_blocking(move || {
         let rejected = covers.reject(&bytes);
         if rejected {
             playlist_covers.rejected(&bytes);
+            thumbs.forget();
         }
         rejected
     })
@@ -2694,6 +2696,8 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/media/download", get(media_download))
         .route("/api/art", get(art))
         .route("/api/art/reject", post(reject_art))
+        .route("/api/art/thumb", get(crate::thumbs::thumb))
+        .route("/api/art/thumbs/{image}", get(crate::thumbs::thumb_image))
         .route("/api/metadata", get(metadata_one).post(metadata_batch))
         .route("/api/expand", post(expand_entries))
         .route("/api/playlists", get(list_playlists).post(create_playlist))
