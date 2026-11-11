@@ -150,19 +150,24 @@ fn main() {
 
     let mut engine = QQmlApplicationEngine::new();
 
-    if let Some(engine) = engine.as_mut() {
+    if let Some(mut engine) = engine.as_mut() {
         // Development shortcut: with KOG_QML_DIR pointing at the source tree,
         // load the QML from disk so editing it needs no rebuild at all. Only
         // in builds made with KOG_QML_DIR set (devloop's; see build.rs), so a
         // packaged binary cannot be redirected. The dev profile has no debug
-        // assertions, so they can't tell. Components in the same directory
-        // and the org.kog.player types (registered by the generated module,
-        // which is still embedded) both resolve as usual.
+        // assertions, so they can't tell.
         let from_disk = std::env::var_os("KOG_QML_DIR")
             .filter(|_| cfg!(kog_dev_qml))
             .map(std::path::PathBuf::from);
         match from_disk {
             Some(directory) => {
+                // `import org.kog.player` would otherwise give every other
+                // component the embedded copy: an import path of our own
+                // maps the module's files to the directory's.
+                if let Some(imports) = dev_qml_imports(&directory) {
+                    let imports = imports.to_string_lossy().into_owned();
+                    engine.as_mut().add_import_path(&QString::from(imports.as_str()));
+                }
                 let main = directory.join("Main.qml");
                 engine.load(&QUrl::from(&format!("file://{}", main.display())));
             }
@@ -173,6 +178,46 @@ fn main() {
     desktop_integration::restore_main_window();
 
     application.exec();
+}
+
+/// An import path whose org.kog.player module is the embedded one with each
+/// QML file taken from `directory` when it has it (test directories hold only
+/// a few). The module's Rust types still come from its plugin.
+#[cfg(kog_dev_qml)]
+fn dev_qml_imports(directory: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let directory = directory.canonicalize().ok()?;
+    let mut qmldir = String::from(
+        "module org.kog.player\noptional plugin org_kog_player\nclassname org_kog_player_plugin\n",
+    );
+    for file in env!("KOG_QML_MODULE_FILES").split(':') {
+        let file = std::path::Path::new(file);
+        let (Some(name), Some(stem)) = (file.file_name(), file.file_stem()) else {
+            continue;
+        };
+        let on_disk = directory.join(name);
+        let url = if on_disk.is_file() {
+            format!("file://{}", on_disk.display())
+        } else {
+            format!("qrc:/qt/qml/org/kog/player/{}", file.display())
+        };
+        qmldir.push_str(&format!("{} 1.0 {url}\n", stem.to_string_lossy()));
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    directory.hash(&mut hasher);
+    let root = std::env::temp_dir().join(format!("kog-dev-qml-{:016x}", hasher.finish()));
+    let module = root.join("org/kog/player");
+    std::fs::create_dir_all(&module).ok()?;
+    // Written whole, then renamed: another instance may be reading it.
+    let partial = module.join(format!("qmldir.{}", std::process::id()));
+    std::fs::write(&partial, qmldir).ok()?;
+    std::fs::rename(&partial, module.join("qmldir")).ok()?;
+    Some(root)
+}
+
+#[cfg(not(kog_dev_qml))]
+fn dev_qml_imports(_directory: &std::path::Path) -> Option<std::path::PathBuf> {
+    None
 }
 
 #[cfg(test)]

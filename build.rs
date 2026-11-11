@@ -27,7 +27,7 @@ fn main() {
     // commit anyway, and the build *time* shown in the UI comes from the
     // binary's own mtime, so it stays correct.
     emit_build_revision();
-    let qt_builder = CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files([
+    let qml_files = [
         "qml/CogButton.qml",
         "qml/AudioVisualization.qml",
         "qml/ClassicBitmapText.qml",
@@ -72,7 +72,11 @@ fn main() {
         "qml/TrackerText.qml",
         "qml/PatchEditor.qml",
         "qml/ExportDialog.qml",
-    ]))
+    ];
+    // The dev build's from-disk QML maps each of these to the source tree
+    // (src/main.rs).
+    println!("cargo:rustc-env=KOG_QML_MODULE_FILES={}", qml_files.join(":"));
+    let qt_builder = CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files(qml_files))
     // Keep the bridge include root limited to Kog's hand-written integration
     // header instead of recursively tracking the whole repository.
     .crate_include_root(Some("native".to_owned()))
