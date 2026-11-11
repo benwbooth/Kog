@@ -2742,8 +2742,9 @@ ApplicationWindow {
             spacing: 12
 
             RowLayout {
-                Layout.preferredWidth: root.compactToolbar ? 160 : 240
-                Layout.maximumWidth: 260
+                // Room for the waveform (60 + spacing) beside the title.
+                Layout.preferredWidth: root.compactToolbar ? 230 : 310
+                Layout.maximumWidth: 330
                 Layout.fillHeight: true
                 spacing: 10
 
@@ -2865,34 +2866,29 @@ ApplicationWindow {
                     HoverHandler { id: coverArtHover }
                 }
 
+                // The playing song's waveform leads its title and subtitle,
+                // as on the playing row: nearly the bar's full height, and
+                // wide enough that the tall bars keep their proportions.
+                WaveformMeter {
+                    Layout.preferredWidth: 60
+                    Layout.minimumWidth: 60
+                    Layout.preferredHeight: Math.min(88, parent.height)
+                    Layout.alignment: Qt.AlignVCenter
+                    visible: appController.playback_state === "playing"
+                    app: appController
+                    dark: root.baseLuminance < 0.5
+                }
+
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignVCenter
                     spacing: 2
 
-                    // The playing song's waveform leads its title, as on the
-                    // playing row.
-                    RowLayout {
+                    MarqueeLabel {
                         Layout.fillWidth: true
-                        spacing: 6
-                        WaveformMeter {
-                            // Its own height, whatever the title row would
-                            // squeeze it to, and a little wider so the
-                            // taller bars keep their proportions.
-                            Layout.preferredWidth: 30
-                            Layout.minimumWidth: 30
-                            Layout.preferredHeight: 44
-                            Layout.minimumHeight: 44
-                            visible: appController.playback_state === "playing"
-                            app: appController
-                            dark: root.baseLuminance < 0.5
-                        }
-                        MarqueeLabel {
-                            Layout.fillWidth: true
-                            text: playbackTitle.text
-                            font.pixelSize: 14
-                            color: root.palette.text
-                        }
+                        text: playbackTitle.text
+                        font.pixelSize: 14
+                        color: root.palette.text
                     }
                     MarqueeLabel {
                         Layout.fillWidth: true
