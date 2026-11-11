@@ -3746,7 +3746,16 @@ fn App() -> impl IntoView {
                     if !pending {
                         break;
                     }
-                    let _ = sleep_ms(delay).await;
+                    // Covers changed by hand meanwhile: start over at once
+                    // (the tiles load again under the new count).
+                    let mut waited = 0;
+                    while waited < delay && cover_changes.get_untracked().unwrap_or_default() == changes {
+                        let _ = sleep_ms(500).await;
+                        waited += 500;
+                    }
+                    if cover_changes.get_untracked().unwrap_or_default() != changes {
+                        break;
+                    }
                     delay = (delay * 2).min(artwork::TILE_POLL_MAX_MS);
                 }
                 tiles_loading.set(false);
