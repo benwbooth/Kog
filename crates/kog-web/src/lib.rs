@@ -251,7 +251,8 @@ impl Entry {
 
 /// A phone playlist tile's covers, laid over the plain playlist mark: one
 /// cover, or a 2×2 grid when "Four album covers" is chosen and the playlist
-/// has four different ones (fewer fall back to one). Nothing while they
+/// has at least two different ones (two or three repeat to fill it; one
+/// shows alone). Nothing while they
 /// load or when no song has art, so the mark shows.
 fn playlist_tile(
     id: i64,
@@ -267,13 +268,23 @@ fn playlist_tile(
         if covers.is_empty() {
             return None;
         }
-        let grid = mode == "grid" && covers.len() >= 4;
-        let shown = if grid { 4 } else { 1 };
+        let grid = mode == "grid" && covers.len() >= 2;
+        let shown: Vec<String> = if !grid {
+            covers.into_iter().take(1).collect()
+        } else {
+            // Fewer than four different covers repeat to fill the 2×2,
+            // kept apart diagonally: A B / B A, or A B / C A.
+            let order: &[usize] = match covers.len() {
+                2 => &[0, 1, 1, 0],
+                3 => &[0, 1, 2, 0],
+                _ => &[0, 1, 2, 3],
+            };
+            order.iter().map(|&i| covers[i].clone()).collect()
+        };
         Some(view! {
             <span class="playlist-cover" class:grid=grid aria-hidden="true">
-                {covers
+                {shown
                     .into_iter()
-                    .take(shown)
                     .map(|src| view! { <img src=src alt="" draggable="false" /> })
                     .collect_view()}
             </span>
