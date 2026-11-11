@@ -11,6 +11,7 @@ pub mod auth;
 pub mod config;
 mod cover_network;
 mod covers;
+pub mod desktop_art;
 pub mod devices;
 pub mod media_filter;
 pub mod mml;

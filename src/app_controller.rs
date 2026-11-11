@@ -21,6 +21,7 @@ pub mod qobject {
         #[qproperty(i32, playlist_count)]
         #[qproperty(i32, playlist_revision)]
         #[qproperty(i32, playlists_revision)]
+        #[qproperty(i32, desktop_art_revision)]
         #[qproperty(i32, workspace_revision)]
         #[qproperty(i32, workspace_metadata_revision)]
         #[qproperty(QString, playlist_sort_column)]
@@ -513,6 +514,12 @@ pub mod qobject {
         fn find_cover_candidates(self: Pin<&mut AppController>);
         #[qinvokable]
         fn choose_cover(self: Pin<&mut AppController>, url: &QString);
+        #[qinvokable]
+        fn track_cover_at(self: &AppController, index: i32) -> QString;
+        #[qinvokable]
+        fn playlist_icon(self: &AppController, id: i32) -> QString;
+        #[qinvokable]
+        fn poll_desktop_art(self: Pin<&mut AppController>);
     }
 }
 
@@ -1938,6 +1945,9 @@ pub struct AppControllerRust {
     playlist_count: i32,
     playlist_revision: i32,
     playlists_revision: i32,
+    desktop_art_revision: i32,
+    /// Covers for the song rows and the sidebar's playlists.
+    desktop_art: crate::desktop_art::DesktopArt,
     workspace_revision: i32,
     /// Moves when a tab's row metadata arrives, without the workspace itself
     /// changing.
@@ -2197,6 +2207,8 @@ impl Default for AppControllerRust {
             playlist_count: 0,
             playlist_revision: 0,
             playlists_revision: 0,
+            desktop_art_revision: 0,
+            desktop_art: crate::desktop_art::DesktopArt::new(cover_art_cache_dir()),
             workspace_revision: 0,
             workspace_metadata_revision: 0,
             workspace_seen: String::new(),
@@ -7065,6 +7077,7 @@ impl qobject::AppController {
             self.as_mut().set_current_artwork_path(QString::default());
             return;
         };
+        self.as_ref().rust().desktop_art.forget_songs();
         let file = track.source.path.clone();
         let album = kog_audio::cover_art::fallback_album(&file, &track.album);
         let (key, _) = cover_art_key(&track.artist, &track.album, &album, &file);
@@ -7177,6 +7190,7 @@ impl qobject::AppController {
             self.as_mut().rust_mut().cover_choice = None;
             match stored {
                 Some(path) => {
+                    self.as_ref().rust().desktop_art.forget_songs();
                     // A new path each time so QML reloads the image.
                     self.as_mut().set_current_artwork_path(QString::default());
                     self.as_mut().set_current_artwork_path(qstring(path.to_string_lossy()));
@@ -7226,8 +7240,45 @@ impl qobject::AppController {
             self.as_mut().rust_mut().cover_art = None;
         }
         if let Some(path) = resolved {
+            // Its album's other rows may have shown no cover.
+            self.as_ref().rust().desktop_art.forget_missing();
             self.as_mut()
                 .set_current_artwork_path(qstring(path.to_string_lossy()));
+        }
+    }
+
+    /// The song row's cover icon as a file URL, or empty while it is looked
+    /// up (desktop_art_revision moves when it is found) and for songs
+    /// without one. Never waits: lookups run on worker threads.
+    pub fn track_cover_at(&self, index: i32) -> QString {
+        let Some(track) = visible_source_index(self, index)
+            .and_then(|source_index| self.rust().tracks.get(source_index))
+        else {
+            return QString::default();
+        };
+        if track.source.remote_url.is_some() || track.source.archive_origin.is_some() {
+            return QString::default();
+        }
+        let file = &track.source.path;
+        qstring(self.rust().desktop_art.song_icon(
+            &file.to_string_lossy(),
+            file,
+            &track.artist,
+            &track.album,
+        ))
+    }
+
+    /// The playlist's cover icon (0: Favorites) as a file URL, or empty for
+    /// a playlist without covers.
+    pub fn playlist_icon(&self, id: i32) -> QString {
+        qstring(self.rust().desktop_art.playlist_icon(i64::from(id)))
+    }
+
+    /// Let the rows and playlists ask again once covers have arrived.
+    pub fn poll_desktop_art(mut self: Pin<&mut Self>) {
+        if self.as_ref().rust().desktop_art.take_changed() {
+            let next = self.as_ref().rust().desktop_art_revision.wrapping_add(1);
+            self.as_mut().set_desktop_art_revision(next);
         }
     }
 

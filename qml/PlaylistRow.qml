@@ -183,6 +183,31 @@ Item {
             || (0.2126 * root.theme.base.r
                 + 0.7152 * root.theme.base.g
                 + 0.0722 * root.theme.base.b) < 0.5
+        // The song's album cover takes the format icon's place. A row asks
+        // only once it has stayed on screen a moment, so a fast scroll
+        // passes rows by; the lookup runs off the UI thread and the answer
+        // arrives through desktop_art_revision. The icon stays until the
+        // cover has loaded, and for songs without one.
+        property bool coverWanted: false
+        onTrackPathChanged: {
+            coverWanted = false
+            if (trackPath.length > 0)
+                coverSettle.restart()
+            else
+                coverSettle.stop()
+        }
+        Component.onCompleted: if (trackPath.length > 0) coverSettle.restart()
+        Timer {
+            id: coverSettle
+            interval: 150
+            onTriggered: cell.coverWanted = true
+        }
+        readonly property string coverUrl: {
+            if (!cell.coverWanted)
+                return ""
+            root.app.desktop_art_revision
+            return String(root.app.track_cover_at(root.rowIndex))
+        }
         readonly property string iconExt: {
             if (formatIcon !== "kog-format-paper")
                 return ""
@@ -200,7 +225,19 @@ Item {
             visible: cell.customIcon
 
             Image {
+                id: coverImage
                 anchors.fill: parent
+                source: cell.coverUrl
+                visible: status === Image.Ready
+                asynchronous: true
+                cache: true
+                smooth: true
+                mipmap: true
+                fillMode: Image.PreserveAspectFit
+            }
+            Image {
+                anchors.fill: parent
+                visible: !coverImage.visible
                 source: cell.customIcon
                     ? Qt.resolvedUrl("icons/" + cell.formatIcon
                         + (cell.useLightIcon ? "-light" : "") + ".svg")
@@ -214,7 +251,7 @@ Item {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                visible: cell.iconExt.length > 0
+                visible: cell.iconExt.length > 0 && !coverImage.visible
                 text: cell.iconExt
                 font.pixelSize: 7
                 font.bold: true

@@ -1192,6 +1192,7 @@ ApplicationWindow {
             appController.poll_workspace()
             appController.poll_playback()
             appController.poll_cover_art()
+            appController.poll_desktop_art()
             appController.poll_radio()
             if (root.notificationSerialSeen !== appController.notification_serial) {
                 root.notificationSerialSeen = appController.notification_serial
