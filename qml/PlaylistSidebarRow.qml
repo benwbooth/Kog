@@ -12,7 +12,13 @@ FocusScope {
     property bool renaming: false
     property bool canAppend: true
     property string destinationName: qsTr("Play Queue")
+    // The playlist's covers (one, or a 2×2 grid), made off the UI thread;
+    // empty while there are none, when the playlist mark (Favorites' star)
+    // shows instead.
+    property string coverUrl: ""
     readonly property bool favorite: pid === 0
+    readonly property bool darkTheme: 0.2126 * theme.base.r
+        + 0.7152 * theme.base.g + 0.0722 * theme.base.b < 0.5
     readonly property bool dragging: pointer.dragging
     signal selectedWithModifiers(int modifiers)
     signal opened()
@@ -52,15 +58,34 @@ FocusScope {
         anchors.leftMargin: 8
         anchors.rightMargin: 42
         spacing: 6
-        Image {
-            visible: row.favorite
-            Layout.preferredWidth: 14
-            Layout.preferredHeight: 14
-            source: Qt.resolvedUrl("icons/star-filled.svg")
-            sourceSize.width: 28
-            sourceSize.height: 28
-            fillMode: Image.PreserveAspectFit
-            mipmap: true
+        Item {
+            Layout.preferredWidth: 16
+            Layout.preferredHeight: 16
+            Image {
+                id: coverImage
+                anchors.fill: parent
+                source: row.coverUrl
+                visible: status === Image.Ready
+                asynchronous: true
+                cache: true
+                smooth: true
+                mipmap: true
+                fillMode: Image.PreserveAspectFit
+            }
+            Image {
+                visible: !coverImage.visible
+                anchors.centerIn: parent
+                width: row.favorite ? 14 : 16
+                height: width
+                source: Qt.resolvedUrl(row.favorite
+                    ? "icons/star-filled.svg"
+                    : "icons/kog-format-playlist"
+                        + (row.selected || row.darkTheme ? "-light" : "") + ".svg")
+                sourceSize.width: width * 2
+                sourceSize.height: height * 2
+                fillMode: Image.PreserveAspectFit
+                mipmap: true
+            }
         }
         Label {
             id: nameLabel

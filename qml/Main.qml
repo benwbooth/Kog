@@ -4001,6 +4001,10 @@ ApplicationWindow {
                             renaming: root.renamingPlaylistId === pid
                             canAppend: root.canAppendToActiveTab
                             destinationName: root.activePlaylistTab.name
+                            coverUrl: {
+                                appController.desktop_art_revision
+                                return String(appController.playlist_icon(pid))
+                            }
                             onSelectedWithModifiers: modifiers => {
                                 root.selectPlaylistById(pid, modifiers)
                                 playlistRenameTimer.stop()
