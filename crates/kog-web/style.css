@@ -2392,9 +2392,10 @@ body.touch .track .index-cell {
 }
 
 /* The desktop sidebar's playlists: the playlist mark (Favorites' star) at
- * the tree's icon size, or covers from the playlist's songs in its place,
- * one or a 2×2 grid as on the phone's tiles. Kept below the phone rules'
- * weight, so the phone's tiles keep theirs. */
+ * the tree's icon size, or the playlist's first cover filling it in its
+ * place; a 2×2 grid is too small to read there, so it shows only its first
+ * cover whatever the phone's setting. Kept below the phone rules' weight,
+ * so the phone's tiles keep theirs. */
 @media (min-width: 821px) and (pointer: fine), (min-width: 1201px) {
   :where(.tree-row.playlist-row) .playlist-entry-icon {
     display: grid;
@@ -2421,11 +2422,6 @@ body.touch .track .index-cell {
     border-radius: 3px;
   }
 
-  :where(.tree-row) .playlist-cover.grid {
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1fr;
-  }
-
   :where(.tree-row) .playlist-cover img {
     display: block;
     width: 100%;
@@ -2433,6 +2429,10 @@ body.touch .track .index-cell {
     min-width: 0;
     min-height: 0;
     object-fit: cover;
+  }
+
+  :where(.tree-row) .playlist-cover img:not(:first-child) {
+    display: none;
   }
 
   :where(.tree-row:has(.playlist-cover)) .playlist-entry-icon,

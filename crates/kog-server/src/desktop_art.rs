@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use image::{Rgba, RgbaImage};
+use image::RgbaImage;
 use kog_audio::cover_art;
 
 /// The icons' side in pixels: sharp up to four device pixels per point.
@@ -172,42 +172,10 @@ struct Tiles {
     by_id: HashMap<i64, Tile>,
 }
 
-/// The cells of a tile of `count` covers, as (cover, column, row) on a 2×2
-/// grid; one cover fills the tile. Two or three fill the grid as the
-/// phone's tiles do: A B / B A, and A B / C A.
-fn layout(count: usize) -> &'static [(usize, u32, u32)] {
-    match count {
-        0 => &[],
-        1 => &[(0, 0, 0)],
-        2 => &[(0, 0, 0), (1, 1, 0), (1, 0, 1), (0, 1, 1)],
-        3 => &[(0, 0, 0), (1, 1, 0), (2, 0, 1), (0, 1, 1)],
-        _ => &[(0, 0, 0), (1, 1, 0), (2, 0, 1), (3, 1, 1)],
-    }
-}
-
-fn tile_icon(images: &[Vec<u8>]) -> Option<RgbaImage> {
-    if images.len() == 1 {
-        return square(&images[0], ICON_SIZE);
-    }
-    let half = ICON_SIZE / 2;
-    let squares = images
-        .iter()
-        .map(|bytes| square(bytes, half))
-        .collect::<Option<Vec<_>>>()?;
-    let mut icon = RgbaImage::from_pixel(ICON_SIZE, ICON_SIZE, Rgba([0, 0, 0, 0]));
-    for &(cover, column, row) in layout(squares.len()) {
-        image::imageops::replace(
-            &mut icon,
-            &squares[cover],
-            i64::from(column * half),
-            i64::from(row * half),
-        );
-    }
-    Some(icon)
-}
-
-/// Every playlist's icon (Favorites is id 0), for the playlists whose tile
-/// has at least one cover.
+/// Every playlist's icon (Favorites is id 0): the first cover of its tile,
+/// for the playlists whose tile has one. A 2×2 grid is too small to read
+/// at the sidebar's size, so the icon is one cover whatever the phone's
+/// setting.
 pub fn playlist_icons(cover_cache: &Path) -> HashMap<i64, PathBuf> {
     let tiles_dir = beside(cover_cache, TILE_DIRECTORY);
     let thumbs_dir = beside(cover_cache, THUMB_DIRECTORY);
@@ -219,20 +187,12 @@ pub fn playlist_icons(cover_cache: &Path) -> HashMap<i64, PathBuf> {
     };
     let mut icons = HashMap::new();
     for (id, tile) in tiles.by_id {
-        let prints = &tile.prints[..tile.prints.len().min(4)];
-        if prints.is_empty() {
+        let Some(&print) = tile.prints.first() else {
             continue;
-        }
-        let key = prints
-            .iter()
-            .fold(FNV_START, |hash, print| fnv(hash, &print.to_le_bytes()));
-        let name = format!("tile-{key:016x}-r{ICON_SIZE}.png");
+        };
+        let name = format!("cover-{print:016x}-r{ICON_SIZE}.png");
         let icon = keep(&thumbs_dir, &name, || {
-            let images = prints
-                .iter()
-                .map(|print| std::fs::read(tiles_dir.join(format!("{print:016x}"))).ok())
-                .collect::<Option<Vec<_>>>()?;
-            tile_icon(&images)
+            square(&std::fs::read(tiles_dir.join(format!("{print:016x}"))).ok()?, ICON_SIZE)
         });
         if let Some(icon) = icon {
             icons.insert(id, icon);
@@ -273,15 +233,13 @@ mod tests {
     }
 
     #[test]
-    fn playlist_icons_follow_the_phone_layouts() {
+    fn playlist_icons_show_the_tiles_first_cover() {
         let root = tempfile::tempdir().unwrap();
         let cache = root.path().join("covers");
         let tiles = root.path().join(TILE_DIRECTORY);
         std::fs::create_dir_all(&tiles).unwrap();
-        let red = png([255, 0, 0]);
-        let blue = png([0, 0, 255]);
-        std::fs::write(tiles.join(format!("{:016x}", 1u64)), &red).unwrap();
-        std::fs::write(tiles.join(format!("{:016x}", 2u64)), &blue).unwrap();
+        std::fs::write(tiles.join(format!("{:016x}", 1u64)), png([255, 0, 0])).unwrap();
+        std::fs::write(tiles.join(format!("{:016x}", 2u64)), png([0, 0, 255])).unwrap();
         std::fs::write(
             tiles.join(TILES_FILE),
             r#"{"order":[0,5],"by_id":{"0":{"prints":[1,2]},"5":{"prints":[]}}}"#,
@@ -290,13 +248,10 @@ mod tests {
         let icons = playlist_icons(&cache);
         assert_eq!(icons.len(), 1);
         let image = image::open(&icons[&0]).unwrap().to_rgba8();
-        let quarter = ICON_SIZE / 4;
-        let at = |x, y| image.get_pixel(x * quarter * 2 + quarter, y * quarter * 2 + quarter).0;
-        assert_eq!((at(0, 0), at(1, 0), at(0, 1), at(1, 1)), (
-            [255, 0, 0, 255],
-            [0, 0, 255, 255],
-            [0, 0, 255, 255],
-            [255, 0, 0, 255],
-        ));
+        assert_eq!(image.dimensions(), (ICON_SIZE, ICON_SIZE));
+        for (x, y) in [(1, 1), (3, 1), (1, 3), (3, 3)] {
+            let at = image.get_pixel(x * ICON_SIZE / 4, y * ICON_SIZE / 4).0;
+            assert_eq!(at, [255, 0, 0, 255]);
+        }
     }
 }

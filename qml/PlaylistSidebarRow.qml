@@ -12,7 +12,7 @@ FocusScope {
     property bool renaming: false
     property bool canAppend: true
     property string destinationName: qsTr("Play Queue")
-    // The playlist's covers (one, or a 2×2 grid), made off the UI thread;
+    // The playlist's first cover, filling the icon, made off the UI thread;
     // empty while there are none, when the playlist mark (Favorites' star)
     // shows instead.
     property string coverUrl: ""
