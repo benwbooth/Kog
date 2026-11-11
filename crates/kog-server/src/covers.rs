@@ -229,6 +229,15 @@ impl CoverService {
         changes.generation
     }
 
+    /// How far the cover cache's log of covers changed by hand has grown, as
+    /// last seen by [`Self::follow_changes`]: the same for every server
+    /// sharing the cache, and across restarts. Pages compare it to drop the
+    /// covers they hold.
+    pub(crate) fn changes_stamp(&self) -> u64 {
+        self.follow_changes();
+        self.changes.lock().unwrap_or_else(|error| error.into_inner()).stamp
+    }
+
     pub(crate) fn lookup(
         self: &Arc<Self>,
         file: PathBuf,

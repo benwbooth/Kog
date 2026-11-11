@@ -5,7 +5,9 @@
 //! it as an ordinary image, which the browser loads off the main thread and
 //! keeps for good. Answers are remembered by song and by album, so the next
 //! row of an album shows its cover at once. Until then, and for songs
-//! without a cover, the row keeps its format icon.
+//! without a cover, the row keeps its format icon. A cover chosen or
+//! rejected by hand ([`covers_changed`]) drops every answer, and the rows on
+//! screen ask again, keeping their image until the new one comes.
 
 use super::*;
 use std::collections::VecDeque;
@@ -33,6 +35,13 @@ struct Want {
     song: String,
     album: Option<String>,
     shown: RwSignal<Option<String>>,
+    /// The [`CHANGES`] count it was asked under: an answer from before covers
+    /// were changed by hand is dropped.
+    changes: u64,
+}
+
+fn changes_count() -> u64 {
+    CHANGES.with(|changes| changes.get_untracked())
 }
 
 #[derive(Default)]
@@ -49,6 +58,19 @@ struct Loader {
 
 thread_local! {
     static LOADER: RefCell<Loader> = RefCell::new(Loader::default());
+    /// Moves when covers were changed by hand: the rows ask again.
+    static CHANGES: ArcRwSignal<u64> = ArcRwSignal::new(0);
+}
+
+/// Covers were chosen or rejected by hand (see `/api/art/changes`): forget
+/// every answer, and have the rows on screen ask again.
+pub(super) fn covers_changed() {
+    LOADER.with(|loader| {
+        let mut loader = loader.borrow_mut();
+        loader.songs.clear();
+        loader.albums.clear();
+    });
+    CHANGES.with(|changes| changes.update(|count| *count = count.wrapping_add(1)));
 }
 
 fn album_key(song: &str, album: &str) -> String {
@@ -78,8 +100,10 @@ impl Loader {
 }
 
 fn show(shown: RwSignal<Option<String>>, url: &str) {
-    if !url.is_empty() {
-        let _ = shown.try_set(Some(url.to_owned()));
+    // No cover (any more): the row's format icon.
+    let url = (!url.is_empty()).then(|| url.to_owned());
+    if shown.try_with_untracked(|current| *current != url) == Some(true) {
+        let _ = shown.try_set(url);
     }
 }
 
@@ -123,6 +147,7 @@ fn request(
         song: song.to_owned(),
         album,
         shown,
+        changes: changes_count(),
     };
     leptos::task::spawn_local(async move {
         let _ = sleep_ms(SETTLE_MS).await;
@@ -188,7 +213,9 @@ async fn fetch(want: Want) {
         pump();
         return;
     };
+    let stale = want.changes != changes_count();
     match response.status() {
+        _ if stale => {}
         202 => {
             LOADER.with(|loader| finished(&mut loader.borrow_mut()));
             pump();
@@ -213,11 +240,14 @@ async fn fetch(want: Want) {
                 show(want.shown, &url);
             }
         }
-        404 => LOADER.with(|loader| {
-            loader
-                .borrow_mut()
-                .remember(&want.song, want.album.as_deref(), "")
-        }),
+        404 => {
+            LOADER.with(|loader| {
+                loader
+                    .borrow_mut()
+                    .remember(&want.song, want.album.as_deref(), "")
+            });
+            show(want.shown, "");
+        }
         _ => {}
     }
     LOADER.with(|loader| {
@@ -271,6 +301,27 @@ pub(super) fn load_for_row(
             if let Some(tags) = tags.get() {
                 ask(Some(tags.album.unwrap_or_default()));
             }
+        });
+    }
+    {
+        // Covers changed by hand: a row already answered (or asking) asks
+        // again, with the album its tags named.
+        let ticket = ticket.clone();
+        let ask = ask.clone();
+        let changes = CHANGES.with(Clone::clone);
+        Effect::new(move |seen: Option<u64>| {
+            let count = changes.get();
+            if seen.is_some_and(|seen| seen != count) {
+                let id = ticket.load(Ordering::Relaxed);
+                if id != 0 {
+                    if id != u64::MAX {
+                        cancel(id);
+                    }
+                    ticket.store(0, Ordering::Relaxed);
+                    ask(tags.get_untracked().map(|tags| tags.album.unwrap_or_default()));
+                }
+            }
+            count
         });
     }
     leptos::task::spawn_local(async move {

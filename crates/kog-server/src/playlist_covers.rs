@@ -320,6 +320,7 @@ impl PlaylistCovers {
                 // A key no songs hash to: the next pass redoes the tile.
                 tile.key = 0;
                 tile.filled = false;
+                tile.pending = true;
             }
         }
         if let Some(dir) = self.dir.get() {
@@ -331,7 +332,7 @@ impl PlaylistCovers {
     }
 
     /// Whether covers were changed by hand since the worker last looked.
-    fn cover_changes_waiting(&self, covers: &crate::covers::CoverService) -> bool {
+    pub(crate) fn cover_changes_waiting(&self, covers: &crate::covers::CoverService) -> bool {
         kog_audio::cover_art::cover_changes_stamp(covers.cache_dir()) != *lock(&self.cover_changes)
     }
 
@@ -695,9 +696,19 @@ async fn run(
 pub async fn playlist_covers(State(state): State<AppState>) -> Response {
     PlaylistCovers::start(&state);
     state.playlist_covers.requested();
+    let mut snapshot = state.playlist_covers.snapshot();
+    // Covers changed by hand that the worker hasn't taken up yet: every tile
+    // is about to be redone, so the page keeps asking until it is.
+    if state.playlist_covers.cover_changes_waiting(&state.covers)
+        && let Some(items) = snapshot["playlists"].as_array_mut()
+    {
+        for item in items {
+            item["pending"] = serde_json::Value::Bool(true);
+        }
+    }
     (
         [("cache-control", "no-store")],
-        axum::Json(state.playlist_covers.snapshot()),
+        axum::Json(snapshot),
     )
         .into_response()
 }

@@ -1526,6 +1526,27 @@ const BACKGROUND_ART_WAIT: std::time::Duration = std::time::Duration::from_milli
 /// `GET /api/art` — local, cached, or downloaded cover art for one library
 /// file, addressed like streaming (`kind`, `path`). A track without artwork
 /// answers 404. Background clients receive 202 while the lookup is pending.
+/// `GET /api/art/changes` — `{"revision": n}`, which moves whenever a cover
+/// is chosen or rejected by hand (here, in the desktop app, or through
+/// another server sharing the cover cache). An open page asks every few
+/// seconds while it is shown, and on a new revision drops the covers it
+/// holds and asks again.
+pub async fn art_changes(State(state): State<AppState>) -> Response {
+    let covers = state.covers.clone();
+    let thumbs = state.thumbs.clone();
+    let revision = tokio::task::spawn_blocking(move || {
+        thumbs.follow(covers.follow_changes());
+        covers.changes_stamp()
+    })
+    .await
+    .unwrap_or_default();
+    (
+        [("cache-control", "no-store")],
+        axum::Json(serde_json::json!({ "revision": revision })),
+    )
+        .into_response()
+}
+
 pub async fn art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -> Response {
     if query.kind.as_deref().unwrap_or("local") != "local" {
         return StatusCode::NOT_FOUND.into_response();
@@ -2697,6 +2718,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/media/download", get(media_download))
         .route("/api/art", get(art))
         .route("/api/art/reject", post(reject_art))
+        .route("/api/art/changes", get(art_changes))
         .route("/api/art/thumb", get(crate::thumbs::thumb))
         .route("/api/art/thumbs/{image}", get(crate::thumbs::thumb_image))
         .route("/api/metadata", get(metadata_one).post(metadata_batch))

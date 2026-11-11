@@ -3660,6 +3660,11 @@ fn App() -> impl IntoView {
     // server is still working on some. Each tile remembers the songs it
     // was loaded for, so only changed tiles load their images.
     let playlist_tiles = RwSignal::new(HashMap::<i64, (String, Vec<String>)>::new());
+    // The server's count of covers changed by hand (`/api/art/changes`),
+    // asked for every few seconds while the page is shown: a new one drops
+    // the covers the page holds, and the tiles, icons, rows and the playing
+    // song's cover ask again.
+    let cover_changes = RwSignal::new(None::<u64>);
     let tiles_loading = RwSignal::new(false);
     let tiles_loaded_for = StoredValue::new(String::new());
     Effect::new({
@@ -3680,7 +3685,8 @@ fn App() -> impl IntoView {
                 stars.iter().fold(0u64, |sum, star| sum.wrapping_add(artwork::fingerprint(star.as_bytes())))
             });
             let lists = playlists.with(|lists| format!("{lists:?}"));
-            let wanted = format!("{mode}|{server}|{stars}|{lists}");
+            let changes = cover_changes.get().unwrap_or_default();
+            let wanted = format!("{mode}|{server}|{stars}|{lists}|{changes}");
             if tiles_loaded_for.get_value() == wanted {
                 return;
             }
@@ -5239,6 +5245,51 @@ fn App() -> impl IntoView {
                 (url, album)
             })
     });
+    {
+        const COVER_CHANGES_POLL_MS: i32 = 4_000;
+        let poll = move || {
+            let visible = web_sys::window()
+                .and_then(|window| window.document())
+                .is_none_or(|document| !document.hidden());
+            if !visible || !connected.get_untracked() {
+                return;
+            }
+            leptos::task::spawn_local(async move {
+                let Ok(value) = get_json("/api/art/changes".to_owned()).await else {
+                    return;
+                };
+                let Some(revision) = value["revision"].as_u64() else {
+                    return;
+                };
+                let seen = cover_changes.get_untracked();
+                if seen == Some(revision) {
+                    return;
+                }
+                cover_changes.set(Some(revision));
+                // The first answer is where this page starts.
+                if seen.is_some() {
+                    thumbs::covers_changed();
+                    set_art_revision.update(|revision| *revision = revision.wrapping_add(1));
+                }
+            });
+        };
+        let tick = Closure::<dyn FnMut()>::new(poll);
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+                tick.as_ref().unchecked_ref(),
+                COVER_CHANGES_POLL_MS,
+            );
+            // Shown again: at once, not at the next tick.
+            if let Some(document) = window.document() {
+                let _ = document.add_event_listener_with_callback(
+                    "visibilitychange",
+                    tick.as_ref().unchecked_ref(),
+                );
+            }
+        }
+        tick.forget();
+        poll();
+    }
     let reject_cover = {
         let base = base.clone();
         let auth = auth.clone();
