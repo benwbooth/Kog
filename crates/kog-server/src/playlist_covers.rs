@@ -56,6 +56,10 @@ const TILES_FILE: &str = "tiles.json";
 const LOOKED_UP_FILE: &str = "looked-up.json";
 /// The fill pass writes down the songs it has looked up every this many.
 const LOOKED_UP_SAVE: usize = 64;
+/// What the looked-up list was made under; a list from another version is
+/// dropped, so every song is looked up again. 1: the cover cache's budget
+/// grew from 200 MB, which had evicted most of what the sweep downloaded.
+const LOOKED_UP_VERSION: u32 = 1;
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct Tile {
@@ -106,6 +110,8 @@ pub(crate) struct PlaylistCovers {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct LookedUp {
+    #[serde(default)]
+    version: u32,
     allow_download: bool,
     songs: HashSet<String>,
 }
@@ -231,6 +237,7 @@ impl PlaylistCovers {
         if let Some(looked_up) = std::fs::read(dir.join(LOOKED_UP_FILE))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<LookedUp>(&bytes).ok())
+            .filter(|looked_up| looked_up.version == LOOKED_UP_VERSION)
         {
             *lock(&self.looked_up) = (looked_up.allow_download, looked_up.songs);
         }
@@ -248,6 +255,7 @@ impl PlaylistCovers {
         let json = {
             let looked_up = lock(&self.looked_up);
             serde_json::to_vec(&serde_json::json!({
+                "version": LOOKED_UP_VERSION,
                 "allow_download": looked_up.0,
                 "songs": looked_up.1,
             }))

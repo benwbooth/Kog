@@ -11,6 +11,10 @@
 //!
 //! The playlists' icons come from the tiles the server's playlist-cover
 //! worker keeps on disk, made again when it saves new ones.
+//!
+//! The server's worker (the app's own, or the docker one sharing the cover
+//! cache) keeps downloading covers in the background, so when the cover
+//! cache changes, rows that found none look again.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -24,7 +28,7 @@ const WORKERS: usize = 3;
 const QUEUED: usize = 48;
 /// A worker with nothing to do for this long ends.
 const IDLE: Duration = Duration::from_secs(30);
-/// How often the playlist tiles are checked for changes.
+/// How often the playlist tiles and the cover cache are checked for changes.
 const TILES_CHECK: Duration = Duration::from_secs(3);
 /// Answers remembered, before starting over.
 const REMEMBERED: usize = 16384;
@@ -48,7 +52,8 @@ struct State {
     workers: usize,
     /// Playlist id (0: Favorites) to its icon's URL.
     playlists: HashMap<i64, String>,
-    watching_tiles: bool,
+    /// The tiles and the cover cache are being watched.
+    watching: bool,
     changed: bool,
 }
 
@@ -118,9 +123,26 @@ fn work(shared: Arc<Shared>) {
     }
 }
 
-fn watch_tiles(shared: Arc<Shared>) {
+/// When a file last came or went in the cover cache.
+fn cover_cache_stamp(cover_cache: &Path) -> Option<SystemTime> {
+    std::fs::metadata(cover_cache).and_then(|metadata| metadata.modified()).ok()
+}
+
+fn watch(shared: Arc<Shared>) {
     let mut seen = None;
+    let mut covers_seen = cover_cache_stamp(&shared.cover_cache);
     loop {
+        let covers = cover_cache_stamp(&shared.cover_cache);
+        if covers != covers_seen {
+            covers_seen = covers;
+            // New covers: the rows without one (on screen) ask again.
+            let mut state = shared.lock();
+            let before = state.songs.len();
+            state.songs.retain(|_, url| !url.is_empty());
+            if state.songs.len() != before {
+                state.changed = true;
+            }
+        }
         let stamp: Option<SystemTime> = kog_server::desktop_art::playlist_tiles_stamp(&shared.cover_cache);
         if stamp != seen {
             seen = stamp;
@@ -160,6 +182,7 @@ impl DesktopArt {
         if let Some(url) = state.albums.get(&album_key) {
             return url.clone();
         }
+        self.start_watching(&mut state);
         if state.queued.insert(song.to_owned()) {
             state.queue.push_front(Ask {
                 song: song.to_owned(),
@@ -193,14 +216,18 @@ impl DesktopArt {
     /// without covers.
     pub fn playlist_icon(&self, id: i64) -> String {
         let mut state = self.shared.lock();
-        if !state.watching_tiles {
-            state.watching_tiles = true;
+        self.start_watching(&mut state);
+        state.playlists.get(&id).cloned().unwrap_or_default()
+    }
+
+    fn start_watching(&self, state: &mut State) {
+        if !state.watching {
+            state.watching = true;
             let shared = self.shared.clone();
             let _ = std::thread::Builder::new()
-                .name("kog-playlist-icons".into())
-                .spawn(move || watch_tiles(shared));
+                .name("kog-cover-watch".into())
+                .spawn(move || watch(shared));
         }
-        state.playlists.get(&id).cloned().unwrap_or_default()
     }
 
     /// Whether answers arrived since the last call.

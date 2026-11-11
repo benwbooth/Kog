@@ -13,7 +13,12 @@ const MAX_BOX_ART_INDEX_BYTES: u32 = 8 * 1024 * 1024;
 /// Box-art guesses asked at once.
 const BOX_ART_BATCH: usize = 12;
 pub const MAX_SEARCH_BYTES: u32 = 512 * 1024;
-pub const MAX_CACHE_BYTES: u64 = 200 * 1024 * 1024;
+/// The cover cache's budget. The server's playlist-cover worker downloads a
+/// cover for every playlist's songs (a box-art PNG runs to most of a
+/// megabyte, and each album keeps its own copy beside the game's), so the
+/// budget holds a large library's: at 200 MB, the newest downloads evicted
+/// the older ones before anyone saw them.
+pub const MAX_CACHE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const CACHE_SUBDIRECTORY: &str = "covers";
 
 fn musicbrainz_rate_limit() {
