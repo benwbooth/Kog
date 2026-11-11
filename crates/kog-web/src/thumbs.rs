@@ -1,4 +1,4 @@
-//! Album covers on the phone's song rows. A row on screen asks for its
+//! Album covers on the song rows (phone cards and the desktop table). A row on screen asks for its
 //! song's cover once it has stayed there a moment (a fast scroll passes rows
 //! by without asking), a few at a time. The server answers with the name of
 //! a small thumbnail shared by every song of the album; the row then shows
@@ -75,18 +75,6 @@ impl Loader {
             self.albums.insert(album_key(song, album), url.to_owned());
         }
     }
-}
-
-/// Whether song rows show as phone cards (where the covers are).
-pub fn phone_rows() -> bool {
-    web_sys::window()
-        .and_then(|window| {
-            window
-                .match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)")
-                .ok()
-                .flatten()
-        })
-        .is_some_and(|query| query.matches())
 }
 
 fn show(shown: RwSignal<Option<String>>, url: &str) {
@@ -240,10 +228,10 @@ async fn fetch(want: Want) {
     pump();
 }
 
-/// Load the cover for a phone row of `entry` into `shown`, once the row's
+/// Load the cover for a row of `entry` into `shown`, once the row's
 /// tags arrive (they name its album, which the server finds without reading
-/// the song) or after a short wait without them. Does nothing on the
-/// desktop's table rows or for anything but songs.
+/// the song) or after a short wait without them. Does nothing for anything
+/// but songs.
 pub(super) fn load_for_row(
     base: String,
     token: String,
@@ -251,7 +239,7 @@ pub(super) fn load_for_row(
     tags: Memo<Option<MetaRow>>,
     shown: RwSignal<Option<String>>,
 ) {
-    if !matches!(entry.kind.as_str(), "local" | "archive") || !phone_rows() {
+    if !matches!(entry.kind.as_str(), "local" | "archive") {
         return;
     }
     // 0: not asked yet; u64::MAX: answered; else the running request.

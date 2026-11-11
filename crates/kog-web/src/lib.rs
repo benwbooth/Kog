@@ -7786,8 +7786,8 @@ fn App() -> impl IntoView {
                                             }
                                         });
                                         let row_filter = Memo::new(move |_| pane_filter.get());
-                                        // Phones show the song's album cover over its
-                                        // format icon once it loads.
+                                        // The song's album cover takes the format
+                                        // icon's place once it loads.
                                         let row_cover = RwSignal::new(None::<String>);
                                         thumbs::load_for_row(base(), token.get_untracked(), &entry, row_meta, row_cover);
                                         view! {
@@ -7988,8 +7988,24 @@ fn App() -> impl IntoView {
                                                                 >
                                                                     <span
                                                                         class="cell-icon"
-                                                                        inner_html=title_icon.clone().unwrap_or_default()
-                                                                    ></span>
+                                                                        class:has-cover=move || row_cover.with(Option::is_some)
+                                                                    >
+                                                                        <span
+                                                                            class="cell-icon-mark"
+                                                                            inner_html=title_icon.clone().unwrap_or_default()
+                                                                        ></span>
+                                                                        {move || row_cover.get().map(|src| view! {
+                                                                            <img
+                                                                                class="cell-cover"
+                                                                                src=src
+                                                                                alt=""
+                                                                                decoding="async"
+                                                                                draggable="false"
+                                                                                // A failed image leaves the icon.
+                                                                                on:error=move |_| row_cover.set(None)
+                                                                            />
+                                                                        })}
+                                                                    </span>
                                                                 </Show>
                                                                 {text}
                                                                 <Show

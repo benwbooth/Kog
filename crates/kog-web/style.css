@@ -2321,7 +2321,7 @@ body.touch .track .index-cell {
 }
 
 .tree-icon.fmt > svg,
-.cell-icon > svg {
+.cell-icon-mark > svg {
   width: 18px;
   height: 18px;
   display: block;
@@ -2329,7 +2329,7 @@ body.touch .track .index-cell {
 }
 
 .tree-icon.fmt > svg [fill]:not([fill="none"]),
-.cell-icon > svg [fill]:not([fill="none"]) {
+.cell-icon-mark > svg [fill]:not([fill="none"]) {
   fill: currentColor;
 }
 
@@ -2352,6 +2352,26 @@ body.touch .track .index-cell {
   flex: none;
   margin-right: 5px;
   vertical-align: -3px;
+}
+
+/* The song's album cover over the format mark, which stays until the cover
+ * loads and for songs without one. */
+.cell-icon-mark {
+  position: relative;
+  display: block;
+}
+
+.cell-icon.has-cover .cell-icon-mark {
+  visibility: hidden;
+}
+
+.cell-cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 3px;
 }
 
 .update-reload {
