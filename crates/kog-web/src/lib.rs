@@ -8430,7 +8430,9 @@ fn App() -> impl IntoView {
                                 <Show when=move || playing.get()>
                                     <span class="now-meter"><RowMeter levels=audio_levels pinned=false height=48.0/></span>
                                 </Show>
-                                <span class="title-text">{move || now_title()}</span>
+                                // Its own clip box, so a long title's scroll
+                                // stops at the waveform instead of passing over it.
+                                <span class="title-clip"><span class="title-text">{move || now_title()}</span></span>
                             </div>
                             <div class="subtitle"><span class="title-text">{move || now_subtitle()}</span></div>
                             <div class="mobile-now-subtitle"><span class="title-text">{move || now_mobile_subtitle()}</span></div>
