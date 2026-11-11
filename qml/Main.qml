@@ -2872,7 +2872,8 @@ ApplicationWindow {
                 WaveformMeter {
                     Layout.preferredWidth: 60
                     Layout.minimumWidth: 60
-                    Layout.preferredHeight: Math.min(88, parent.height)
+                    Layout.fillHeight: true
+                    Layout.maximumHeight: 88
                     Layout.alignment: Qt.AlignVCenter
                     visible: appController.playback_state === "playing"
                     app: appController
