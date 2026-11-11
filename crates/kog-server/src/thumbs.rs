@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
@@ -33,6 +34,8 @@ pub(crate) struct Thumbs {
     /// Album cover keys and song paths to the image showing their cover
     /// (empty: the song has none).
     names: Mutex<HashMap<String, String>>,
+    /// The cover service's change count the names were found under.
+    generation: AtomicU64,
 }
 
 #[derive(serde::Deserialize)]
@@ -74,6 +77,15 @@ impl Thumbs {
                 .map(|parent| parent.join(DIRECTORY))
                 .unwrap_or_else(|| std::env::temp_dir().join("kog-cover-thumbs")),
             names: Mutex::default(),
+            generation: AtomicU64::new(0),
+        }
+    }
+
+    /// Forget the names when covers were changed by hand since (see
+    /// `CoverService::follow_changes`).
+    pub(crate) fn follow(&self, generation: u64) {
+        if self.generation.swap(generation, Ordering::Relaxed) != generation {
+            self.forget();
         }
     }
 
@@ -118,12 +130,16 @@ impl Thumbs {
     }
 }
 
+/// Which image shows a cover may change (a cover chosen or rejected), so the
+/// browser asks again each time a page asks; the image itself never changes.
+const ANSWER_CACHING: (&str, &str) = ("cache-control", "no-cache");
+
 fn found(name: String) -> Response {
     if name.is_empty() {
-        return (StatusCode::NOT_FOUND, [("cache-control", "private, max-age=300")]).into_response();
+        return (StatusCode::NOT_FOUND, [ANSWER_CACHING]).into_response();
     }
     (
-        [("cache-control", "private, max-age=300")],
+        [ANSWER_CACHING],
         axum::Json(serde_json::json!({ "image": name })),
     )
         .into_response()
@@ -139,6 +155,7 @@ pub async fn thumb(State(state): State<AppState>, Query(query): Query<ThumbQuery
     let Some(song) = query.path.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    state.thumbs.follow(state.covers.follow_changes());
     if let Some(name) = state.thumbs.remembered(&song) {
         return found(name);
     }

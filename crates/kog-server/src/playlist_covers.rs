@@ -106,6 +106,9 @@ pub(crate) struct PlaylistCovers {
     looked_up: Mutex<(bool, HashSet<String>)>,
     /// Where the tiles' images and the worker's progress are kept.
     dir: OnceLock<PathBuf>,
+    /// How far the worker has read the cover cache's log of covers changed
+    /// by hand.
+    cover_changes: Mutex<u64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -210,6 +213,8 @@ impl PlaylistCovers {
             .unwrap_or_else(|| std::env::temp_dir().join("kog-playlist-tiles"));
         state.playlist_covers.restore(&dir);
         let _ = state.playlist_covers.dir.set(dir);
+        *lock(&state.playlist_covers.cover_changes) =
+            kog_audio::cover_art::cover_changes_stamp(state.covers.cache_dir());
         let this = Arc::downgrade(&state.playlist_covers);
         let library = state.library.clone();
         let covers = state.covers.clone();
@@ -295,25 +300,58 @@ impl PlaylistCovers {
     /// The listener rejected these bytes as a cover: take them off every
     /// tile now, and look for every tile's covers again.
     pub(crate) fn rejected(&self, bytes: &[u8]) {
-        let print = image_print(bytes);
+        self.replaced(&[image_print(bytes)]);
+        *lock(&self.looked_up) = (false, HashSet::new());
+        self.wake.notify_one();
+    }
+
+    /// These images no longer show their albums: take them off every tile
+    /// now, and redo every tile on the next pass.
+    fn replaced(&self, prints: &[u64]) {
         {
             let mut tiles = lock(&self.tiles);
             for tile in tiles.by_id.values_mut() {
-                if let Some(index) = tile.prints.iter().position(|seen| *seen == print) {
-                    tile.prints.remove(index);
-                    tile.covers.remove(index);
+                for print in prints {
+                    if let Some(index) = tile.prints.iter().position(|seen| seen == print) {
+                        tile.prints.remove(index);
+                        tile.covers.remove(index);
+                    }
                 }
                 // A key no songs hash to: the next pass redoes the tile.
                 tile.key = 0;
                 tile.filled = false;
             }
         }
-        *lock(&self.looked_up) = (false, HashSet::new());
         if let Some(dir) = self.dir.get() {
-            let _ = std::fs::remove_file(dir.join(image_name(print)));
+            for print in prints {
+                let _ = std::fs::remove_file(dir.join(image_name(*print)));
+            }
         }
         self.save_tiles();
-        self.wake.notify_one();
+    }
+
+    /// Whether covers were changed by hand since the worker last looked.
+    fn cover_changes_waiting(&self, covers: &crate::covers::CoverService) -> bool {
+        kog_audio::cover_art::cover_changes_stamp(covers.cache_dir()) != *lock(&self.cover_changes)
+    }
+
+    /// Covers changed by hand by anything sharing the cover cache (the
+    /// desktop app's chooser, a reject through another server): redo the
+    /// tiles, without the images replaced. Returns whether any changed.
+    fn follow_cover_changes(&self, covers: &crate::covers::CoverService) -> bool {
+        let changes = {
+            let mut seen = lock(&self.cover_changes);
+            let (stamp, changes) = kog_audio::cover_art::cover_changes_since(covers.cache_dir(), *seen);
+            *seen = stamp;
+            changes
+        };
+        if changes.is_empty() {
+            return false;
+        }
+        // Lookups remembered from before would give the old covers back.
+        covers.forget_finished();
+        self.replaced(&changes.into_iter().flatten().collect::<Vec<_>>());
+        true
     }
 
     /// Mark changed playlists pending and drop removed ones. Returns the
@@ -571,7 +609,8 @@ async fn run(
         // The server was stopped: its state, and this worker, go with it.
         let Some(service) = this.upgrade() else { return };
         let current = worker.stamp().await;
-        if force || current != stamp {
+        let covers_changed = service.follow_cover_changes(&worker.covers);
+        if force || covers_changed || current != stamp {
             stamp = current;
             let allow_download = kog_audio::settings::AppSettings::load().download_cover_art;
             let library = worker.library.clone();
@@ -617,7 +656,10 @@ async fn run(
                             }
                             started = started.max(index + 1 + LOOKUP_AHEAD);
                             checked += 1;
-                            if checked % FILL_CHANGE_CHECK == 0 && worker.stamp().await != stamp {
+                            if checked % FILL_CHANGE_CHECK == 0
+                                && (worker.stamp().await != stamp
+                                    || service.cover_changes_waiting(&worker.covers))
+                            {
                                 interrupted = true;
                                 break 'fill;
                             }

@@ -39,6 +39,8 @@ struct Ask {
     artist: String,
     album: String,
     album_key: String,
+    /// [`State::generation`] when asked.
+    generation: u64,
 }
 
 #[derive(Default)]
@@ -55,6 +57,9 @@ struct State {
     /// The tiles and the cover cache are being watched.
     watching: bool,
     changed: bool,
+    /// Moves when everything is forgotten, so an answer looked up before
+    /// (perhaps the old cover) is dropped.
+    generation: u64,
 }
 
 struct Shared {
@@ -86,6 +91,27 @@ impl Shared {
     }
 }
 
+impl State {
+    fn forget_all(&mut self) {
+        self.songs.clear();
+        self.albums.clear();
+        self.queue.clear();
+        self.queued.clear();
+        self.generation = self.generation.wrapping_add(1);
+        self.changed = true;
+    }
+
+    /// Songs without a cover look again. The revision moves, or rows on
+    /// screen would keep showing none: nothing else tells them to ask.
+    fn forget_missing(&mut self) {
+        let before = self.songs.len();
+        self.songs.retain(|_, url| !url.is_empty());
+        if self.songs.len() != before {
+            self.changed = true;
+        }
+    }
+}
+
 fn work(shared: Arc<Shared>) {
     loop {
         let ask = {
@@ -109,6 +135,9 @@ fn work(shared: Arc<Shared>) {
             .map(|path| file_url(&path))
             .unwrap_or_default();
         let mut state = shared.lock();
+        if state.generation != ask.generation {
+            continue;
+        }
         if state.songs.len() >= REMEMBERED {
             state.songs.clear();
             state.albums.clear();
@@ -131,17 +160,20 @@ fn cover_cache_stamp(cover_cache: &Path) -> Option<SystemTime> {
 fn watch(shared: Arc<Shared>) {
     let mut seen = None;
     let mut covers_seen = cover_cache_stamp(&shared.cover_cache);
+    let mut changes_seen = kog_audio::cover_art::cover_changes_stamp(&shared.cover_cache);
     loop {
+        let changes = kog_audio::cover_art::cover_changes_stamp(&shared.cover_cache);
+        if changes != changes_seen {
+            changes_seen = changes;
+            // A cover changed by hand, here or through a server (the phone's
+            // reject): every song looks again.
+            shared.lock().forget_all();
+        }
         let covers = cover_cache_stamp(&shared.cover_cache);
         if covers != covers_seen {
             covers_seen = covers;
             // New covers: the rows without one (on screen) ask again.
-            let mut state = shared.lock();
-            let before = state.songs.len();
-            state.songs.retain(|_, url| !url.is_empty());
-            if state.songs.len() != before {
-                state.changed = true;
-            }
+            shared.lock().forget_missing();
         }
         let stamp: Option<SystemTime> = kog_server::desktop_art::playlist_tiles_stamp(&shared.cover_cache);
         if stamp != seen {
@@ -184,12 +216,14 @@ impl DesktopArt {
         }
         self.start_watching(&mut state);
         if state.queued.insert(song.to_owned()) {
+            let generation = state.generation;
             state.queue.push_front(Ask {
                 song: song.to_owned(),
                 file: file.to_path_buf(),
                 artist: artist.to_owned(),
                 album: album.to_owned(),
                 album_key,
+                generation,
             });
             while state.queue.len() > QUEUED {
                 if let Some(old) = state.queue.pop_back() {
@@ -238,15 +272,12 @@ impl DesktopArt {
     /// A cover was found for the playing song: songs without one look
     /// again.
     pub fn forget_missing(&self) {
-        self.shared.lock().songs.retain(|_, url| !url.is_empty());
+        self.shared.lock().forget_missing();
     }
 
     /// A cover was rejected or chosen: songs look theirs up again.
     pub fn forget_songs(&self) {
-        let mut state = self.shared.lock();
-        state.songs.clear();
-        state.albums.clear();
-        state.changed = true;
+        self.shared.lock().forget_all();
     }
 }
 

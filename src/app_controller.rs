@@ -7132,6 +7132,10 @@ impl qobject::AppController {
         let file = track.source.path.clone();
         let album = kog_audio::cover_art::fallback_album(&file, &track.album);
         let (key, _) = cover_art_key(&track.artist, &track.album, &album, &file);
+        // The album's own entry (its folder and album tag), which the song
+        // rows and the servers read first: it must change too, or they keep
+        // the old cover.
+        let album_key = kog_server::desktop_art::album_key(&file, &track.album);
         if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
             job.cancel.store(true, AtomicOrdering::Relaxed);
         }
@@ -7148,11 +7152,29 @@ impl qobject::AppController {
                     .filter(|bytes| kog_audio::cover_art::sniff_image_kind(bytes).is_some())
                     .and_then(|bytes| {
                         kog_audio::cover_art::unreject_cover(&cache_dir, &bytes);
-                        for extension in ["jpg", "png"] {
-                            let _ = std::fs::remove_file(cache_dir.join(format!("{key}.{extension}")));
+                        let mut replaced = Vec::new();
+                        for key in [&album_key, &key] {
+                            for extension in ["jpg", "png"] {
+                                let path = cache_dir.join(format!("{key}.{extension}"));
+                                if let Ok(old) = std::fs::read(&path) {
+                                    if old != bytes && !replaced.contains(&old) {
+                                        replaced.push(old);
+                                    }
+                                }
+                                let _ = std::fs::remove_file(path);
+                            }
                         }
                         kog_audio::cover_art::clear_miss(&cache_dir, &key);
-                        kog_audio::cover_art::store_cache(&cache_dir, &key, &bytes)
+                        let _ = kog_audio::cover_art::store_cache(&cache_dir, &album_key, &bytes);
+                        let stored = kog_audio::cover_art::store_cache(&cache_dir, &key, &bytes);
+                        // Everything sharing the cache forgets the old one.
+                        if replaced.is_empty() {
+                            kog_audio::cover_art::note_cover_change(&cache_dir, None);
+                        }
+                        for old in &replaced {
+                            kog_audio::cover_art::note_cover_change(&cache_dir, Some(old));
+                        }
+                        stored
                     });
                 let _ = sender.send(stored);
             });

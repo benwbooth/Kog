@@ -474,6 +474,11 @@ pub fn clear_miss(cache_dir: &Path, key: &str) {
 /// Hashes of covers the listener marked wrong, one per line. Kept out of
 /// eviction: a rejected cover must stay rejected.
 const REJECTED_COVERS: &str = "rejected-covers.txt";
+/// The covers changed by hand, one line each: the replaced image's hash, or
+/// `-` for an album that had none. The desktop app and the servers sharing
+/// the cache (one may run in a container) remember answers in memory and
+/// keep small copies; they follow this log to forget them.
+const COVER_CHANGES: &str = "cover-changes.txt";
 
 fn image_hash(bytes: &[u8]) -> String {
     format!("{:016x}", fnv1a64(bytes))
@@ -511,14 +516,64 @@ pub fn reject_cover(cache_dir: &Path, bytes: &[u8]) -> bool {
     if let Ok(entries) = std::fs::read_dir(cache_dir) {
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
-            if entry.file_name() != REJECTED_COVERS
+            if !is_cache_list(&entry.file_name())
                 && std::fs::read(&path).is_ok_and(|cached| cached == bytes)
             {
                 let _ = std::fs::remove_file(path);
             }
         }
     }
+    note_cover_change(cache_dir, Some(bytes));
     appended.is_ok()
+}
+
+fn is_cache_list(name: &std::ffi::OsStr) -> bool {
+    name == REJECTED_COVERS || name == COVER_CHANGES
+}
+
+/// A cover was changed by hand (chosen or rejected): `replaced` is the image
+/// no longer shown, if there was one. Every program sharing the cache
+/// forgets what it remembered (see [`cover_changes_since`]).
+pub fn note_cover_change(cache_dir: &Path, replaced: Option<&[u8]>) {
+    use std::io::Write;
+    if std::fs::create_dir_all(cache_dir).is_err() {
+        return;
+    }
+    let line = replaced.map(image_hash).unwrap_or_else(|| "-".to_owned());
+    // One short append: concurrent writers never interleave within a line.
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(cache_dir.join(COVER_CHANGES))
+        .and_then(|mut log| log.write_all(format!("{line}\n").as_bytes()));
+}
+
+/// How far the cover-change log has grown: a later answer that differs means
+/// covers were changed by hand meanwhile.
+pub fn cover_changes_stamp(cache_dir: &Path) -> u64 {
+    std::fs::metadata(cache_dir.join(COVER_CHANGES))
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+/// The covers changed by hand since `stamp` (from [`cover_changes_stamp`] or
+/// an earlier call): the new stamp, and the hashes of the images replaced
+/// (`None` for an album that had none). A log that shrank is read whole.
+pub fn cover_changes_since(cache_dir: &Path, stamp: u64) -> (u64, Vec<Option<u64>>) {
+    let Ok(bytes) = std::fs::read(cache_dir.join(COVER_CHANGES)) else {
+        return (0, Vec::new());
+    };
+    let length = bytes.len() as u64;
+    let start = if stamp <= length { stamp as usize } else { 0 };
+    // Only whole lines: a writer may be halfway through the last one.
+    let Some(end) = bytes[start..].iter().rposition(|byte| *byte == b'\n') else {
+        return (start as u64, Vec::new());
+    };
+    let changes = String::from_utf8_lossy(&bytes[start..start + end])
+        .lines()
+        .map(|line| u64::from_str_radix(line.trim(), 16).ok())
+        .collect();
+    ((start + end + 1) as u64, changes)
 }
 
 /// Validate and persist downloaded or embedded bytes. Runs cache eviction
@@ -562,7 +617,7 @@ pub fn evict_cache(cache_dir: &Path, max_bytes: u64) {
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let metadata = entry.metadata().ok()?;
-            if !metadata.is_file() || entry.file_name() == REJECTED_COVERS {
+            if !metadata.is_file() || is_cache_list(&entry.file_name()) {
                 return None;
             }
             let modified = metadata.modified().ok()?;
@@ -1408,6 +1463,27 @@ mod tests {
         assert!(store_cache(&dir, "album", &jpeg).is_none());
         assert!(store_cache(&dir, "album", &[0xff, 0xd8, 0xff, 0xe0, 2]).is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cover_changes_are_followed_from_a_stamp() {
+        let temporary = tempfile::tempdir().expect("temporary cache");
+        let dir = temporary.path();
+        let start = cover_changes_stamp(dir);
+        assert_eq!(cover_changes_since(dir, start), (0, Vec::new()));
+        let jpeg = [0xff, 0xd8, 0xff, 0xe0, 1];
+        store_cache(dir, "album", &jpeg).unwrap();
+        assert!(reject_cover(dir, &jpeg));
+        note_cover_change(dir, None);
+        let stamp = cover_changes_stamp(dir);
+        assert_ne!(stamp, start);
+        let (next, changes) = cover_changes_since(dir, start);
+        assert_eq!(next, stamp);
+        assert_eq!(changes, vec![Some(fnv1a64(&jpeg)), None]);
+        assert_eq!(cover_changes_since(dir, next), (next, Vec::new()));
+        // The lists are not covers: rejecting and evicting leave them be.
+        evict_cache(dir, 0);
+        assert_eq!(cover_changes_stamp(dir), stamp);
     }
 
     #[test]

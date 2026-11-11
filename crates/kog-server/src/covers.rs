@@ -16,6 +16,8 @@ use crate::service::StreamService;
 const RESULT_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_JOBS: usize = 64;
 const MAX_RESULT_BYTES: usize = 32 * 1024 * 1024;
+/// How often requests look whether covers were changed by hand elsewhere.
+const CHANGES_CHECK: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CoverResult {
@@ -109,24 +111,38 @@ pub(crate) async fn wait(mut receiver: watch::Receiver<CoverResult>) -> CoverRes
     }
 }
 
+/// Where this server is in the cover cache's log of covers changed by hand.
+struct Changes {
+    stamp: u64,
+    checked: Instant,
+    generation: u64,
+}
+
 pub(crate) struct CoverService {
     tracks: Arc<Jobs>,
     albums: Arc<Jobs>,
     probes: Arc<Semaphore>,
     downloads: Arc<Semaphore>,
     cache_dir: PathBuf,
+    changes: Mutex<Changes>,
 }
 
 impl Default for CoverService {
     fn default() -> Self {
+        let cache_dir = directories::ProjectDirs::from("org", "Kog", "Kog")
+            .map(|directories| cover_art::cache_directory(directories.cache_dir()))
+            .unwrap_or_else(|| std::env::temp_dir().join("kog-covers"));
         Self {
             tracks: Arc::new(Jobs::default()),
             albums: Arc::new(Jobs::default()),
             probes: Arc::new(Semaphore::new(2)),
             downloads: Arc::new(Semaphore::new(4)),
-            cache_dir: directories::ProjectDirs::from("org", "Kog", "Kog")
-                .map(|directories| cover_art::cache_directory(directories.cache_dir()))
-                .unwrap_or_else(|| std::env::temp_dir().join("kog-covers")),
+            changes: Mutex::new(Changes {
+                stamp: cover_art::cover_changes_stamp(&cache_dir),
+                checked: Instant::now(),
+                generation: 0,
+            }),
+            cache_dir,
         }
     }
 }
@@ -180,13 +196,37 @@ impl CoverService {
         if !cover_art::reject_cover(&self.cache_dir, bytes) {
             return false;
         }
+        self.forget_finished();
+        true
+    }
+
+    pub(crate) fn forget_finished(&self) {
         for jobs in [&self.tracks, &self.albums] {
             jobs.0
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .retain(|_, job| *job.result.borrow() == CoverResult::Pending);
         }
-        true
+    }
+
+    /// Covers may be changed by hand by anything sharing the cache (the
+    /// desktop app's cover chooser, a reject through another server): then
+    /// finished lookups are forgotten, so the next request finds the new
+    /// cover. Returns a number that moves with every change, for callers
+    /// that remember answers of their own. Looks at the disk at most once a
+    /// second.
+    pub(crate) fn follow_changes(&self) -> u64 {
+        let mut changes = self.changes.lock().unwrap_or_else(|error| error.into_inner());
+        if changes.checked.elapsed() >= CHANGES_CHECK {
+            changes.checked = Instant::now();
+            let stamp = cover_art::cover_changes_stamp(&self.cache_dir);
+            if stamp != changes.stamp {
+                changes.stamp = stamp;
+                changes.generation += 1;
+                self.forget_finished();
+            }
+        }
+        changes.generation
     }
 
     pub(crate) fn lookup(

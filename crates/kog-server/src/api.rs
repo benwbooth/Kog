@@ -1543,6 +1543,7 @@ pub async fn art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -
     let Some(file) = file else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    state.covers.follow_changes();
     let result = state.covers.lookup(
         file,
         state.streams.clone(),
