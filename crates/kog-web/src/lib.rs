@@ -9852,9 +9852,6 @@ fn App() -> impl IntoView {
                                     }
                                     set_menu_open.set(false);
                                 }>"Show Info Inspector"</button>
-                            <button class="menu-item" role="menuitem" on:click=move |_| {
-                                set_menu_open.set(false); set_visualizer_open.set(true);
-                            }>"Visualizer"</button>
                             // The same choice as Preferences' Colors.
                             <menu::Submenu label="Colors" depth=2>
                                 {[("system", "Follow the System"), ("light", "Light"), ("dark", "Dark")]
@@ -9873,11 +9870,16 @@ fn App() -> impl IntoView {
                                     })
                                     .collect_view()}
                             </menu::Submenu>
+                            <button class="menu-item" role="menuitem" on:click=move |_| {
+                                set_menu_open.set(false); set_visualizer_open.set(true);
+                            }>"Visualizer"</button>
+                            <div class="menu-separator" role="separator"></div>
                             // Each Channel Inspector view has its own entry.
                             <button class="menu-item" role="menuitem" on:click=move |_| {set_menu_open.set(false);inspector_mode.set("both".into());set_inspector_open.set(true);}>"Channel Keyboards + Tracker"</button>
                             <button class="menu-item" role="menuitem" on:click=move |_| {set_menu_open.set(false);inspector_mode.set("keyboards".into());set_inspector_open.set(true);}>"Channel Keyboards"</button>
                             <button class="menu-item" role="menuitem" on:click=move |_| {set_menu_open.set(false);inspector_mode.set("tracker".into());set_inspector_open.set(true);}>"Channel Tracker"</button>
                             <button class="menu-item" role="menuitem" on:click=move |_| {set_menu_open.set(false);inspector_mode.set("mml".into());set_inspector_open.set(true);}>"MML Score"</button>
+                            <button class="menu-item" role="menuitem" on:click=move |_| {set_menu_open.set(false);inspector_mode.set("roll".into());set_inspector_open.set(true);}>"Piano Roll"</button>
                         </menu::Submenu>
                         <menu::Submenu label="Playback" depth=1>
                             <button class="menu-item" role="menuitem" disabled=move || queue.get().is_empty() && !radio_on.get()
