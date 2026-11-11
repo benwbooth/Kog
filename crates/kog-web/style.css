@@ -40,6 +40,10 @@
   --meter-lightness: 68%;
   --border: #1e2230;
   --glow: rgba(77, 120, 255, 0.18);
+  /* The phone's mini player: a dark blue from the accent, so the playing
+   * song never reads as another row of the list above it. */
+  --mini-player: color-mix(in srgb, var(--highlight) 20%, #060b16);
+  --mini-player-border: color-mix(in srgb, var(--highlight) 38%, var(--border));
   --row-height: 26px;
   /* The folder tree is scanned, not read row by row: keep it compact. */
   --tree-row-height: 21px;
@@ -77,6 +81,8 @@
     --meter-lightness: 50%;
     --border: #dddfea;
     --glow: rgba(47, 125, 225, 0.09);
+    --mini-player: color-mix(in srgb, var(--highlight) 13%, #ffffff);
+    --mini-player-border: color-mix(in srgb, var(--highlight) 30%, var(--border));
     color-scheme: light;
   }
 }
@@ -105,6 +111,8 @@
   --meter-lightness: 50%;
   --border: #dddfea;
   --glow: rgba(47, 125, 225, 0.09);
+  --mini-player: color-mix(in srgb, var(--highlight) 13%, #ffffff);
+  --mini-player-border: color-mix(in srgb, var(--highlight) 30%, var(--border));
   color-scheme: light;
 }
 
@@ -3414,9 +3422,9 @@ body.touch .track .index-cell {
     width: calc(100% - 16px);
     height: 58px;
     margin: 4px 8px;
-    border: 1px solid color-mix(in srgb, var(--highlight) 30%, var(--border));
+    border: 1px solid var(--mini-player-border);
     border-radius: 13px;
-    background: color-mix(in srgb, var(--highlight) 8%, var(--surface));
+    background: var(--mini-player);
     box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
     padding: 4px 6px;
   }
