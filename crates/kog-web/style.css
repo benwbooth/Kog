@@ -2700,7 +2700,7 @@ body.touch .track .index-cell {
 
   .mobile-track-card {
     display: grid;
-    grid-template-columns: 46px minmax(0, 1fr) 44px 44px;
+    grid-template-columns: 40px minmax(0, 1fr) 44px 44px;
     grid-template-rows: auto auto;
     align-items: center;
     gap: 2px 4px;
@@ -2719,7 +2719,6 @@ body.touch .track .index-cell {
     place-items: center;
     width: 40px;
     height: 40px;
-    margin-right: 6px;
     border-radius: 6px;
     overflow: hidden;
     color: var(--muted);
@@ -3610,7 +3609,7 @@ body.touch .track .index-cell {
 
 @media (max-width: 359px) {
   .mobile-track-card {
-    grid-template-columns: 46px minmax(0, 1fr) 40px 40px;
+    grid-template-columns: 40px minmax(0, 1fr) 40px 40px;
     gap: 4px;
   }
 
@@ -4916,6 +4915,7 @@ button.primary:hover:not(:disabled) {
     grid-template-rows: 44px;
     align-items: center;
     gap: 0;
+    width: 100%;
     margin: 0;
     padding: 8px 12px;
     border: 0;
@@ -5036,18 +5036,19 @@ button.primary:hover:not(:disabled) {
   .transport-compact .transport-collapse {
     display: none;
   }
-  /* Song rows: no tile behind the format icon, Earshot's plain list. */
+  /* Song rows: the album cover, or the format icon with no tile behind
+   * it, Earshot's plain list. */
   .mobile-track-card {
-    grid-template-columns: 24px minmax(0, 1fr) auto 36px 32px;
+    grid-template-columns: 40px minmax(0, 1fr) auto 36px 32px;
     grid-template-rows: 56px;
     gap: 0 12px;
     height: 56px;
   }
 
   .mobile-track-icon {
-    width: 24px;
-    height: 24px;
-    border-radius: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
     background: transparent;
     box-shadow: none;
     color: var(--faint);
@@ -5196,7 +5197,7 @@ button.primary:hover:not(:disabled) {
   }
 
   .mobile-track-card {
-    grid-template-columns: 24px minmax(0, 1fr) 36px;
+    grid-template-columns: 40px minmax(0, 1fr) 36px;
     grid-template-rows: 68px;
     height: 68px;
   }
