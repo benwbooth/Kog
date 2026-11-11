@@ -10,8 +10,14 @@ fn main() {
     // module's generated C++ (minutes) for every QML edit. Still emitted when
     // unset, which is how packaged builds embed the QML.
     println!("cargo:rerun-if-env-changed=KOG_QML_DIR");
+    println!("cargo::rustc-check-cfg=cfg(kog_dev_qml)");
     if std::env::var_os("KOG_QML_DIR").is_none() {
         println!("cargo:rerun-if-changed=qml");
+    } else {
+        // Such a build doesn't track the embedded QML, so the binary must
+        // read the source tree's (src/main.rs). Packaged builds never set it
+        // (scripts/shared-build.sh unsets it), so they can't be redirected.
+        println!("cargo:rustc-cfg=kog_dev_qml");
     }
     println!("cargo:rerun-if-changed=web");
     println!("cargo:rerun-if-changed=build.rs");

@@ -152,12 +152,14 @@ fn main() {
 
     if let Some(engine) = engine.as_mut() {
         // Development shortcut: with KOG_QML_DIR pointing at the source tree,
-        // load the QML from disk so editing it needs no rebuild at all. Debug
-        // builds only, so a packaged binary cannot be redirected. Components
-        // in the same directory and the org.kog.player types (registered by the
-        // generated module, which is still embedded) both resolve as usual.
+        // load the QML from disk so editing it needs no rebuild at all. Only
+        // in builds made with KOG_QML_DIR set (devloop's; see build.rs), so a
+        // packaged binary cannot be redirected. The dev profile has no debug
+        // assertions, so they can't tell. Components in the same directory
+        // and the org.kog.player types (registered by the generated module,
+        // which is still embedded) both resolve as usual.
         let from_disk = std::env::var_os("KOG_QML_DIR")
-            .filter(|_| cfg!(debug_assertions))
+            .filter(|_| cfg!(kog_dev_qml))
             .map(std::path::PathBuf::from);
         match from_disk {
             Some(directory) => {
