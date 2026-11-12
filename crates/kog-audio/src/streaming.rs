@@ -514,6 +514,8 @@ mod tests {
             duration: Some(Duration::from_secs(1)),
             total_frames: Some(frames as u64),
             remaining_frames: Some(frames as u64),
+            leveler: None,
+            samples: Vec::new(),
         };
         reader.seek(Duration::from_millis(750)).expect("seek");
         let mut output = [0_u8; 4];

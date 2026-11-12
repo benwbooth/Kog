@@ -9,7 +9,8 @@ archives, the signed Android release APK, and the unsigned iOS IPA.
 
 1. Keep `main` building and resolve any failing platform jobs.
 2. Update the version in the root `Cargo.toml` and every `crates/*/Cargo.toml`,
-   including the standalone web crate.
+   including the standalone web crate, except `kog-native`, which keeps its own
+   version so its C and C++ libraries are not rebuilt for every release.
 3. Android derives `versionName` and `versionCode` from the root Cargo version.
    Update iOS's `CFBundleShortVersionString` and increment `CFBundleVersion`.
 4. Add the version and date to `packaging/linux/org.kog.player.metainfo.xml`.
