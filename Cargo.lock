@@ -1790,7 +1790,7 @@ dependencies = [
 
 [[package]]
 name = "kog-native"
-version = "0.11.4"
+version = "1.0.0"
 dependencies = [
  "cc",
  "cmake",

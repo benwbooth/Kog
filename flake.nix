@@ -255,6 +255,7 @@
               bacon
               cargo
               cargo-watch
+              ccache
               clang
               clippy
               cmake
@@ -298,6 +299,20 @@
             export QT_PLUGIN_PATH="${qtEnv}/lib/qt-6/plugins"
             export QML_IMPORT_PATH="${qtEnv}/lib/qt-6/qml"
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath linuxRuntimeLibraries}:''${LD_LIBRARY_PATH:-}"
+            # kog-native's C and C++ libraries through ccache: a build script
+            # rerun (new output folder, changed flags) then recompiles only
+            # what really changed instead of half an hour of everything.
+            # It runs this shell's cc (overriding .cargo/config.toml's
+            # HOST_CC), hashes the compiler wrapper's contents, and keys the
+            # cache on the flags Nix adds behind the command line, so a
+            # different compiler or glibc never reuses an object. Paths are
+            # relative to the checkout, so a new output folder still hits.
+            export HOST_CC="ccache cc" HOST_CXX="ccache c++"
+            export CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
+            export CCACHE_COMPILERCHECK=content
+            export CCACHE_BASEDIR="$PWD" CCACHE_NOHASHDIR=1
+            CCACHE_NAMESPACE="$(printf '%s\n' "''${NIX_CFLAGS_COMPILE:-}" "''${NIX_CFLAGS_COMPILE_FOR_BUILD:-}" | sha256sum | cut -c1-16)"
+            export CCACHE_NAMESPACE
           '';
         };
 

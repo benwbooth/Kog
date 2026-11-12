@@ -1,12 +1,16 @@
 [package]
 name = "kog-native"
-version = "0.11.4"
+# Not Kog's release version, and releases leave it alone: Cargo keys this
+# crate's build-script output on its version, so every bump rebuilt all the C
+# and C++ libraries from scratch (half an hour). Change it only to force that.
+version = "1.0.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Kog's bundled C and C++ decoder libraries, built on their own so Rust changes never rebuild them"
 repository = "https://github.com/benwbooth/Kog"
 
 [build-dependencies]
-cc = "1.2.38"
+# parallel: compile each library's files at once rather than one by one.
+cc = { version = "1.2.38", features = ["parallel"] }
 cmake = "0.1.58"
 pkg-config = "0.3.32"
