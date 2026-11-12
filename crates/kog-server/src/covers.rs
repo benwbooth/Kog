@@ -162,7 +162,10 @@ enum Prepared {
 /// each its own embedded picture or search result.
 pub(crate) fn album_cover_key(file: &Path, album: &str) -> String {
     let folder = file.parent().unwrap_or(file);
-    cover_art::cache_key("album", &format!("{}\0{}", folder.display(), album.trim()))
+    // A game's album entry is versioned with its lookup ("game-v2"): one
+    // found before box-art search came ahead of music albums is found again.
+    let scope = if cover_art::game_platforms(file).is_empty() { "album" } else { "album-game-v2" };
+    cover_art::cache_key(scope, &format!("{}\0{}", folder.display(), album.trim()))
 }
 
 /// The album's cover, if one of its songs already found it (and the listener

@@ -85,6 +85,7 @@ pub fn download_cover<T>(
     }
     // No guessed name exists: look the game up in the platform's listing,
     // where names carry tags such as "(1986)(Nintendo)(VS UniSystem)".
+    let game = !game_platforms(file).is_empty();
     for platform in game_platforms(file) {
         if cancelled() {
             return None;
@@ -100,6 +101,22 @@ pub fn download_cover<T>(
                 }
             }
         }
+    }
+    // Game music wants the game's box art, not a music album that happens
+    // to share its name ("Crystalis" finds a band's album on Deezer): an
+    // image search for the box art comes before the music catalogues.
+    if game {
+        for image in image_search_images(file, artist, album, &fetch) {
+            if cancelled() {
+                return None;
+            }
+            if let Some(result) = fetch_image!(image) {
+                return Some(result);
+            }
+        }
+    }
+    if cancelled() {
+        return None;
     }
     if let Some(json) = fetch(&deezer_search_url(artist, album), MAX_SEARCH_BYTES)
         && let Ok(text) = String::from_utf8(json)
@@ -190,32 +207,67 @@ pub fn download_cover<T>(
     if cancelled() {
         return None;
     }
-    // Last resort, an image search, so the cover shows something: the first
-    // results whose title names the album, else the top result. A game is
-    // searched as its box art on its console.
-    let query = image_search_query(file, artist, album);
-    if let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES)
-        && let Ok(html) = String::from_utf8(page)
-        && let Some(token) = ddg_token(&html)
-        && let Some(results) = fetch(&ddg_image_url(&query, &token), MAX_SEARCH_BYTES)
-        && let Ok(text) = String::from_utf8(results)
-    {
-        let images = parse_ddg_images(&text);
-        let lookup = album_lookup_name(album);
-        let matching = images
-            .iter()
-            .filter(|(title, _)| titles_match(artist, lookup, title, ""))
-            .take(2);
-        for (_, image) in matching.chain(images.iter().take(2)) {
+    // Last resort for an album, an image search, so the cover shows
+    // something. (A game's was tried before the music catalogues.)
+    if !game {
+        for image in image_search_images(file, artist, album, &fetch) {
             if cancelled() {
                 return None;
             }
-            if let Some(result) = fetch_image!(image.clone()) {
+            if let Some(result) = fetch_image!(image) {
                 return Some(result);
             }
         }
     }
     None
+}
+
+/// Image-search results worth fetching for a cover: the first results whose
+/// title names the album (or game), then the top results. A game is searched
+/// as its box art on its console.
+fn image_search_images(
+    file: &Path,
+    artist: &str,
+    album: &str,
+    fetch: &impl Fn(&str, u32) -> Option<Vec<u8>>,
+) -> Vec<String> {
+    let query = image_search_query(file, artist, album);
+    let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES) else {
+        return Vec::new();
+    };
+    let Some(token) = String::from_utf8(page).ok().and_then(|html| ddg_token(&html)) else {
+        return Vec::new();
+    };
+    let Some(text) = fetch(&ddg_image_url(&query, &token), MAX_SEARCH_BYTES)
+        .and_then(|results| String::from_utf8(results).ok())
+    else {
+        return Vec::new();
+    };
+    let images = parse_ddg_images(&text);
+    let game = !game_platforms(file).is_empty();
+    let lookup = search_title(file, album);
+    let matching = images
+        .iter()
+        .filter(|(title, _)| titles_match(if game { "" } else { artist }, &lookup, title, ""))
+        .take(2);
+    let mut urls: Vec<String> = Vec::new();
+    for (_, image) in matching.chain(images.iter().take(2)) {
+        if !urls.contains(image) {
+            urls.push(image.clone());
+        }
+    }
+    urls
+}
+
+/// The title a search asks for: a game's plain title, without the release
+/// tags and alternate names rips carry ("Crystalis [God Slayer - Haruka
+/// Tenkuu no Sonata] (1990-04-13)(SNK)" is "Crystalis"), or the album.
+fn search_title(file: &Path, album: &str) -> String {
+    if game_platforms(file).is_empty() {
+        album_lookup_name(album).to_owned()
+    } else {
+        without_tag_groups(album_lookup_name(album))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,7 +351,9 @@ pub fn track_cache_key(
         // Game music keeps its own entries: its cover is the game's box art,
         // not whatever album a music search matched before box art was tried.
         // One per game: rips often credit a different composer per track.
-        (cache_key("", &format!("game \0 {lookup_album}")), true)
+        // "v2": covers found before a game's image search came ahead of the
+        // music catalogues may be a music album's, so they are looked up again.
+        (cache_key("", &format!("game-v2 \0 {lookup_album}")), true)
     } else {
         (cache_key(artist, lookup_album), true)
     }
@@ -907,7 +961,8 @@ pub fn cover_candidates(
 ) -> Vec<CoverCandidate> {
     let mut candidates = Vec::new();
     let lookup = album_lookup_name(album);
-    for platform in game_platforms(file) {
+    let platforms = game_platforms(file);
+    for platform in &platforms {
         if let Some(names) = box_art_index(platform, &fetch) {
             for name in box_art_matches(album, &names).into_iter().take(8) {
                 candidates.push(CoverCandidate {
@@ -917,6 +972,54 @@ pub fn cover_candidates(
                 });
             }
         }
+    }
+    // The listing can fail to load (it is large) or miss the game: try the
+    // guessed names the automatic lookup uses, a batch at a time.
+    if candidates.is_empty() && !platforms.is_empty() {
+        let urls = game_box_art_urls(album, &platforms);
+        let hits: Vec<String> = std::thread::scope(|scope| {
+            let probes: Vec<_> = urls
+                .iter()
+                .take(BOX_ART_BATCH * 2)
+                .map(|url| {
+                    let fetch = &fetch;
+                    scope.spawn(move || {
+                        fetch(url, MAX_COVER_BYTES)
+                            .filter(|bytes| sniff_image_kind(bytes).is_some())
+                            .map(|_| url.clone())
+                    })
+                })
+                .collect();
+            probes
+                .into_iter()
+                .filter_map(|probe| probe.join().ok().flatten())
+                .collect()
+        });
+        for url in hits {
+            let title = percent_encoding::percent_decode_str(
+                url.rsplit('/').next().unwrap_or_default().trim_end_matches(".png"),
+            )
+            .decode_utf8_lossy()
+            .into_owned();
+            candidates.push(CoverCandidate { source: "Box art", title, url });
+        }
+    }
+    let image_search = |candidates: &mut Vec<CoverCandidate>| {
+        let query = image_search_query(file, artist, album);
+        if let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES)
+            && let Ok(html) = String::from_utf8(page)
+            && let Some(token) = ddg_token(&html)
+            && let Some(results) = fetch(&ddg_image_url(&query, &token), MAX_SEARCH_BYTES)
+            && let Ok(text) = String::from_utf8(results)
+        {
+            for (title, url) in parse_ddg_images(&text).into_iter().take(12) {
+                candidates.push(CoverCandidate { source: "Image search", title, url });
+            }
+        }
+    };
+    // A game's box-art search comes before music albums of the same name.
+    if !platforms.is_empty() {
+        image_search(&mut candidates);
     }
     let json = |url: String| -> serde_json::Value {
         fetch(&url, MAX_SEARCH_BYTES)
@@ -946,16 +1049,8 @@ pub fn cover_candidates(
             });
         }
     }
-    let query = image_search_query(file, artist, album);
-    if let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES)
-        && let Ok(html) = String::from_utf8(page)
-        && let Some(token) = ddg_token(&html)
-        && let Some(results) = fetch(&ddg_image_url(&query, &token), MAX_SEARCH_BYTES)
-        && let Ok(text) = String::from_utf8(results)
-    {
-        for (title, url) in parse_ddg_images(&text).into_iter().take(12) {
-            candidates.push(CoverCandidate { source: "Image search", title, url });
-        }
+    if platforms.is_empty() {
+        image_search(&mut candidates);
     }
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|candidate| seen.insert(candidate.url.clone()));
@@ -969,7 +1064,7 @@ fn image_search_query(file: &Path, artist: &str, album: &str) -> String {
         .first()
         .map(|platform| platform.rsplit(" - ").next().unwrap_or(platform).to_owned());
     match &platform {
-        Some(platform) => format!("{} {platform} box art", album_lookup_name(album)),
+        Some(platform) => format!("{} {platform} box art", search_title(file, album)),
         None => format!("{artist} {album} album cover"),
     }
     .split_whitespace()
@@ -1326,6 +1421,50 @@ mod tests {
             vec!["DOS"]
         );
         assert!(game_platforms(Path::new("/music/pop/song.mid")).is_empty());
+    }
+
+    #[test]
+    fn game_music_searches_box_art_before_music_albums() {
+        let file = Path::new(
+            "/NES/Crystalis [God Slayer - Haruka Tenkuu no Sonata] (1990-04-13)(SNK)[NES]/Crystalis.nsf",
+        );
+        let album = "Crystalis [God Slayer - Haruka Tenkuu no Sonata] (1990-04-13)(SNK)";
+        assert_eq!(
+            image_search_query(file, "Tsutomu Ishida", album),
+            "Crystalis Nintendo Entertainment System box art"
+        );
+        let requested = std::sync::Mutex::new(Vec::new());
+        let cover = download_cover(
+            file,
+            "Tsutomu Ishida",
+            album,
+            |url, _| {
+                requested.lock().unwrap().push(url.to_owned());
+                if url.starts_with("https://duckduckgo.com/?") {
+                    Some(b"vqd=\"4-123\"".to_vec())
+                } else if url.starts_with("https://duckduckgo.com/i.js") {
+                    Some(br#"{"results":[{"title":"Crystalis NES box art","image":"https://media.example/crystalis.jpg"}]}"#.to_vec())
+                } else if url.starts_with("https://external-content.duckduckgo.com/") {
+                    Some(vec![0xff, 0xd8, 0xff, 0xe0])
+                } else if url.starts_with("https://api.deezer.com/") {
+                    Some(br#"{"data":[{"title":"Crystalis","artist":{"name":"Some Band"},"cover_xl":"https://example.test/band.jpg"}]}"#.to_vec())
+                } else if url.ends_with("/band.jpg") {
+                    Some(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
+                } else {
+                    None
+                }
+            },
+            || false,
+            Some,
+        );
+        assert_eq!(cover, Some(vec![0xff, 0xd8, 0xff, 0xe0]));
+        assert!(
+            !requested
+                .into_inner()
+                .unwrap()
+                .iter()
+                .any(|url| url.starts_with("https://api.deezer.com/"))
+        );
     }
 
     #[test]
