@@ -43,10 +43,20 @@ struct Ask {
     generation: u64,
 }
 
+/// What a song's row shows.
+struct Answer {
+    /// The icon's URL (empty: no cover).
+    url: String,
+    /// A stand-in from before the cache keys were renamed: looked up again
+    /// when the cover cache changes.
+    provisional: bool,
+    /// Asked again; `url` shows until the answer comes.
+    stale: bool,
+}
+
 #[derive(Default)]
 struct State {
-    /// Song to its icon's URL (empty: no cover).
-    songs: HashMap<String, String>,
+    songs: HashMap<String, Answer>,
     /// Album cover key to its icon's URL.
     albums: HashMap<String, String>,
     queue: VecDeque<Ask>,
@@ -101,12 +111,20 @@ impl State {
         self.changed = true;
     }
 
-    /// Songs without a cover look again. The revision moves, or rows on
-    /// screen would keep showing none: nothing else tells them to ask.
+    /// Songs without a cover look again, and those showing a stand-in
+    /// (keeping it meanwhile). The revision moves, or rows on screen would
+    /// keep showing what they have: nothing else tells them to ask.
     fn forget_missing(&mut self) {
         let before = self.songs.len();
-        self.songs.retain(|_, url| !url.is_empty());
-        if self.songs.len() != before {
+        self.songs.retain(|_, answer| !answer.url.is_empty());
+        let mut changed = self.songs.len() != before;
+        for answer in self.songs.values_mut() {
+            if answer.provisional && !answer.stale {
+                answer.stale = true;
+                changed = true;
+            }
+        }
+        if changed {
             self.changed = true;
         }
     }
@@ -131,9 +149,9 @@ fn work(shared: Arc<Shared>) {
                 }
             }
         };
-        let url = kog_server::desktop_art::song_icon(&shared.cover_cache, &ask.file, &ask.artist, &ask.album)
-            .map(|path| file_url(&path))
-            .unwrap_or_default();
+        let icon = kog_server::desktop_art::song_icon(&shared.cover_cache, &ask.file, &ask.artist, &ask.album);
+        let provisional = icon.as_ref().is_some_and(|icon| icon.provisional);
+        let url = icon.map(|icon| file_url(&icon.path)).unwrap_or_default();
         let mut state = shared.lock();
         if state.generation != ask.generation {
             continue;
@@ -142,12 +160,16 @@ fn work(shared: Arc<Shared>) {
             state.songs.clear();
             state.albums.clear();
         }
-        // Only a found cover changes what a row shows.
-        if !url.is_empty() {
-            state.albums.insert(ask.album_key, url.clone());
+        // Only a different cover changes what a row shows. A stand-in is
+        // this song's alone: its album may already have its new one.
+        let before = state.songs.get(&ask.song).map(|answer| answer.url.as_str()).unwrap_or_default();
+        if !url.is_empty() && url != before {
             state.changed = true;
         }
-        state.songs.insert(ask.song.clone(), url);
+        if !url.is_empty() && !provisional {
+            state.albums.insert(ask.album_key, url.clone());
+        }
+        state.songs.insert(ask.song.clone(), Answer { url, provisional, stale: false });
         state.queued.remove(&ask.song);
     }
 }
@@ -204,11 +226,16 @@ impl DesktopArt {
     }
 
     /// The URL of the song's cover icon, or empty while it is looked up
-    /// (the revision moves when it is found) and for songs without one.
+    /// (the revision moves when it is found) and for songs without one. A
+    /// stand-in being looked up again keeps showing meanwhile.
     pub fn song_icon(&self, song: &str, file: &Path, artist: &str, album: &str) -> String {
         let mut state = self.shared.lock();
-        if let Some(url) = state.songs.get(song) {
-            return url.clone();
+        let mut showing = String::new();
+        if let Some(answer) = state.songs.get(song) {
+            if !answer.stale {
+                return answer.url.clone();
+            }
+            showing = answer.url.clone();
         }
         let album_key = kog_server::desktop_art::album_key(file, album);
         if let Some(url) = state.albums.get(&album_key) {
@@ -243,7 +270,7 @@ impl DesktopArt {
             }
             self.shared.wake.notify_one();
         }
-        String::new()
+        showing
     }
 
     /// The URL of the playlist's icon (0: Favorites), or empty for one

@@ -58,13 +58,14 @@ fn readable(cover_cache: &Path, path: &Path) -> Option<Vec<u8>> {
         .filter(|bytes| !cover_art::is_rejected(cover_cache, bytes))
 }
 
-/// The song's cover from what is on disk, or `None`.
-fn song_cover(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Option<Vec<u8>> {
+/// The song's cover from what is on disk, or `None`; `true` with it when it
+/// is one found before the song's cache entries were renamed (game music's
+/// "v2"), standing in while the new lookup runs.
+fn song_cover(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Option<(Vec<u8>, bool)> {
     let album_key = album_key(file, album);
-    if let Some(bytes) = cover_art::cache_lookup(cover_cache, &album_key)
-        .and_then(|path| readable(cover_cache, &path))
-    {
-        return Some(bytes);
+    let cached = |key: &str| cover_art::cache_lookup(cover_cache, key).and_then(|path| readable(cover_cache, &path));
+    if let Some(bytes) = cached(album_key.as_str()) {
+        return Some((bytes, false));
     }
     let lookup_album = cover_art::fallback_album(file, album);
     let mut keys = Vec::new();
@@ -74,17 +75,24 @@ fn song_cover(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Opt
     if let Some(folder) = file.parent() {
         keys.push(cover_art::folder_cover_key(folder));
     }
-    let cached = keys.iter().find_map(|key| {
-        cover_art::cache_lookup(cover_cache, key).and_then(|path| readable(cover_cache, &path))
-    });
-    let bytes = cached.or_else(|| {
+    let found = keys.iter().find_map(|key| cached(key.as_str())).or_else(|| {
         cover_art::embedded_cover_bytes(file)
             .or_else(|| cover_art::sibling_cover_bytes(file))
             .filter(|bytes| !cover_art::is_rejected(cover_cache, bytes))
-    })?;
+    });
+    let Some(bytes) = found else {
+        // Not under the album's (or song's) old key either, and never stored
+        // under the new one: the server must still look the game up.
+        let mut previous = Vec::new();
+        previous.extend(crate::covers::previous_album_cover_key(file, album));
+        if !lookup_album.is_empty() {
+            previous.extend(cover_art::previous_track_cache_key(artist, album, &lookup_album, file));
+        }
+        return previous.iter().find_map(|key| cached(key.as_str())).map(|bytes| (bytes, true));
+    };
     // The album's other songs (here and on the server) find it at once.
     let _ = cover_art::store_cache(cover_cache, &album_key, &bytes);
-    Some(bytes)
+    Some((bytes, false))
 }
 
 /// Coverage of the pixel at (x, y) by a square of `size` with rounded
@@ -155,15 +163,26 @@ fn keep(dir: &Path, name: &str, make: impl FnOnce() -> Option<RgbaImage>) -> Opt
     Some(path)
 }
 
+/// A song's small rounded cover icon.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SongIcon {
+    pub path: PathBuf,
+    /// The cover was found before the song's cache entries were renamed (a
+    /// game's, before box-art search came first): shown until the server
+    /// finds the new one, so worth asking again when the cover cache changes.
+    pub provisional: bool,
+}
+
 /// The song's cover as a small rounded icon, or `None` for a song without
 /// one on disk.
-pub fn song_icon(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Option<PathBuf> {
+pub fn song_icon(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Option<SongIcon> {
     if !file.is_file() {
         return None;
     }
-    let cover = song_cover(cover_cache, file, artist, album)?;
+    let (cover, provisional) = song_cover(cover_cache, file, artist, album)?;
     let name = format!("{:016x}-r{ICON_SIZE}.png", fnv(FNV_START, &cover));
-    keep(&beside(cover_cache, THUMB_DIRECTORY), &name, || square(&cover, ICON_SIZE))
+    let path = keep(&beside(cover_cache, THUMB_DIRECTORY), &name, || square(&cover, ICON_SIZE))?;
+    Some(SongIcon { path, provisional })
 }
 
 /// When the playlist-cover worker last saved its tiles.
@@ -238,11 +257,33 @@ mod tests {
         std::fs::write(&first, b"not really").unwrap();
         std::fs::write(&second, b"not really").unwrap();
         let icon = song_icon(&cache, &first, "Artist", "Album").unwrap();
+        assert!(!icon.provisional);
         assert_eq!(song_icon(&cache, &second, "Artist", "Album"), Some(icon.clone()));
-        let image = image::open(&icon).unwrap().to_rgba8();
+        let image = image::open(&icon.path).unwrap().to_rgba8();
         assert_eq!(image.dimensions(), (ICON_SIZE, ICON_SIZE));
         assert_eq!(image.get_pixel(0, 0).0[3], 0);
         assert_eq!(image.get_pixel(ICON_SIZE / 2, ICON_SIZE / 2).0, [200, 30, 30, 255]);
+    }
+
+    #[test]
+    fn game_covers_from_before_the_v2_keys_stand_in_until_the_new_one() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("covers");
+        let album = root.path().join("nes");
+        std::fs::create_dir_all(&album).unwrap();
+        let song = album.join("Crystalis.nsf");
+        std::fs::write(&song, b"not really").unwrap();
+        let old_key = crate::covers::previous_album_cover_key(&song, "Crystalis").unwrap();
+        cover_art::store_cache(&cache, &old_key, &png([10, 200, 10])).unwrap();
+        let icon = song_icon(&cache, &song, "Composer", "Crystalis").unwrap();
+        assert!(icon.provisional);
+        // A stand-in is never adopted as the album's new cover.
+        assert!(cover_art::cache_lookup(&cache, &album_key(&song, "Crystalis")).is_none());
+        cover_art::store_cache(&cache, &album_key(&song, "Crystalis"), &png([10, 10, 200])).unwrap();
+        let icon = song_icon(&cache, &song, "Composer", "Crystalis").unwrap();
+        assert!(!icon.provisional);
+        let image = image::open(&icon.path).unwrap().to_rgba8();
+        assert_eq!(image.get_pixel(ICON_SIZE / 2, ICON_SIZE / 2).0, [10, 10, 200, 255]);
     }
 
     #[test]

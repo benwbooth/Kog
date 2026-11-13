@@ -168,6 +168,14 @@ pub(crate) fn album_cover_key(file: &Path, album: &str) -> String {
     cover_art::cache_key(scope, &format!("{}\0{}", folder.display(), album.trim()))
 }
 
+/// The album's key before games got their own ("album-game-v2"), for game
+/// music only: its old cover stands in until the game's box art is found.
+pub(crate) fn previous_album_cover_key(file: &Path, album: &str) -> Option<String> {
+    let folder = file.parent().unwrap_or(file);
+    (!cover_art::game_platforms(file).is_empty())
+        .then(|| cover_art::cache_key("album", &format!("{}\0{}", folder.display(), album.trim())))
+}
+
 /// The album's cover, if one of its songs already found it (and the listener
 /// hasn't rejected it since).
 pub(crate) fn album_cover(cache_dir: &Path, key: &str) -> Option<Bytes> {

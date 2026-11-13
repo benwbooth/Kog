@@ -359,6 +359,20 @@ pub fn track_cache_key(
     }
 }
 
+/// The key [`track_cache_key`] gave game music before its "v2": the cover
+/// found then (perhaps a music album's) still stands in, while the box-art
+/// lookup finds the game's own, rather than showing none at all.
+pub fn previous_track_cache_key(
+    artist: &str,
+    tagged_album: &str,
+    lookup_album: &str,
+    file: &Path,
+) -> Option<String> {
+    let untagged = artist.trim().is_empty() && tagged_album.trim().is_empty();
+    (!untagged && !game_platforms(file).is_empty())
+        .then(|| cache_key("", &format!("game \0 {lookup_album}")))
+}
+
 pub fn cache_directory(base: &Path) -> PathBuf {
     base.join(CACHE_SUBDIRECTORY)
 }
