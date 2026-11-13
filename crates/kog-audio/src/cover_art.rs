@@ -757,13 +757,79 @@ pub fn game_platforms(file: &Path) -> Vec<&'static str> {
                 vec!["Sega - Mega Drive - Genesis", "Sega - Master System - Mark III"]
             }
         }
-        "mid" | "midi" | "rmi" | "hmp" | "hmi" | "xmi"
-            if ["gamemid", "dos", "game"].iter().any(|hint| folders.contains(hint)) =>
-        {
-            vec!["DOS"]
-        }
+        // MIDI arrangements of game music (VGMusic's sets, gamemids) sit in
+        // folders named for the console: "Nintendo Consoles/Nintendo/Crystalis".
+        "mid" | "midi" | "rmi" | "hmp" | "hmi" | "xmi" => match folder_platforms(file) {
+            Some(platforms) => platforms,
+            None if ["gamemid", "dos", "game"].iter().any(|hint| folders.contains(hint)) => vec!["DOS"],
+            None => Vec::new(),
+        },
         _ => Vec::new(),
     }
+}
+
+/// The console a folder of the song's path names, the nearest first:
+/// libretro's box-art sets for it.
+fn folder_platforms(file: &Path) -> Option<Vec<&'static str>> {
+    file.parent()?
+        .components()
+        .rev()
+        .find_map(|component| component_platforms(&component.as_os_str().to_string_lossy()))
+}
+
+fn component_platforms(name: &str) -> Option<Vec<&'static str>> {
+    let name = name.to_ascii_lowercase();
+    let words: Vec<&str> = name.split(|c: char| !c.is_ascii_alphanumeric()).filter(|word| !word.is_empty()).collect();
+    let joined = words.join(" ");
+    let has = |phrase: &str| format!(" {joined} ").contains(&format!(" {phrase} "));
+    let platforms: &[&'static str] = if has("game boy advance") || has("gameboy advance") || has("gba") {
+        &["Nintendo - Game Boy Advance"]
+    } else if has("game boy") || has("gameboy") || has("gbc") {
+        &["Nintendo - Game Boy", "Nintendo - Game Boy Color"]
+    } else if has("super nintendo") || has("snes") || has("super famicom") {
+        &["Nintendo - Super Nintendo Entertainment System"]
+    } else if has("nintendo 64") || has("n64") {
+        &["Nintendo - Nintendo 64"]
+    } else if has("nintendo ds") || has("nds") {
+        &["Nintendo - Nintendo DS"]
+    } else if has("gamecube") {
+        &["Nintendo - GameCube"]
+    } else if has("virtualboy") || has("virtual boy") {
+        &["Nintendo - Virtual Boy"]
+    } else if joined == "nintendo" || has("nes") || has("famicom") || has("nintendo entertainment system") {
+        &["Nintendo - Nintendo Entertainment System"]
+    } else if has("game gear") || has("gamegear") {
+        &["Sega - Game Gear"]
+    } else if has("master system") || has("sms") {
+        &["Sega - Master System - Mark III"]
+    } else if has("32x") {
+        &["Sega - 32X"]
+    } else if has("sega cd") || has("mega cd") {
+        &["Sega - Mega-CD - Sega CD"]
+    } else if has("genesis") || has("mega drive") || has("megadrive") {
+        &["Sega - Mega Drive - Genesis"]
+    } else if has("saturn") {
+        &["Sega - Saturn"]
+    } else if has("dreamcast") {
+        &["Sega - Dreamcast"]
+    } else if has("playstation portable") || has("psp") {
+        &["Sony - PlayStation Portable"]
+    } else if has("playstation 2") || has("ps2") {
+        &["Sony - PlayStation 2"]
+    } else if (has("playstation") && !has("playstation 3")) || has("psx") || has("ps1") {
+        &["Sony - PlayStation"]
+    } else if has("turbografx") || has("turbografx 16") || has("pc engine") || has("turbo duo") || has("supergrafx") {
+        &["NEC - PC Engine - TurboGrafx 16"]
+    } else if has("commodore 64") || has("c64") {
+        &["Commodore - 64"]
+    } else if has("msx") {
+        &["Microsoft - MSX", "Microsoft - MSX2"]
+    } else if has("dos") {
+        &["DOS"]
+    } else {
+        return None;
+    };
+    Some(platforms.to_vec())
 }
 
 /// Box-art URLs to try for a game on its platforms: its title as tagged, with
@@ -1435,6 +1501,14 @@ mod tests {
             vec!["DOS"]
         );
         assert!(game_platforms(Path::new("/music/pop/song.mid")).is_empty());
+        let vgmusic = Path::new("/Chiptunes/vgmusic/Nintendo Consoles/Nintendo/Crystalis/001 - Cave (v2.0).mid");
+        assert_eq!(game_platforms(vgmusic), vec!["Nintendo - Nintendo Entertainment System"]);
+        let snes = Path::new("/Chiptunes/vgmusic/Nintendo Consoles/Super Nintendo/Chrono Trigger/01.mid");
+        assert_eq!(game_platforms(snes), vec!["Nintendo - Super Nintendo Entertainment System"]);
+        let genesis = Path::new("/Chiptunes/vgmusic/Sega Consoles/Sega Genesis/Sonic/01.mid");
+        assert_eq!(game_platforms(genesis), vec!["Sega - Mega Drive - Genesis"]);
+        let dos = Path::new("/Chiptunes/vgmusic/Computer Systems/Microsoft DOS-Windows/Doom/e1m1.mid");
+        assert_eq!(game_platforms(dos), vec!["DOS"]);
     }
 
     #[test]
