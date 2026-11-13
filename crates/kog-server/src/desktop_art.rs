@@ -75,7 +75,11 @@ fn song_cover(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Opt
     if let Some(folder) = file.parent() {
         keys.push(cover_art::folder_cover_key(folder));
     }
+    // An archive's song may not be extracted (yet): its keys still hold.
     let found = keys.iter().find_map(|key| cached(key.as_str())).or_else(|| {
+        if !file.is_file() {
+            return None;
+        }
         cover_art::embedded_cover_bytes(file)
             .or_else(|| cover_art::sibling_cover_bytes(file))
             .filter(|bytes| !cover_art::is_rejected(cover_cache, bytes))
@@ -176,9 +180,6 @@ pub struct SongIcon {
 /// The song's cover as a small rounded icon, or `None` for a song without
 /// one on disk.
 pub fn song_icon(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Option<SongIcon> {
-    if !file.is_file() {
-        return None;
-    }
     let (cover, provisional) = song_cover(cover_cache, file, artist, album)?;
     let name = format!("{:016x}-r{ICON_SIZE}.png", fnv(FNV_START, &cover));
     let path = keep(&beside(cover_cache, THUMB_DIRECTORY), &name, || square(&cover, ICON_SIZE))?;

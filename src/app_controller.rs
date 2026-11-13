@@ -7310,7 +7310,9 @@ impl qobject::AppController {
     }
 
     fn track_cover(&self, track: &Track) -> QString {
-        if track.source.remote_url.is_some() || track.source.archive_origin.is_some() {
+        // A song from an archive asks with its extracted file, as the
+        // now-playing cover does: its keys are the same.
+        if track.source.remote_url.is_some() {
             return QString::default();
         }
         let file = &track.source.path;
