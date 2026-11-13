@@ -85,18 +85,35 @@ fn song_cover(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Opt
             .filter(|bytes| !cover_art::is_rejected(cover_cache, bytes))
     });
     let Some(bytes) = found else {
-        // Not under the album's (or song's) old key either, and never stored
-        // under the new one: the server must still look the game up.
-        let mut previous = Vec::new();
-        previous.extend(crate::covers::previous_album_cover_key(file, album));
-        if !lookup_album.is_empty() {
-            previous.extend(cover_art::previous_track_cache_key(artist, album, &lookup_album, file));
-        }
-        return previous.iter().find_map(|key| cached(key.as_str())).map(|bytes| (bytes, true));
+        // Not under the album's (or song's) new keys: the server must still
+        // look the game up. The old ones stand in meanwhile.
+        return previous_cover(cover_cache, file, artist, album)
+            .and_then(|path| readable(cover_cache, &path))
+            .map(|bytes| (bytes, true));
     };
     // The album's other songs (here and on the server) find it at once.
     let _ = cover_art::store_cache(cover_cache, &album_key, &bytes);
     Some((bytes, false))
+}
+
+/// The cover a game's song had under its cache keys before "v2" (the
+/// album's, then the song's own), to show while the new lookup runs.
+pub fn previous_cover(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Option<PathBuf> {
+    let lookup_album = cover_art::fallback_album(file, album);
+    let mut keys = Vec::new();
+    keys.extend(crate::covers::previous_album_cover_key(file, album));
+    if !lookup_album.is_empty() {
+        keys.extend(cover_art::previous_track_cache_key(artist, album, &lookup_album, file));
+    }
+    keys.iter()
+        .filter_map(|key| cover_art::cache_lookup(cover_cache, key))
+        .find(|path| readable(cover_cache, path).is_some())
+}
+
+/// Whether the cached cover at `path` was rejected by the listener (or is
+/// no image at all).
+pub fn is_rejected_file(cover_cache: &Path, path: &Path) -> bool {
+    readable(cover_cache, path).is_none()
 }
 
 /// Coverage of the pixel at (x, y) by a square of `size` with rounded

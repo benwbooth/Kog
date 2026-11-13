@@ -7369,6 +7369,17 @@ impl qobject::AppController {
                 .set_current_artwork_path(qstring(cached.to_string_lossy()));
             return;
         }
+        // The album's entry, which the song rows and the servers read
+        // first: the cover beside the song in the playlist is shown at once
+        // instead of being searched for again.
+        let album_key = kog_server::desktop_art::album_key(&file, &tagged_album);
+        if let Some(cached) = kog_audio::cover_art::cache_lookup(&cache_dir, &album_key)
+            .filter(|path| !kog_server::desktop_art::is_rejected_file(&cache_dir, path))
+        {
+            self.as_mut()
+                .set_current_artwork_path(qstring(cached.to_string_lossy()));
+            return;
+        }
         if let Some(bytes) = kog_audio::cover_art::embedded_cover_bytes(&file) {
             if let Some(stored) = kog_audio::cover_art::store_cache(&cache_dir, &key, &bytes) {
                 self.as_mut()
@@ -7398,6 +7409,14 @@ impl qobject::AppController {
                     }
                 }
             }
+        }
+        // A cover found before the cache keys were renamed stands in while
+        // the search runs, as it does on the song's row.
+        if let Some(previous) =
+            kog_server::desktop_art::previous_cover(&cache_dir, &file, &artist, &tagged_album)
+        {
+            self.as_mut()
+                .set_current_artwork_path(qstring(previous.to_string_lossy()));
         }
         if !may_download
             || !self.as_ref().rust().download_cover_art
