@@ -1567,7 +1567,8 @@ ApplicationWindow {
         }
     }
     // Every cover the sources offer for the playing song's album, rejected
-    // ones included, to pick by hand.
+    // ones included, to pick by hand: a game's box art on one tab, music
+    // albums on the other, whatever the song's format.
     Dialog {
         id: coverChooser
         anchors.centerIn: parent
@@ -1576,9 +1577,48 @@ ApplicationWindow {
         modal: true
         title: qsTr("Choose a Cover")
         standardButtons: Dialog.Cancel
-        onOpened: appController.find_cover_candidates()
-        readonly property var candidates: {
-            try { return JSON.parse(appController.cover_candidates_json) } catch (e) { return [] }
+        // The tab the listener picked, -1 until they pick one.
+        property int chosenTab: -1
+        onOpened: {
+            chosenTab = -1
+            kindTabs.currentIndex = Qt.binding(() => coverChooser.tab)
+            appController.find_cover_candidates()
+        }
+        readonly property var listing: {
+            try { return JSON.parse(appController.cover_candidates_json) } catch (e) { return {} }
+        }
+        readonly property var all: listing.candidates || []
+        // Opens on Game for game music's formats, Music otherwise, until
+        // the listener picks a tab.
+        readonly property int tab: chosenTab >= 0 ? chosenTab : (listing.game === false ? 1 : 0)
+        readonly property var candidates: all.filter(candidate => candidate.kind === (tab === 0 ? "game" : "music"))
+
+        header: Item {
+            implicitHeight: titleLabel.implicitHeight + kindTabs.implicitHeight + 24
+            Label {
+                id: titleLabel
+                x: 16; y: 12
+                text: coverChooser.title
+                font.bold: true
+                font.pixelSize: 15
+            }
+            TabBar {
+                id: kindTabs
+                x: 12
+                anchors.top: titleLabel.bottom
+                anchors.topMargin: 8
+                currentIndex: coverChooser.tab
+                TabButton {
+                    text: qsTr("Game")
+                    width: implicitWidth
+                    onClicked: coverChooser.chosenTab = 0
+                }
+                TabButton {
+                    text: qsTr("Music")
+                    width: implicitWidth
+                    onClicked: coverChooser.chosenTab = 1
+                }
+            }
         }
 
         contentItem: Item {

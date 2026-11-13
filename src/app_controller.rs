@@ -2032,7 +2032,9 @@ pub struct AppControllerRust {
     cover_art_progress: f64,
     cover_candidates_json: QString,
     cover_candidates_loading: bool,
-    cover_candidates: Option<Receiver<Vec<kog_audio::cover_art::CoverCandidate>>>,
+    /// Whether the song is game music (the chooser opens on its Game tab),
+    /// and the candidates.
+    cover_candidates: Option<Receiver<(bool, Vec<kog_audio::cover_art::CoverCandidate>)>>,
     cover_choice: Option<Receiver<Option<PathBuf>>>,
     radio_active: bool,
     radio: Option<RadioState>,
@@ -2306,7 +2308,7 @@ impl Default for AppControllerRust {
             current_artwork_path: QString::default(),
             cover_art_source: QString::default(),
             cover_art_progress: 0.0,
-            cover_candidates_json: QString::from("[]"),
+            cover_candidates_json: QString::from("{}"),
             cover_candidates_loading: false,
             cover_candidates: None,
             cover_choice: None,
@@ -7114,7 +7116,7 @@ impl qobject::AppController {
         let current = usize::try_from(self.as_ref().rust().current_index)
             .ok()
             .and_then(|index| self.as_ref().rust().tracks.get(index).cloned());
-        self.as_mut().set_cover_candidates_json(QString::from("[]"));
+        self.as_mut().set_cover_candidates_json(QString::from("{}"));
         let Some(track) = current else {
             return;
         };
@@ -7130,7 +7132,8 @@ impl qobject::AppController {
                 let candidates = kog_audio::cover_art::cover_candidates(&file, &artist, &album, |url, max_bytes| {
                     fetch_cover(url, max_bytes).ok()
                 });
-                let _ = sender.send(candidates);
+                let game = !kog_audio::cover_art::game_platforms(&file).is_empty();
+                let _ = sender.send((game, candidates));
             });
         if spawned.is_err() {
             self.as_mut().rust_mut().cover_candidates = None;
@@ -7205,19 +7208,19 @@ impl qobject::AppController {
             .cover_candidates
             .as_ref()
             .and_then(|receiver| receiver.try_recv().ok());
-        if let Some(candidates) = listed {
-            let json = serde_json::Value::Array(
-                candidates
-                    .iter()
-                    .map(|candidate| {
-                        serde_json::json!({
-                            "source": candidate.source,
-                            "title": candidate.title,
-                            "url": candidate.url,
-                        })
+        if let Some((game, candidates)) = listed {
+            let candidates: Vec<serde_json::Value> = candidates
+                .iter()
+                .map(|candidate| {
+                    serde_json::json!({
+                        "kind": candidate.kind.as_str(),
+                        "source": candidate.source,
+                        "title": candidate.title,
+                        "url": candidate.url,
                     })
-                    .collect(),
-            );
+                })
+                .collect();
+            let json = serde_json::json!({ "game": game, "candidates": candidates });
             self.as_mut().rust_mut().cover_candidates = None;
             self.as_mut().set_cover_candidates_json(qstring(json.to_string()));
             self.as_mut().set_cover_candidates_loading(false);

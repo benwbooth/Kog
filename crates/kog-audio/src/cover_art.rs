@@ -730,10 +730,6 @@ pub fn game_platforms(file: &Path) -> Vec<&'static str> {
         .and_then(|extension| extension.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let folders = file
-        .parent()
-        .map(|folder| folder.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
     match extension.as_str() {
         "nsf" | "nsfe" => vec!["Nintendo - Nintendo Entertainment System"],
         "spc" | "rsn" => vec!["Nintendo - Super Nintendo Entertainment System"],
@@ -748,89 +744,17 @@ pub fn game_platforms(file: &Path) -> Vec<&'static str> {
         "hes" => vec!["NEC - PC Engine - TurboGrafx 16"],
         "sid" | "psid" | "rsid" => vec!["Commodore - 64"],
         "kss" => vec!["Microsoft - MSX", "Microsoft - MSX2"],
-        "vgm" | "vgz" => {
-            if folders.contains("game gear") || folders.contains("gamegear") {
-                vec!["Sega - Game Gear"]
-            } else if folders.contains("master system") || folders.contains("sms") {
-                vec!["Sega - Master System - Mark III"]
-            } else {
-                vec!["Sega - Mega Drive - Genesis", "Sega - Master System - Mark III"]
-            }
-        }
-        // MIDI arrangements of game music (VGMusic's sets, gamemids) sit in
-        // folders named for the console: "Nintendo Consoles/Nintendo/Crystalis".
-        "mid" | "midi" | "rmi" | "hmp" | "hmi" | "xmi" => match folder_platforms(file) {
-            Some(platforms) => platforms,
-            None if ["gamemid", "dos", "game"].iter().any(|hint| folders.contains(hint)) => vec!["DOS"],
-            None => Vec::new(),
-        },
+        // A VGM can hold any Sega 8- or 16-bit console's music: all of
+        // them, the Mega Drive first, never guessed from folder names.
+        "vgm" | "vgz" => vec![
+            "Sega - Mega Drive - Genesis",
+            "Sega - Master System - Mark III",
+            "Sega - Game Gear",
+        ],
         _ => Vec::new(),
     }
 }
 
-/// The console a folder of the song's path names, the nearest first:
-/// libretro's box-art sets for it.
-fn folder_platforms(file: &Path) -> Option<Vec<&'static str>> {
-    file.parent()?
-        .components()
-        .rev()
-        .find_map(|component| component_platforms(&component.as_os_str().to_string_lossy()))
-}
-
-fn component_platforms(name: &str) -> Option<Vec<&'static str>> {
-    let name = name.to_ascii_lowercase();
-    let words: Vec<&str> = name.split(|c: char| !c.is_ascii_alphanumeric()).filter(|word| !word.is_empty()).collect();
-    let joined = words.join(" ");
-    let has = |phrase: &str| format!(" {joined} ").contains(&format!(" {phrase} "));
-    let platforms: &[&'static str] = if has("game boy advance") || has("gameboy advance") || has("gba") {
-        &["Nintendo - Game Boy Advance"]
-    } else if has("game boy") || has("gameboy") || has("gbc") {
-        &["Nintendo - Game Boy", "Nintendo - Game Boy Color"]
-    } else if has("super nintendo") || has("snes") || has("super famicom") {
-        &["Nintendo - Super Nintendo Entertainment System"]
-    } else if has("nintendo 64") || has("n64") {
-        &["Nintendo - Nintendo 64"]
-    } else if has("nintendo ds") || has("nds") {
-        &["Nintendo - Nintendo DS"]
-    } else if has("gamecube") {
-        &["Nintendo - GameCube"]
-    } else if has("virtualboy") || has("virtual boy") {
-        &["Nintendo - Virtual Boy"]
-    } else if joined == "nintendo" || has("nes") || has("famicom") || has("nintendo entertainment system") {
-        &["Nintendo - Nintendo Entertainment System"]
-    } else if has("game gear") || has("gamegear") {
-        &["Sega - Game Gear"]
-    } else if has("master system") || has("sms") {
-        &["Sega - Master System - Mark III"]
-    } else if has("32x") {
-        &["Sega - 32X"]
-    } else if has("sega cd") || has("mega cd") {
-        &["Sega - Mega-CD - Sega CD"]
-    } else if has("genesis") || has("mega drive") || has("megadrive") {
-        &["Sega - Mega Drive - Genesis"]
-    } else if has("saturn") {
-        &["Sega - Saturn"]
-    } else if has("dreamcast") {
-        &["Sega - Dreamcast"]
-    } else if has("playstation portable") || has("psp") {
-        &["Sony - PlayStation Portable"]
-    } else if has("playstation 2") || has("ps2") {
-        &["Sony - PlayStation 2"]
-    } else if (has("playstation") && !has("playstation 3")) || has("psx") || has("ps1") {
-        &["Sony - PlayStation"]
-    } else if has("turbografx") || has("turbografx 16") || has("pc engine") || has("turbo duo") || has("supergrafx") {
-        &["NEC - PC Engine - TurboGrafx 16"]
-    } else if has("commodore 64") || has("c64") {
-        &["Commodore - 64"]
-    } else if has("msx") {
-        &["Microsoft - MSX", "Microsoft - MSX2"]
-    } else if has("dos") {
-        &["DOS"]
-    } else {
-        return None;
-    };
-    Some(platforms.to_vec())
-}
 
 /// Box-art URLs to try for a game on its platforms: its title as tagged, with
 /// any trailing "(1986-08)(Nintendo)" groups dropped, a leading "The" moved
@@ -1021,31 +945,92 @@ fn box_art_url(platform: &str, name: &str) -> String {
     )
 }
 
+/// Which tab of the chooser a candidate belongs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CoverKind {
+    /// A game's box art: for game music, whatever its format.
+    Game,
+    /// A music album's cover.
+    Music,
+}
+
+impl CoverKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CoverKind::Game => "game",
+            CoverKind::Music => "music",
+        }
+    }
+}
+
 /// A cover the listener can pick by hand: where it came from, what the
 /// source calls it, and the image.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverCandidate {
+    pub kind: CoverKind,
     pub source: &'static str,
     pub title: String,
     pub url: String,
 }
 
 /// Every cover the sources offer for an album, for choosing by hand when the
-/// automatic pick is wrong: game box art, Deezer and Apple Music albums, and
-/// image-search results. Only listings are fetched, not the images.
+/// automatic pick is wrong, both as a game and as music: the listener knows
+/// which it is (a MIDI arrangement of a game's music is as much a game's as
+/// an NSF), so both are offered whatever the format. Game: box art from the
+/// format's consoles, and an image search for the game's box art. Music:
+/// Deezer and Apple Music albums, and an image search for the album cover.
+/// Only listings are fetched, not the images.
 pub fn cover_candidates(
     file: &Path,
     artist: &str,
     album: &str,
     fetch: impl Fn(&str, u32) -> Option<Vec<u8>> + Sync,
 ) -> Vec<CoverCandidate> {
+    let fetch = &fetch;
+    let (game, music) = std::thread::scope(|scope| {
+        let game = scope.spawn(move || game_candidates(file, album, fetch));
+        let music = music_candidates(artist, album, fetch);
+        (game.join().unwrap_or_default(), music)
+    });
+    let mut candidates = game;
+    candidates.extend(music);
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|candidate| seen.insert((candidate.kind, candidate.url.clone())));
+    candidates
+}
+
+fn image_search_candidates(
+    kind: CoverKind,
+    query: &str,
+    fetch: &(impl Fn(&str, u32) -> Option<Vec<u8>> + Sync),
+) -> Vec<CoverCandidate> {
+    let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut candidates = Vec::new();
-    let lookup = album_lookup_name(album);
+    if let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES)
+        && let Ok(html) = String::from_utf8(page)
+        && let Some(token) = ddg_token(&html)
+        && let Some(results) = fetch(&ddg_image_url(&query, &token), MAX_SEARCH_BYTES)
+        && let Ok(text) = String::from_utf8(results)
+    {
+        for (title, url) in parse_ddg_images(&text).into_iter().take(12) {
+            candidates.push(CoverCandidate { kind, source: "Image search", title, url });
+        }
+    }
+    candidates
+}
+
+fn game_candidates(
+    file: &Path,
+    album: &str,
+    fetch: &(impl Fn(&str, u32) -> Option<Vec<u8>> + Sync),
+) -> Vec<CoverCandidate> {
+    let mut candidates = Vec::new();
     let platforms = game_platforms(file);
     for platform in &platforms {
-        if let Some(names) = box_art_index(platform, &fetch) {
+        if let Some(names) = box_art_index(platform, fetch) {
             for name in box_art_matches(album, &names).into_iter().take(8) {
                 candidates.push(CoverCandidate {
+                    kind: CoverKind::Game,
                     source: "Box art",
                     title: name.to_owned(),
                     url: box_art_url(platform, name),
@@ -1062,7 +1047,6 @@ pub fn cover_candidates(
                 .iter()
                 .take(BOX_ART_BATCH * 2)
                 .map(|url| {
-                    let fetch = &fetch;
                     scope.spawn(move || {
                         fetch(url, MAX_COVER_BYTES)
                             .filter(|bytes| sniff_image_kind(bytes).is_some())
@@ -1081,26 +1065,25 @@ pub fn cover_candidates(
             )
             .decode_utf8_lossy()
             .into_owned();
-            candidates.push(CoverCandidate { source: "Box art", title, url });
+            candidates.push(CoverCandidate { kind: CoverKind::Game, source: "Box art", title, url });
         }
     }
-    let image_search = |candidates: &mut Vec<CoverCandidate>| {
-        let query = image_search_query(file, artist, album);
-        if let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES)
-            && let Ok(html) = String::from_utf8(page)
-            && let Some(token) = ddg_token(&html)
-            && let Some(results) = fetch(&ddg_image_url(&query, &token), MAX_SEARCH_BYTES)
-            && let Ok(text) = String::from_utf8(results)
-        {
-            for (title, url) in parse_ddg_images(&text).into_iter().take(12) {
-                candidates.push(CoverCandidate { source: "Image search", title, url });
-            }
-        }
+    let title = without_tag_groups(album_lookup_name(album));
+    let query = match platforms.first() {
+        Some(platform) => format!("{title} {} box art", platform.rsplit(" - ").next().unwrap_or(platform)),
+        None => format!("{title} video game box art"),
     };
-    // A game's box-art search comes before music albums of the same name.
-    if !platforms.is_empty() {
-        image_search(&mut candidates);
-    }
+    candidates.extend(image_search_candidates(CoverKind::Game, &query, fetch));
+    candidates
+}
+
+fn music_candidates(
+    artist: &str,
+    album: &str,
+    fetch: &(impl Fn(&str, u32) -> Option<Vec<u8>> + Sync),
+) -> Vec<CoverCandidate> {
+    let mut candidates = Vec::new();
+    let lookup = album_lookup_name(album);
     let json = |url: String| -> serde_json::Value {
         fetch(&url, MAX_SEARCH_BYTES)
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -1112,6 +1095,7 @@ pub fn cover_candidates(
         if !url.is_empty() {
             let by = entry.get("artist").map(|artist| json_string(artist, "name")).unwrap_or_default();
             candidates.push(CoverCandidate {
+                kind: CoverKind::Music,
                 source: "Deezer",
                 title: format!("{} – {by}", json_string(entry, "title")),
                 url,
@@ -1123,17 +1107,14 @@ pub fn cover_candidates(
         let url = json_string(entry, "artworkUrl100").replace("100x100bb", "600x600bb");
         if !url.is_empty() {
             candidates.push(CoverCandidate {
+                kind: CoverKind::Music,
                 source: "Apple Music",
                 title: format!("{} – {}", json_string(entry, "collectionName"), json_string(entry, "artistName")),
                 url,
             });
         }
     }
-    if platforms.is_empty() {
-        image_search(&mut candidates);
-    }
-    let mut seen = std::collections::HashSet::new();
-    candidates.retain(|candidate| seen.insert(candidate.url.clone()));
+    candidates.extend(image_search_candidates(CoverKind::Music, &format!("{artist} {lookup} album cover"), fetch));
     candidates
 }
 
@@ -1496,19 +1477,9 @@ mod tests {
             "https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%20Entertainment%20System/Named_Boxarts/Metroid%20%28USA%29.png"
         );
         assert!(game_platforms(Path::new("/music/song.mp3")).is_empty());
-        assert_eq!(
-            game_platforms(Path::new("/Chiptunes/gamemids/Day of the Tentacle/04 - The Inn.MID")),
-            vec!["DOS"]
-        );
-        assert!(game_platforms(Path::new("/music/pop/song.mid")).is_empty());
-        let vgmusic = Path::new("/Chiptunes/vgmusic/Nintendo Consoles/Nintendo/Crystalis/001 - Cave (v2.0).mid");
-        assert_eq!(game_platforms(vgmusic), vec!["Nintendo - Nintendo Entertainment System"]);
-        let snes = Path::new("/Chiptunes/vgmusic/Nintendo Consoles/Super Nintendo/Chrono Trigger/01.mid");
-        assert_eq!(game_platforms(snes), vec!["Nintendo - Super Nintendo Entertainment System"]);
-        let genesis = Path::new("/Chiptunes/vgmusic/Sega Consoles/Sega Genesis/Sonic/01.mid");
-        assert_eq!(game_platforms(genesis), vec!["Sega - Mega Drive - Genesis"]);
-        let dos = Path::new("/Chiptunes/vgmusic/Computer Systems/Microsoft DOS-Windows/Doom/e1m1.mid");
-        assert_eq!(game_platforms(dos), vec!["DOS"]);
+        // Folder names never decide: a MIDI is no console's.
+        assert!(game_platforms(Path::new("/Chiptunes/gamemids/Day of the Tentacle/04 - The Inn.MID")).is_empty());
+        assert!(game_platforms(Path::new("/vgmusic/Nintendo Consoles/Nintendo/Crystalis/001.mid")).is_empty());
     }
 
     #[test]
