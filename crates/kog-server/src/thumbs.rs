@@ -23,6 +23,9 @@ use crate::routes::AppState;
 /// The thumbnail's side in pixels: sharp at three device pixels per point
 /// for a row's 40-point cover.
 const SIZE: u32 = 120;
+/// The cover grid's tiles (`size=large`): sharp at two device pixels per
+/// point for a 180-point tile.
+const LARGE_SIZE: u32 = 360;
 const DIRECTORY: &str = "cover-thumbs";
 /// Answers remembered in memory, before starting over.
 const REMEMBERED: usize = 8192;
@@ -44,6 +47,8 @@ pub struct ThumbQuery {
     pub path: Option<String>,
     /// The song's album tag, when the client knows it (empty for none).
     pub album: Option<String>,
+    /// `large` for a cover-grid tile; a row's small thumbnail otherwise.
+    pub size: Option<String>,
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
@@ -52,15 +57,21 @@ fn fnv(bytes: &[u8]) -> u64 {
     })
 }
 
+fn fnv_more(hash: u64, bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(hash, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3))
+}
+
 fn valid_name(name: &str) -> bool {
     name.len() == 16 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// A square JPEG of the cover's middle.
-fn shrink(bytes: &[u8]) -> Option<Vec<u8>> {
+/// A square JPEG of the cover's middle, `side` pixels across.
+fn shrink(bytes: &[u8], side: u32) -> Option<Vec<u8>> {
     let image = image::load_from_memory(bytes).ok()?;
     let small = image
-        .resize_to_fill(SIZE, SIZE, image::imageops::FilterType::Triangle)
+        .resize_to_fill(side, side, image::imageops::FilterType::Triangle)
         .to_rgb8();
     let mut out = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 82)
@@ -115,12 +126,16 @@ impl Thumbs {
             .clear();
     }
 
-    /// The thumbnail's name for these cover bytes, made on first use.
-    fn thumbnail(&self, cover: &[u8]) -> Option<String> {
-        let name = format!("{:016x}", fnv(cover));
+    /// The thumbnail's name for these cover bytes, made on first use: the
+    /// row's small one, or with `large` the cover grid's.
+    fn thumbnail(&self, cover: &[u8], large: bool) -> Option<String> {
+        // The large image's name is told apart by a mark hashed in after
+        // the cover, so both sizes share the directory and the image route.
+        let print = if large { fnv_more(fnv(cover), b"large") } else { fnv(cover) };
+        let name = format!("{print:016x}");
         let path = self.dir.join(&name);
         if !path.is_file() {
-            let small = shrink(cover)?;
+            let small = shrink(cover, if large { LARGE_SIZE } else { SIZE })?;
             std::fs::create_dir_all(&self.dir).ok()?;
             let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
             std::fs::write(&temporary, small).ok()?;
@@ -156,7 +171,11 @@ pub async fn thumb(State(state): State<AppState>, Query(query): Query<ThumbQuery
         return StatusCode::NOT_FOUND.into_response();
     };
     state.thumbs.follow(state.covers.follow_changes());
-    if let Some(name) = state.thumbs.remembered(&song) {
+    let large = query.size.as_deref() == Some("large");
+    // Each size remembers its own names.
+    let mark = if large { "large\0" } else { "" };
+    let song_key = format!("{mark}{song}");
+    if let Some(name) = state.thumbs.remembered(&song_key) {
         return found(name);
     }
     // The album's cover, straight from the cache: no reading the song.
@@ -165,20 +184,22 @@ pub async fn thumb(State(state): State<AppState>, Query(query): Query<ThumbQuery
     let cache_dir = state.covers.cache_dir().to_path_buf();
     let album = query.album.clone();
     let path = song.clone();
+    let path_key = song_key.clone();
     let early = tokio::task::spawn_blocking(move || {
         let file = library.resolve(Some(&path)).ok().filter(|file| file.is_file())?;
         let Some(album) = album else {
             return Some((file, None));
         };
         let key = crate::covers::album_cover_key(&file, &album);
-        if let Some(name) = thumbs.remembered(&key) {
-            thumbs.remember(&[&path], &name);
+        let album_key = format!("{mark}{key}");
+        if let Some(name) = thumbs.remembered(&album_key) {
+            thumbs.remember(&[&path_key], &name);
             return Some((file, Some(name)));
         }
         let name = crate::covers::album_cover(&cache_dir, &key)
-            .and_then(|cover| thumbs.thumbnail(&cover));
+            .and_then(|cover| thumbs.thumbnail(&cover, large));
         if let Some(name) = &name {
-            thumbs.remember(&[&key, &path], name);
+            thumbs.remember(&[&album_key, &path_key], name);
         }
         Some((file, name))
     })
@@ -206,14 +227,14 @@ pub async fn thumb(State(state): State<AppState>, Query(query): Query<ThumbQuery
         )
             .into_response(),
         CoverResult::Missing => {
-            state.thumbs.remember(&[&song], "");
+            state.thumbs.remember(&[&song_key], "");
             found(String::new())
         }
         CoverResult::Ready(cover) => {
             let thumbs = state.thumbs.clone();
             let name = tokio::task::spawn_blocking(move || {
-                let name = thumbs.thumbnail(&cover).unwrap_or_default();
-                thumbs.remember(&[&song], &name);
+                let name = thumbs.thumbnail(&cover, large).unwrap_or_default();
+                thumbs.remember(&[&song_key], &name);
                 name
             })
             .await
@@ -255,11 +276,11 @@ mod tests {
         image::RgbImage::from_pixel(600, 400, image::Rgb([200, 30, 30]))
             .write_to(&mut std::io::Cursor::new(&mut cover), image::ImageFormat::Png)
             .unwrap();
-        let name = thumbs.thumbnail(&cover).unwrap();
+        let name = thumbs.thumbnail(&cover, false).unwrap();
         assert!(valid_name(&name));
-        assert_eq!(thumbs.thumbnail(&cover).as_deref(), Some(name.as_str()));
+        assert_eq!(thumbs.thumbnail(&cover, false).as_deref(), Some(name.as_str()));
         let small = image::load_from_memory(&std::fs::read(thumbs.dir.join(&name)).unwrap()).unwrap();
         assert_eq!((small.width(), small.height()), (SIZE, SIZE));
-        assert!(thumbs.thumbnail(b"not an image").is_none());
+        assert!(thumbs.thumbnail(b"not an image", false).is_none());
     }
 }

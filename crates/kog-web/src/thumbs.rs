@@ -117,20 +117,31 @@ fn request(
     song: &str,
     album: Option<String>,
     shown: RwSignal<Option<String>>,
+    large: bool,
 ) -> Option<u64> {
+    // The cover grid's large images are remembered apart from the rows'.
+    let path = song;
+    let marked;
+    let song = if large {
+        marked = format!("large\0{song}");
+        marked.as_str()
+    } else {
+        song
+    };
     if let Some(url) = LOADER.with(|loader| loader.borrow().known(song, album.as_deref())) {
         show(shown, &url);
         return None;
     }
     let url = format!(
-        "{base}/api/art/thumb?kind={}&path={}&token={}{}",
+        "{base}/api/art/thumb?kind={}&path={}&token={}{}{}",
         url_encode(kind),
-        url_encode(song),
+        url_encode(path),
         url_encode(token),
         album
             .as_deref()
             .map(|album| format!("&album={}", url_encode(album)))
             .unwrap_or_default(),
+        if large { "&size=large" } else { "" },
     );
     let id = LOADER.with(|loader| {
         let mut loader = loader.borrow_mut();
@@ -260,14 +271,15 @@ async fn fetch(want: Want) {
 
 /// Load the cover for a row of `entry` into `shown`, once the row's
 /// tags arrive (they name its album, which the server finds without reading
-/// the song) or after a short wait without them. Does nothing for anything
-/// but songs.
+/// the song) or after a short wait without them; with `large`, the cover
+/// grid's bigger image. Does nothing for anything but songs.
 pub(super) fn load_for_row(
     base: String,
     token: String,
     entry: &Entry,
     tags: Memo<Option<MetaRow>>,
     shown: RwSignal<Option<String>>,
+    large: bool,
 ) {
     if !matches!(entry.kind.as_str(), "local" | "archive") {
         return;
@@ -282,7 +294,7 @@ pub(super) fn load_for_row(
             if ticket.load(Ordering::Relaxed) != 0 {
                 return;
             }
-            let id = request(&base, &token, &kind, &song, album, shown).unwrap_or(u64::MAX);
+            let id = request(&base, &token, &kind, &song, album, shown, large).unwrap_or(u64::MAX);
             ticket.store(id, Ordering::Relaxed);
         }
     };

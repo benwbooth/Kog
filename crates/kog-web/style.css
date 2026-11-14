@@ -5576,3 +5576,379 @@ button.primary:hover:not(:disabled) {
 .volume-row.volume-fixed .volume-wrap {
   display: none;
 }
+
+/* ------------------------------------------------ Rows and the cover grid
+ *
+ * The toolbar's switcher shows songs as the column table, as two-line rows
+ * laid out like a mail list (cover, bold title, artist, then a quiet line
+ * with album, format and length), or as a grid of cover tiles. Rows and
+ * tiles are the same `.row-card` inside each track; the column header gives
+ * way to a "Sort by" bar. Phones keep their own cards, so all of this is
+ * for desktop layouts only.
+ */
+.view-switch,
+.sort-bar,
+.row-card {
+  display: none;
+}
+
+@media (min-width: 821px) and (pointer: fine), (min-width: 821px) and (pointer: none), (min-width: 1201px) {
+  .view-switch {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 0;
+    margin: 0 4px;
+    padding: 1px;
+    border: 1px solid var(--field-border);
+    border-radius: 9px;
+  }
+
+  .toolbar .view-switch .icon-button {
+    width: 30px;
+    height: 28px;
+    border-radius: 7px;
+    color: var(--muted);
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+
+  .toolbar .view-switch .icon-button.active {
+    background: color-mix(in srgb, var(--text) 14%, transparent);
+    color: var(--text);
+  }
+
+  .sort-bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    height: 34px;
+    margin: 0 8px;
+    padding: 0 2px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    font-size: 11px;
+  }
+
+  .sort-bar-label {
+    padding: 0 6px 0 2px;
+    color: var(--muted);
+  }
+
+  .sort-bar-button {
+    height: 24px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 700;
+    transition: background-color 120ms ease;
+  }
+
+  .sort-bar-button:hover {
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+  }
+
+  .sort-bar-caret {
+    margin-left: 6px;
+    color: var(--muted);
+  }
+
+  .rows.view-rows .columns,
+  .rows.view-grid .columns,
+  .rows.view-rows .track > .cell,
+  .rows.view-grid .track > .cell {
+    display: none;
+  }
+
+  /* Rows: one line per song, as tall as its three lines of text. */
+  .rows.view-rows .track {
+    display: block;
+    min-width: 0;
+    height: 64px;
+  }
+
+  .rows.view-rows .track::before {
+    border-radius: 6px;
+  }
+
+  .rows.view-rows .row-card,
+  .rows.view-grid .row-card {
+    display: flex;
+    min-width: 0;
+    height: 100%;
+  }
+
+  .rows.view-rows .row-card {
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px 0 14px;
+  }
+
+  .row-card-art {
+    position: relative;
+    flex: none;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+    color: var(--muted);
+  }
+
+  .rows.view-rows .row-card-art {
+    width: 44px;
+    height: 44px;
+  }
+
+  .row-card-mark {
+    position: relative;
+    display: block;
+  }
+
+  .row-card-mark > svg {
+    display: block;
+    width: 22px;
+    height: 22px;
+    stroke: currentColor;
+  }
+
+  .row-card-mark > svg [fill]:not([fill="none"]) {
+    fill: currentColor;
+  }
+
+  .row-card-mark .ext {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -2px;
+    font-size: 8px;
+    font-weight: 700;
+    line-height: 1;
+    text-align: center;
+  }
+
+  .row-card-art.has-cover {
+    background: transparent;
+  }
+
+  .row-card-art.has-cover .row-card-mark {
+    visibility: hidden;
+  }
+
+  .row-card-cover {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .row-card-copy {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    justify-content: center;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .row-card-line {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.3;
+  }
+
+  .row-card-title {
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .row-card-artist {
+    font-size: 12px;
+  }
+
+  .row-card-detail {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .track.current .row-card-title {
+    color: var(--highlight);
+  }
+
+  .track.selected .row-card-title,
+  .track.selected .row-card-detail,
+  .track.selected .row-card-star {
+    color: var(--highlight-text);
+  }
+
+  .track.selected .row-card-detail {
+    opacity: 0.8;
+  }
+
+  /* The playing song's state and meter, in a dark pill on its cover. */
+  .row-card-playing {
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 20px;
+    padding: 0 4px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.62);
+    color: #ffffff;
+    font-size: 9px;
+    cursor: pointer;
+  }
+
+  .rows.view-rows .row-card-playing {
+    left: 2px;
+    right: 2px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .rows.view-rows .row-card-playing .row-card-state {
+    display: none;
+  }
+
+  .row-card-star {
+    flex: none;
+    width: 20px;
+    text-align: center;
+    font-size: 14px;
+    color: var(--muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  .track:hover .row-card-star,
+  .row-card-star.starred {
+    opacity: 1;
+  }
+
+  /* The cover grid: lines of tiles stretched to fill the pane's width. The
+   * window of mounted songs starts and ends on whole lines, so the spacers
+   * span every column. */
+  .rows.view-grid {
+    display: grid;
+    grid-template-columns: repeat(var(--grid-cols, 4), minmax(0, 1fr));
+    align-content: start;
+    overflow-x: hidden;
+  }
+
+  .rows.view-grid > :not(.track) {
+    grid-column: 1 / -1;
+  }
+
+  .rows.view-grid .track {
+    display: block;
+    min-width: 0;
+    height: var(--tile-h, 220px);
+  }
+
+  .rows.view-grid .track::before {
+    inset: 3px;
+    border-radius: 10px;
+  }
+
+  .rows.view-grid .track.alternate::before {
+    background: transparent;
+  }
+
+  .rows.view-grid .track:hover::before {
+    background: var(--alternate);
+  }
+
+  .rows.view-grid .track.selected::before,
+  .rows.view-grid .track.selected:hover::before {
+    background: color-mix(in srgb, var(--selection) 34%, transparent);
+  }
+
+  .rows.view-grid .track.selected .row-card-title,
+  .rows.view-grid .track.selected .row-card-star {
+    color: var(--text);
+  }
+
+  .rows.view-grid .track.selected .row-card-art {
+    box-shadow: 0 0 0 2px var(--highlight);
+  }
+
+  .rows.view-grid .row-card {
+    position: relative;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 10px 10px 0;
+  }
+
+  .rows.view-grid .row-card-art {
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 7px;
+  }
+
+  .rows.view-grid .row-card-mark > svg {
+    width: 56px;
+    height: 56px;
+    opacity: 0.6;
+  }
+
+  .rows.view-grid .row-card-mark .ext {
+    font-size: 14px;
+    bottom: -4px;
+  }
+
+  .rows.view-grid .row-card-playing {
+    right: 6px;
+    bottom: 6px;
+    height: 26px;
+    padding: 0 6px 0 8px;
+    border-radius: 13px;
+    font-size: 10px;
+  }
+
+  .rows.view-grid .row-card-copy {
+    flex: none;
+    justify-content: flex-start;
+    padding: 7px 0 0;
+  }
+
+  .rows.view-grid .row-card-detail {
+    display: none;
+  }
+
+  .rows.view-grid .row-card-artist {
+    color: var(--muted);
+  }
+
+  .rows.view-grid .row-card-star {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 24px;
+    height: 24px;
+    line-height: 24px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #ffffff;
+  }
+
+  .rows.view-grid .row-card-star.starred {
+    color: #ffd25e;
+  }
+
+  .rows.view-rows .drag-grip,
+  .rows.view-grid .drag-grip {
+    display: none;
+  }
+
+  .sort-bar-menu {
+    min-width: 200px;
+  }
+}

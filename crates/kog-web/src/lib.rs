@@ -78,6 +78,9 @@ mod icons {
     pub const GO_UP: &str = include_str!("../../../qml/icons/go-up.svg");
     pub const FOLDER_OPEN: &str = include_str!("../../../qml/icons/folder-open.svg");
     pub const VIEW_LIST_TREE: &str = include_str!("../../../qml/icons/view-list-tree.svg");
+    pub const VIEW_LIST_DETAILS: &str = include_str!("../../../qml/icons/view-list-details.svg");
+    pub const VIEW_LIST_ROWS: &str = include_str!("../../../qml/icons/view-list-rows.svg");
+    pub const VIEW_GRID: &str = include_str!("../../../qml/icons/view-grid.svg");
     pub const CLEAR_LIST: &str = include_str!("../../../qml/icons/edit-clear-list.svg");
     pub const SORT: &str = include_str!("../../../qml/icons/view-sort.svg");
     pub const CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>"#;
@@ -1038,6 +1041,19 @@ fn column_text(
             .map(|bitrate| format!("{bitrate} kbps"))
             .unwrap_or_default(),
     }
+}
+
+/// The rows and grid views' "Sort by" button: the column the pane is sorted
+/// by.
+fn sort_bar_label(key: SortKey, queue: bool) -> &'static str {
+    if key == SortKey::Index {
+        return if queue { "Queue Order" } else { "Playlist Order" };
+    }
+    ColumnId::ALL
+        .into_iter()
+        .find(|column| column.sort_key() == key)
+        .map(ColumnId::menu_label)
+        .unwrap_or("Order")
 }
 
 /// The full location for the Path column, mirroring `track_path`: an archive's
@@ -2240,6 +2256,36 @@ fn install_row_title_fit() {
     );
 }
 
+/// The cover grid fits its tiles to the pane's width, which also changes
+/// when the sidebar is dragged: tell the row window, which listens for
+/// window resizes, whenever the pane's width changes.
+fn install_pane_width_watch() {
+    let _ = js_sys::eval(
+        r#"(() => {
+  if (window.kogPaneWidthWatch || typeof ResizeObserver === 'undefined') return;
+  window.kogPaneWidthWatch = true;
+  let watched = null;
+  let width = 0;
+  const observer = new ResizeObserver(entries => {
+    const next = Math.round(entries[0].contentRect.width);
+    if (next === width) return;
+    width = next;
+    window.dispatchEvent(new Event('resize'));
+  });
+  const attach = () => {
+    const pane = document.getElementById('playlist-rows');
+    if (pane === watched) return;
+    if (watched) observer.unobserve(watched);
+    watched = pane;
+    width = 0;
+    if (pane) observer.observe(pane);
+  };
+  new MutationObserver(attach).observe(document.body, { subtree: true, childList: true });
+  attach();
+})()"#,
+    );
+}
+
 fn install_cut_off_tooltips() {
     let _ = js_sys::eval(
         r#"(() => {
@@ -2251,7 +2297,7 @@ fn install_cut_off_tooltips() {
     return style.overflowX !== 'visible' || style.textOverflow === 'ellipsis';
   };
   document.addEventListener('mouseover', event => {
-    const element = event.target.closest && event.target.closest('.track .cell, .tree-row');
+    const element = event.target.closest && event.target.closest('.track .cell, .tree-row, .row-card-line');
     if (!element) return;
     const full = element.getAttribute('title') ?? element.dataset.cutTip;
     if (full === undefined || full === null) return;
@@ -2400,6 +2446,7 @@ fn RowMeter(
 #[component]
 fn App() -> impl IntoView {
     install_cut_off_tooltips();
+    install_pane_width_watch();
     install_title_marquee();
     install_row_title_fit();
     // A phone opening the server's own address is already pointed at it.
@@ -2919,7 +2966,17 @@ fn App() -> impl IntoView {
         }).collect::<Vec<_>>()
     });
     let view_rows = move || all_rows.get();
-    let row_window = row_window::RowWindow::new();
+    // List, rows or cover grid, as the toolbar's switcher last chose.
+    let view_mode = RwSignal::new(row_window::ViewMode::from_key(
+        &load("kog.view-mode").unwrap_or_default(),
+    ));
+    let set_view_mode = move |mode: row_window::ViewMode| {
+        view_mode.set(mode);
+        store("kog.view-mode", mode.key());
+    };
+    // The rows and grid views' "Sort by" menu, at its button.
+    let (sort_menu_at, set_sort_menu_at) = signal(None::<(f64, f64)>);
+    let row_window = row_window::RowWindow::new(view_mode);
     let row_range = Memo::new(move |_| row_window.range(all_rows.with(Vec::len)));
     let mounted_rows = move || {
         let range = row_range.get();
@@ -6787,6 +6844,27 @@ fn App() -> impl IntoView {
                             >"×"</button>
                         </Show>
                     </div>
+                    <div class="view-switch" role="group" aria-label="Show songs as">
+                        {[
+                            (row_window::ViewMode::List, "Show as List", icons::VIEW_LIST_DETAILS),
+                            (row_window::ViewMode::Rows, "Show as Rows", icons::VIEW_LIST_ROWS),
+                            (row_window::ViewMode::Grid, "Show as Cover Grid", icons::VIEW_GRID),
+                        ]
+                            .into_iter()
+                            .map(|(mode, label, icon)| view! {
+                                <button
+                                    class="flat icon-button"
+                                    type="button"
+                                    title=label
+                                    aria-label=label
+                                    class:active=move || view_mode.get() == mode
+                                    aria-pressed=move || (view_mode.get() == mode).to_string()
+                                    on:click=move |_| set_view_mode(mode)
+                                    inner_html=icon
+                                ></button>
+                            })
+                            .collect_view()}
+                    </div>
                     <button
                         class="flat icon-button mobile-sort"
                         type="button"
@@ -7644,9 +7722,42 @@ fn App() -> impl IntoView {
                         <Show when=move || playlist_workspace.snapshot().error.is_some()>
                             <p class="empty" role="alert">{move || playlist_workspace.snapshot().error.clone().unwrap_or_default()}</p>
                         </Show>
+                        <Show when=move || view_mode.get() != row_window::ViewMode::List fallback=|| ()>
+                            <div class="sort-bar">
+                                <span class="sort-bar-label">"Sort by"</span>
+                                <button
+                                    class="flat sort-bar-button"
+                                    type="button"
+                                    aria-haspopup="menu"
+                                    on:click=move |ev: web_sys::MouseEvent| {
+                                        let place = ev
+                                            .current_target()
+                                            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                                            .map(|element| {
+                                                let rect = element.get_bounding_client_rect();
+                                                (rect.left(), rect.bottom() + 4.0)
+                                            })
+                                            .unwrap_or((ev.client_x() as f64, ev.client_y() as f64));
+                                        set_sort_menu_at.set(Some(place));
+                                    }
+                                >
+                                    {move || sort_bar_label(pane_sort.get().0, pane_key.get() == "queue")}
+                                    <span class="sort-bar-caret" aria-hidden="true">"▾"</span>
+                                </button>
+                                <button
+                                    class="flat sort-bar-button"
+                                    type="button"
+                                    title=move || if pane_sort.get().1 { "Ascending" } else { "Descending" }
+                                    aria-label=move || if pane_sort.get().1 { "Ascending" } else { "Descending" }
+                                    on:click=move |_| toggle_sort(pane_sort.get_untracked().0)
+                                >{move || if pane_sort.get().1 { "▲" } else { "▼" }}</button>
+                            </div>
+                        </Show>
                         <div
                             class="rows"
                             id="playlist-rows"
+                            class:view-rows=move || view_mode.get() == row_window::ViewMode::Rows
+                            class:view-grid=move || view_mode.get() == row_window::ViewMode::Grid
                             node_ref=row_window.node
                             on:scroll=move |_| row_window.refresh()
                             class:drop-active=move || playlist_drop_active.get()
@@ -7685,9 +7796,11 @@ fn App() -> impl IntoView {
                             }
                             style=move || {
                                 format!(
-                                    "--cols:{}; --table-width:{:.0}px",
+                                    "--cols:{}; --table-width:{:.0}px; --grid-cols:{}; --tile-h:{:.0}px",
                                     grid_template(),
-                                    table_width()
+                                    table_width(),
+                                    row_window.columns(),
+                                    row_window.row_height()
                                 )
                             }
                             on:dragleave=move |_| set_playlist_drop_active.set(false)
@@ -7826,7 +7939,9 @@ fn App() -> impl IntoView {
                                 <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", row_window.height(row_range.get().start))></div>
                                 <For
                                     each=mounted_rows
-                                    key=move |(_, (index, entry))| format!("{}:{index}:{}", pane_key.get(), meta_key(entry))
+                                    // The view mode too: switching it builds the rows afresh,
+                                    // asking for the size of cover it shows.
+                                    key=move |(_, (index, entry))| format!("{}:{}:{index}:{}", pane_key.get(), view_mode.get().key(), meta_key(entry))
                                     let:row
                                 >
                                     {
@@ -7864,7 +7979,11 @@ fn App() -> impl IntoView {
                                         // The song's album cover takes the format
                                         // icon's place once it loads.
                                         let row_cover = RwSignal::new(None::<String>);
-                                        thumbs::load_for_row(base(), token.get_untracked(), &entry, row_meta, row_cover);
+                                        // The cover grid's tiles ask for the large image.
+                                        let row_grid = view_mode.get_untracked() == row_window::ViewMode::Grid
+                                            && !row_window::RowWindow::compact();
+                                        thumbs::load_for_row(base(), token.get_untracked(), &entry, row_meta, row_cover, row_grid);
+                                        let card_entry = entry.clone();
                                         view! {
                                             <button
                                                 class="track"
@@ -8105,6 +8224,117 @@ fn App() -> impl IntoView {
                                                         }
                                                     }
                                                 </For>
+                                                {
+                                                    // The rows view's line (cover, bold title, artist, then
+                                                    // album, format and length) and the cover grid's tile:
+                                                    // one element the stylesheet lays out either way.
+                                                    let card_icon = match file_icon(&card_entry.path, &card_entry.entry) {
+                                                        FileIcon::Svg(svg) => svg.to_owned(),
+                                                        FileIcon::Badge(ext) => format!("{}<span class=\"ext\">{ext}</span>", icons::FMT_PAPER),
+                                                        FileIcon::None => icons::FMT_AUDIO.to_owned(),
+                                                    };
+                                                    let card_name = card_entry.name.clone();
+                                                    let card_title = move || {
+                                                        row_meta
+                                                            .get()
+                                                            .and_then(|meta| meta.title)
+                                                            .filter(|title| !title.trim().is_empty())
+                                                            .unwrap_or_else(|| card_name.clone())
+                                                    };
+                                                    let card_artist = move || {
+                                                        row_meta
+                                                            .get()
+                                                            .and_then(|meta| meta.artist.or(meta.album_artist))
+                                                            .unwrap_or_default()
+                                                    };
+                                                    let card_format_name = card_entry.name.clone();
+                                                    let card_detail = move || {
+                                                        let meta = row_meta.get();
+                                                        let album = meta.as_ref().and_then(|meta| meta.album.clone()).unwrap_or_default();
+                                                        let format = meta
+                                                            .as_ref()
+                                                            .and_then(|meta| meta.codec.clone())
+                                                            .filter(|codec| !codec.is_empty())
+                                                            .unwrap_or_else(|| suffix_of(&card_format_name).to_uppercase());
+                                                        let length = meta.as_ref().and_then(|meta| meta.duration).map(clock).unwrap_or_default();
+                                                        [album, format, length]
+                                                            .into_iter()
+                                                            .filter(|part| !part.is_empty())
+                                                            .collect::<Vec<_>>()
+                                                            .join(" · ")
+                                                    };
+                                                    let card_star_entry = card_entry.clone();
+                                                    let card_star_toggle = toggle_star.clone();
+                                                    let card_title_tip = card_title.clone();
+                                                    let card_artist_tip = card_artist.clone();
+                                                    let card_detail_tip = card_detail.clone();
+                                                    view! {
+                                                        <span class="row-card">
+                                                            <span
+                                                                class="row-card-art"
+                                                                class:has-cover=move || row_cover.with(Option::is_some)
+                                                            >
+                                                                <span class="row-card-mark" inner_html=card_icon></span>
+                                                                {move || row_cover.get().map(|src| view! {
+                                                                    <img
+                                                                        class="row-card-cover"
+                                                                        src=src
+                                                                        alt=""
+                                                                        decoding="async"
+                                                                        draggable="false"
+                                                                        // A failed image leaves the icon.
+                                                                        on:error=move |_| row_cover.set(None)
+                                                                    />
+                                                                })}
+                                                                <Show
+                                                                    when=move || row_current.get() && !stopped.get()
+                                                                    fallback=|| ()
+                                                                >
+                                                                    <span
+                                                                        class="row-card-playing"
+                                                                        title="Open audio visualizer"
+                                                                        on:click=move |ev: web_sys::MouseEvent| {
+                                                                            ev.stop_propagation();
+                                                                            set_visualizer_spectrum_mode.set(false);
+                                                                            set_visualizer_open.set(true);
+                                                                        }
+                                                                        on:dblclick=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                                                    >
+                                                                        <span class="row-card-state">{move || if playing.get() { "▶" } else { "Ⅱ" }}</span>
+                                                                        <Show when=move || playing.get() fallback=|| ()>
+                                                                            <RowMeter levels=audio_levels pinned=false height=18.0/>
+                                                                        </Show>
+                                                                    </span>
+                                                                </Show>
+                                                            </span>
+                                                            <span class="row-card-copy">
+                                                                <span class="row-card-line row-card-title" title=move || card_title_tip()>
+                                                                    {move || highlight_label(card_title(), row_filter.get())}
+                                                                </span>
+                                                                <span class="row-card-line row-card-artist" title=move || card_artist_tip()>
+                                                                    {move || highlight_label(card_artist(), row_filter.get())}
+                                                                </span>
+                                                                <span class="row-card-line row-card-detail" title=move || card_detail_tip()>
+                                                                    {card_detail}
+                                                                </span>
+                                                            </span>
+                                                            <span
+                                                                class="row-card-star"
+                                                                class:starred=move || row_starred.get()
+                                                                role="button"
+                                                                tabindex="-1"
+                                                                aria-label="Toggle favorite"
+                                                                on:click=move |ev: web_sys::MouseEvent| {
+                                                                    ev.stop_propagation();
+                                                                    let item = card_star_entry.clone();
+                                                                    let starred = row_starred.get_untracked();
+                                                                    card_star_toggle(item, starred);
+                                                                }
+                                                                on:dblclick=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                                            >{move || if row_starred.get() { "★" } else { "☆" }}</span>
+                                                        </span>
+                                                    }
+                                                }
                                                 {
                                                     let mobile_title_entry = mobile_entry.clone();
                                                     let mobile_detail_entry = mobile_entry.clone();
@@ -9758,6 +9988,47 @@ fn App() -> impl IntoView {
                                 <span class="menu-check">{move || if pane_sort.get().0 == id.sort_key() { "✓" } else { "" }}</span>
                                 {id.menu_label()}
                                 <span class="mobile-sort-direction">{move || sort_arrow(id.sort_key())}</span>
+                            </button>
+                        </For>
+                    </div>
+                </Show>
+
+                <Show when=move || sort_menu_at.get().is_some() fallback=|| ()>
+                    <div class="menu-scrim" on:click=move |_| set_sort_menu_at.set(None)></div>
+                    <div
+                        class="context-menu sort-bar-menu"
+                        role="menu"
+                        aria-label="Sort by"
+                        style=move || match sort_menu_at.get() {
+                            Some((x, y)) => format!("left:{x:.0}px; top:{y:.0}px;"),
+                            None => String::new(),
+                        }
+                    >
+                        <For
+                            each=|| [
+                                ColumnId::Index, ColumnId::Title, ColumnId::Artist,
+                                ColumnId::Album, ColumnId::AlbumArtist, ColumnId::Composer,
+                                ColumnId::Length, ColumnId::Year, ColumnId::Track,
+                                ColumnId::Genre, ColumnId::Codec, ColumnId::Filename,
+                                ColumnId::Path, ColumnId::Star,
+                            ]
+                            key=|id| id.key()
+                            let:id
+                        >
+                            <button
+                                class="menu-item"
+                                role="menuitemradio"
+                                on:click=move |_| {
+                                    // The arrow beside the button flips the order;
+                                    // choosing the sorted column again leaves it.
+                                    if pane_sort.get_untracked().0 != id.sort_key() {
+                                        toggle_sort(id.sort_key());
+                                    }
+                                    set_sort_menu_at.set(None);
+                                }
+                            >
+                                <span class="menu-check">{move || if pane_sort.get().0 == id.sort_key() { "✓" } else { "" }}</span>
+                                {move || sort_bar_label(id.sort_key(), pane_key.get() == "queue")}
                             </button>
                         </For>
                     </div>

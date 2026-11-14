@@ -1,34 +1,75 @@
 //! Bound the table's DOM work to the viewport, while selection and playback
-//! continue to address the complete playlist by source index.
+//! continue to address the complete playlist by source index. The rows view
+//! is laid out the same way with taller rows, and the cover grid as lines of
+//! several tiles: the window then starts and ends on whole lines.
 use super::*;
 
 const OVERSCAN: usize = 12;
+/// The cover grid's tiles are about this wide, stretched to fill the line.
+const TILE_WIDTH: f64 = 180.0;
+/// A tile's height beyond its square cover: the title and artist lines.
+const TILE_TEXT: f64 = 62.0;
+/// A rows-view row: the title, artist and detail lines beside the cover.
+const CARD_ROW: f64 = 64.0;
+
+/// How the desktop shows songs: the column table, two-line rows with album
+/// art, or a grid of cover tiles. Phones keep their own cards.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewMode {
+    List,
+    Rows,
+    Grid,
+}
+
+impl ViewMode {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Rows => "rows",
+            Self::Grid => "grid",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Self {
+        match key {
+            "rows" => Self::Rows,
+            "grid" => Self::Grid,
+            _ => Self::List,
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 struct Metrics {
     top: f64,
     height: f64,
     row: f64,
+    /// Songs side by side: more than one only in the cover grid.
+    columns: usize,
 }
 
 #[derive(Clone, Copy)]
 pub struct RowWindow {
     pub node: NodeRef<leptos::html::Div>,
     metrics: RwSignal<Metrics>,
+    mode: RwSignal<ViewMode>,
 }
 
 impl RowWindow {
-    pub fn new() -> Self {
+    pub fn new(mode: RwSignal<ViewMode>) -> Self {
         let window = Self {
             node: NodeRef::new(),
             metrics: RwSignal::new(Metrics {
                 top: 0.0,
                 height: 900.0,
                 row: 26.0,
+                columns: 1,
             }),
+            mode,
         };
         Effect::new(move |_| {
             window.node.track();
+            window.mode.track();
             window.refresh();
         });
         let resize = window_event_listener(leptos::ev::resize, move |_| window.refresh());
@@ -36,16 +77,21 @@ impl RowWindow {
         window
     }
 
+    /// Whether the phone layout shows: its cards, whatever the view mode.
+    pub fn compact() -> bool {
+        window()
+            .match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)")
+            .ok()
+            .flatten()
+            .is_some_and(|query| query.matches())
+    }
+
     pub fn refresh(self) {
         let Some(node) = self.node.get_untracked() else {
             return;
         };
         let browser = window();
-        let compact = browser
-            .match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)")
-            .ok()
-            .flatten()
-            .is_some_and(|query| query.matches());
+        let compact = Self::compact();
         // Reserve the full window height so changes to tabs, toolbars or the
         // mobile navigation cannot leave the bottom of the viewport unpainted.
         let height = browser
@@ -53,11 +99,24 @@ impl RowWindow {
             .ok()
             .and_then(|value| value.as_f64())
             .unwrap_or(900.0);
+        let mode = if compact { ViewMode::List } else { self.mode.get_untracked() };
+        let (row, columns) = match mode {
+            // Phones: room for a title on two lines over its detail line.
+            ViewMode::List if compact => (68.0, 1),
+            ViewMode::List => (26.0, 1),
+            ViewMode::Rows => (CARD_ROW, 1),
+            ViewMode::Grid => {
+                let width = f64::from(node.client_width()).max(TILE_WIDTH);
+                let columns = ((width / TILE_WIDTH).floor() as usize).max(1);
+                let tile = (width / columns as f64).floor();
+                ((tile - 20.0).max(48.0) + TILE_TEXT, columns)
+            }
+        };
         let next = Metrics {
             top: node.scroll_top() as f64,
             height,
-            // Phones: room for a title on two lines over its detail line.
-            row: if compact { 68.0 } else { 26.0 },
+            row: row.round(),
+            columns,
         };
         if self.metrics.get_untracked() != next {
             self.metrics.set(next);
@@ -66,16 +125,30 @@ impl RowWindow {
 
     pub fn range(self, count: usize) -> std::ops::Range<usize> {
         let metrics = self.metrics.get();
-        let length = (metrics.height / metrics.row).ceil() as usize + 2 * OVERSCAN;
-        let start = (metrics.top / metrics.row).floor() as usize;
-        let start = start
+        let columns = metrics.columns.max(1);
+        let lines = (metrics.height / metrics.row).ceil() as usize + 2 * OVERSCAN;
+        let total_lines = count.div_ceil(columns);
+        let first = (metrics.top / metrics.row).floor() as usize;
+        let first = first
             .saturating_sub(OVERSCAN)
-            .min(count.saturating_sub(length));
-        start..(start + length).min(count)
+            .min(total_lines.saturating_sub(lines));
+        let start = first * columns;
+        start..((first + lines) * columns).min(count)
     }
 
+    /// The height of `rows` songs laid out as the view shows them.
     pub fn height(self, rows: usize) -> f64 {
-        self.metrics.get().row * rows as f64
+        let metrics = self.metrics.get();
+        metrics.row * rows.div_ceil(metrics.columns.max(1)) as f64
+    }
+
+    /// Songs side by side (the cover grid's columns) and a line's height.
+    pub fn columns(self) -> usize {
+        self.metrics.get().columns
+    }
+
+    pub fn row_height(self) -> f64 {
+        self.metrics.get().row
     }
 
     /// Scroll an offscreen row into the mounted window before looking up its
@@ -86,12 +159,12 @@ impl RowWindow {
         };
         let metrics = self.metrics.get_untracked();
         let header = node
-            .query_selector(".columns")
+            .query_selector(".columns, .sort-bar")
             .ok()
             .flatten()
             .map(|header| header.get_bounding_client_rect().height())
             .unwrap_or(0.0);
-        let top = position as f64 * metrics.row;
+        let top = (position / metrics.columns.max(1)) as f64 * metrics.row;
         let visible = (node.client_height() as f64 - header).max(metrics.row);
         let scroll = node.scroll_top() as f64;
         if top < scroll {
