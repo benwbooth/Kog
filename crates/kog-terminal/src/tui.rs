@@ -80,6 +80,37 @@ fn export_with_effects() -> bool {
 }
 const SIDEBAR_WIDTH_FILE: &str = "tui-sidebar-width";
 const PLAYLISTS_HEIGHT_FILE: &str = "tui-playlists-height";
+const ROWS_VIEW_FILE: &str = "tui-rows-view";
+/// Lines a song takes in the multi-line rows view: its title, its artist,
+/// then its album, format and length.
+const CARD_ROW_LINES: usize = 3;
+/// The Sort by menu's columns, in its order.
+const SORT_MENU_IDS: [&str; 11] = [
+    "index",
+    "title",
+    "artist",
+    "album",
+    "albumartist",
+    "length",
+    "date",
+    "track",
+    "genre",
+    "filename",
+    "path",
+];
+const SORT_MENU: [&str; 11] = [
+    "Queue Order",
+    "Title",
+    "Artist",
+    "Album",
+    "Album Artist",
+    "Length",
+    "Year",
+    "Track Number",
+    "Genre",
+    "Filename",
+    "Path",
+];
 const TREE_STATE_FILE: &str = "tui-tree-state.json";
 const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SESSION_MAX_TRACKS: usize = 100_000;
@@ -109,6 +140,14 @@ fn load_sidebar_width() -> Option<usize> {
 
 fn save_sidebar_width(width: usize) -> Result<(), String> {
     kog_audio::settings::save_text(SIDEBAR_WIDTH_FILE, &width.to_string())
+}
+
+fn load_rows_view() -> bool {
+    kog_audio::settings::load_text(ROWS_VIEW_FILE).is_some_and(|text| text.trim() == "1")
+}
+
+fn save_rows_view(on: bool) -> Result<(), String> {
+    kog_audio::settings::save_text(ROWS_VIEW_FILE, if on { "1" } else { "0" })
 }
 
 fn load_playlists_height() -> Option<usize> {
@@ -401,6 +440,7 @@ enum MenuPage {
     Synthesis,
     MidiBackend,
     Server,
+    Sort,
 }
 
 #[derive(Clone, Copy)]
@@ -434,6 +474,7 @@ impl MenuPage {
             Self::Synthesis => "MIDI Synthesis",
             Self::MidiBackend => "MIDI Backend",
             Self::Server => "API Server",
+            Self::Sort => "Sort by",
         }
     }
     fn labels(self) -> &'static [&'static str] {
@@ -458,6 +499,7 @@ impl MenuPage {
             Self::Synthesis => &SYNTHESIS_MENU,
             Self::MidiBackend => &MIDI_BACKEND_MENU,
             Self::Server => &SERVER_MENU,
+            Self::Sort => &SORT_MENU,
         }
     }
 }
@@ -568,7 +610,7 @@ fn menu_shortcuts(page: MenuPage) -> Vec<Option<char>> {
 
 /// Keys that run a menu item directly, for items no other key reached.
 /// The menu shows each beside its item, and the keyboard help lists them.
-const DIRECT_MENU_KEYS: [(Key, MenuPage, usize); 14] = [
+const DIRECT_MENU_KEYS: [(Key, MenuPage, usize); 16] = [
     (Key::CtrlO, MenuPage::Main, 0),
     (Key::Char('U'), MenuPage::Main, 1),
     (Key::CtrlS, MenuPage::Main, 4),
@@ -579,6 +621,8 @@ const DIRECT_MENU_KEYS: [(Key, MenuPage, usize); 14] = [
     (Key::Char('E'), MenuPage::View, 3),
     (Key::Char('B'), MenuPage::View, 7),
     (Key::Char('N'), MenuPage::View, 8),
+    (Key::Char('T'), MenuPage::View, 13),
+    (Key::Char('O'), MenuPage::View, 14),
     (Key::Char('Z'), MenuPage::Playback, 6),
     (Key::Char('0'), MenuPage::Playback, 7),
     (Key::Char('w'), MenuPage::Playback, 8),
@@ -614,6 +658,8 @@ fn menu_item_key(page: MenuPage, index: usize) -> Option<&'static str> {
         (View, 6) => "C",
         (View, 7) => "B",
         (View, 8) => "N",
+        (View, 13) => "T",
+        (View, 14) => "O",
         (Playback, 0) => "Space",
         (Playback, 1) => "s",
         (Playback, 2) => "<",
@@ -1288,6 +1334,9 @@ struct Ui {
     files_expanded: bool,
     playlists_expanded: bool,
     sidebar_width: Option<usize>,
+    /// Songs show on three lines each (title, artist, details) instead of
+    /// as the column table.
+    rows_view: bool,
     /// Rows of the sidebar's Playlists pane, set by dragging its header or
     /// Ctrl+Up/Down; None keeps the default of up to six.
     playlists_height: Option<usize>,
@@ -1707,6 +1756,7 @@ impl Ui {
             files_expanded: true,
             playlists_expanded: true,
             sidebar_width: load_sidebar_width(),
+            rows_view: load_rows_view(),
             playlists_height: load_playlists_height(),
             playlists_drag: None,
             split_drag: false,
@@ -2314,6 +2364,12 @@ impl Ui {
             .footer_top
             .saturating_sub(layout.track_top + 1)
             .max(1);
+        // In the rows view a page counts songs of three lines each.
+        let lines = self.track_line_height();
+        if lines > 1 {
+            layout.track_page = (layout.track_page / lines).max(1);
+            return layout;
+        }
         let track_width = size.0.saturating_sub(layout.playlist_left());
         let vertical =
             track_count + usize::from(self.track_drop_target.is_some()) > layout.track_page;
@@ -2335,7 +2391,10 @@ impl Ui {
         size: (usize, usize),
         track_count: usize,
     ) -> Option<HorizontalScrollbar> {
-        (!self.compact_mode && (layout.show_sidebar || self.focus == Focus::Tracks))
+        // Multi-line rows fit the pane: no columns to scroll sideways.
+        (!self.compact_mode
+            && self.track_line_height() == 1
+            && (layout.show_sidebar || self.focus == Focus::Tracks))
             .then(|| {
                 HorizontalScrollbar::new(
                     layout.playlist_left(),
@@ -2401,12 +2460,13 @@ impl Ui {
         if self.compact_mode || !(layout.show_sidebar || self.focus == Focus::Tracks) {
             return None;
         }
+        let lines = self.track_line_height();
         VerticalScrollbar::new(
             size.0.saturating_sub(1),
             layout.track_top,
-            layout.track_page,
-            count + usize::from(self.track_drop_target.is_some()),
-            self.table_offset(),
+            layout.track_page * lines,
+            (count + usize::from(self.track_drop_target.is_some())) * lines,
+            self.table_offset() * lines,
         )
     }
 
@@ -2437,7 +2497,10 @@ impl Ui {
         y: usize,
         grip: usize,
     ) {
-        self.set_pane_scroll(pane, bar.offset_at(y, grip));
+        let offset = bar.offset_at(y, grip);
+        // The songs' bar runs in lines: three to a song in the rows view.
+        let offset = if pane == 2 { offset / self.track_line_height() } else { offset };
+        self.set_pane_scroll(pane, offset);
     }
 
     fn scroll_columns_to_mouse(&mut self, bar: HorizontalScrollbar, x: usize, grip: usize) {
@@ -2710,6 +2773,17 @@ impl Ui {
                 };
             }
             (MenuPage::View, 7) => self.show_artwork(),
+            (MenuPage::View, 13) => self.toggle_rows_view(),
+            (MenuPage::View, 14) => {
+                let layout = self.layout(size);
+                self.open_context(
+                    MenuPage::Sort,
+                    layout.playlist_left() + 1,
+                    layout.track_header + 1,
+                    size,
+                );
+            }
+            (MenuPage::Sort, index) => self.sort_from_menu(index),
             (MenuPage::View, 8..=12) => {
                 self.modal = None;
                 self.visualizer_open = false;
@@ -3382,6 +3456,13 @@ impl Ui {
     }
 
     fn menu_item_checked(&self, page: MenuPage, index: usize) -> Option<bool> {
+        if page == MenuPage::View && index == 13 {
+            return Some(self.rows_view);
+        }
+        if page == MenuPage::Sort {
+            let column = self.columns.index(SORT_MENU_IDS.get(index)?);
+            return Some(column.is_some() && column == self.sort_column);
+        }
         if page == MenuPage::MidiBackend {
             return MIDI_BACKEND_ENGINES
                 .get(index)
@@ -3537,6 +3618,47 @@ impl Ui {
             size.1
                 .saturating_sub(page.labels().len().min(size.1.saturating_sub(4)) + 3),
         );
+    }
+
+    /// Terminal lines each song takes: three in the multi-line rows view.
+    fn track_line_height(&self) -> usize {
+        if self.rows_view && !self.compact_mode { CARD_ROW_LINES } else { 1 }
+    }
+
+    fn toggle_rows_view(&mut self) {
+        self.rows_view = !self.rows_view;
+        self.status = match save_rows_view(self.rows_view) {
+            Err(error) => format!("Could not save the view: {error}"),
+            Ok(()) if self.rows_view => "Multi-line rows · O sorts".to_owned(),
+            Ok(()) => "Column table".to_owned(),
+        };
+    }
+
+    /// Sort by the Sort by menu's `index`th column; choosing the sorted
+    /// column again flips its direction.
+    fn sort_from_menu(&mut self, index: usize) {
+        if let Some(column) = SORT_MENU_IDS.get(index).and_then(|id| self.columns.index(id)) {
+            self.sort_tracks_by_column(column);
+        }
+    }
+
+    /// What the rows view's header says the songs are sorted by.
+    fn sort_bar_label(&self) -> String {
+        let Some(column) = self.sort_column else {
+            return if self.is_draft() { "Playlist Order" } else { "Queue Order" }.to_owned();
+        };
+        let id = self.columns.entries.get(column).map(|entry| entry.id).unwrap_or("index");
+        if id == "index" {
+            let order = if self.is_draft() { "Playlist Order" } else { "Queue Order" };
+            return format!("{order} {}", if self.sort_ascending { "▲" } else { "▼" });
+        }
+        let name = SORT_MENU_IDS
+            .iter()
+            .position(|known| *known == id)
+            .map(|at| SORT_MENU[at])
+            .or_else(|| self.columns.entries.get(column).map(|entry| entry.label))
+            .unwrap_or("Queue Order");
+        format!("{name} {}", if self.sort_ascending { "▲" } else { "▼" })
     }
 
     fn sort_tracks(&mut self, column: usize) {
@@ -6518,6 +6640,8 @@ impl Ui {
                 row("Ctrl+Up / Down", "Resize Playlists pane (or drag its header)"),
                 row("z", "Collapse Files or Playlists"),
                 row("C", "Toggle compact player"),
+                row("T", "Multi-line rows on/off"),
+                row("O", "Sort by menu"),
                 String::new(),
                 "MENUS AND TEXT".to_owned(),
                 row("m", "Application menu"),
@@ -6626,7 +6750,8 @@ impl Ui {
             Focus::Tracks if !self.tracks.is_empty() => (
                 MenuPage::Tracks,
                 layout.playlist_left() + 1,
-                layout.track_top + self.selected[2].saturating_sub(self.offsets[2]),
+                layout.track_top
+                    + self.selected[2].saturating_sub(self.offsets[2]) * self.track_line_height(),
             ),
             Focus::Tracks => (
                 MenuPage::Playlist,
@@ -7866,6 +7991,12 @@ impl Ui {
             } else if (layout.show_sidebar || self.focus == Focus::Tracks)
                 && x >= layout.playlist_left()
                 && y == layout.track_header
+                && self.track_line_height() > 1
+            {
+                self.open_context(MenuPage::Sort, x, y, size);
+            } else if (layout.show_sidebar || self.focus == Focus::Tracks)
+                && x >= layout.playlist_left()
+                && y == layout.track_header
             {
                 let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
                 self.context_column = self
@@ -7882,7 +8013,7 @@ impl Ui {
             } else if (layout.show_sidebar || self.focus == Focus::Tracks)
                 && x >= layout.playlist_left()
                 && y >= layout.track_top
-                && y < layout.track_top + layout.track_page
+                && y < layout.track_top + layout.track_page * self.track_line_height()
             {
                 self.focus = Focus::Tracks;
                 if self.scrollbar(&layout, size).is_some() && y == layout.footer_top - 2 {
@@ -7891,7 +8022,7 @@ impl Ui {
                 }
                 if let Some(&index) = self
                     .visible_tracks()
-                    .get(self.offsets[2] + y - layout.track_top)
+                    .get(self.offsets[2] + (y - layout.track_top) / self.track_line_height())
                 {
                     if !self.selected_tracks.contains(&index) {
                         self.select_track(index, false, false);
@@ -8371,6 +8502,11 @@ impl Ui {
             }
             return;
         }
+        if y == layout.track_header && x >= layout.playlist_left() && self.track_line_height() > 1 {
+            // The rows view's header says what the songs are sorted by.
+            self.open_context(MenuPage::Sort, x, y + 1, size);
+            return;
+        }
         if y == layout.track_header && x >= layout.playlist_left() {
             let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
             let boundary_column = self
@@ -8406,17 +8542,37 @@ impl Ui {
             }
             return;
         }
+        let lines = self.track_line_height();
         if y >= layout.track_top
-            && y < layout.track_top + layout.track_page
+            && y < layout.track_top + layout.track_page * lines
             && x >= layout.playlist_left()
         {
             self.focus = Focus::Tracks;
             let visible = self.visible_tracks();
-            let Some(&index) = visible.get(self.offsets[2] + y - layout.track_top) else {
+            let Some(&index) = visible.get(self.offsets[2] + (y - layout.track_top) / lines) else {
                 return;
             };
             let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
-            if button & (3 | 4 | 8 | 16) == 0 && self.table_waveform_at(index, relative) {
+            if lines > 1 {
+                // The rows view's star sits at the right end of the title
+                // line, and its meter under it.
+                let right = size.0.saturating_sub(usize::from(self.track_scrollbar(&layout, size).is_some()));
+                let line = (y - layout.track_top) % lines;
+                if button & (3 | 4 | 8 | 16) == 0 && line == 0 && x + 3 >= right {
+                    self.select_track(index, false, false);
+                    self.toggle_star();
+                    return;
+                }
+                if button & (3 | 4 | 8 | 16) == 0
+                    && line == 1
+                    && x + 9 >= right
+                    && self.table_playing() == Some(index)
+                    && self.player.state() == PlaybackState::Playing
+                {
+                    self.show_visualizer();
+                    return;
+                }
+            } else if button & (3 | 4 | 8 | 16) == 0 && self.table_waveform_at(index, relative) {
                 self.show_visualizer();
                 return;
             }
@@ -8431,7 +8587,7 @@ impl Ui {
                 .positions()
                 .find(|(_, start, width)| (*start..start + width).contains(&relative))
                 .is_some_and(|(column, _, _)| self.columns.entries[column].id == "star");
-            if starred_cell && !modified {
+            if lines == 1 && starred_cell && !modified {
                 self.toggle_star();
                 return;
             }
@@ -9139,163 +9295,359 @@ impl Ui {
                 paint_vertical_scrollbar(&mut screen, bar);
             }
         } else {
-            paint(
-                &mut screen,
-                layout.track_header + 1,
-                right_x,
-                "",
-                content_width,
-                Surface::Header,
-                true,
-            );
-            if track_scrollbar.is_some() {
+            let lines = self.track_line_height();
+            if lines == 1 {
                 paint(
                     &mut screen,
                     layout.track_header + 1,
-                    width,
+                    right_x,
                     "",
-                    1,
+                    content_width,
                     Surface::Header,
-                    false,
+                    true,
                 );
-            }
-            for &(column_index, start, column_width) in &column_positions {
-                let selected = self.keyboard_column == Some(column_index);
-                paint_playlist_cell(
+                if track_scrollbar.is_some() {
+                    paint(
+                        &mut screen,
+                        layout.track_header + 1,
+                        width,
+                        "",
+                        1,
+                        Surface::Header,
+                        false,
+                    );
+                }
+                for &(column_index, start, column_width) in &column_positions {
+                    let selected = self.keyboard_column == Some(column_index);
+                    paint_playlist_cell(
+                        &mut screen,
+                        &mut hover_labels,
+                        layout.track_header + 1,
+                        right_x,
+                        content_width,
+                        start,
+                        column_width,
+                        self.columns.scroll,
+                        self.columns.entries[column_index].label,
+                        marquee_tick,
+                        if selected {
+                            Surface::Selected
+                        } else {
+                            Surface::Header
+                        },
+                        true,
+                    );
+                }
+                paint_playlist_separators(
                     &mut screen,
-                    &mut hover_labels,
                     layout.track_header + 1,
                     right_x,
                     content_width,
-                    start,
-                    column_width,
                     self.columns.scroll,
-                    self.columns.entries[column_index].label,
-                    marquee_tick,
-                    if selected {
-                        Surface::Selected
-                    } else {
-                        Surface::Header
-                    },
-                    true,
+                    &column_positions,
+                    Surface::Header,
+                    self.keyboard_column,
                 );
-            }
-            paint_playlist_separators(
-                &mut screen,
-                layout.track_header + 1,
-                right_x,
-                content_width,
-                self.columns.scroll,
-                &column_positions,
-                Surface::Header,
-                self.keyboard_column,
-            );
-            let mut status_waveform = None::<Vec<(char, (u8, u8, u8))>>;
-            for y in layout.track_top
-                ..layout
-                    .footer_top
-                    .saturating_sub(1 + usize::from(scrollbar.is_some()))
-            {
-                let position = queue_drag::queue_row(
-                    table_offset,
-                    y - layout.track_top,
-                    self.track_drop_target,
-                );
-                if position.is_none() {
-                    let marker = format!(
-                        "▶ Insert here {}",
-                        "─".repeat(content_width.saturating_sub(14))
+                let mut status_waveform = None::<Vec<(char, (u8, u8, u8))>>;
+                for y in layout.track_top
+                    ..layout
+                        .footer_top
+                        .saturating_sub(1 + usize::from(scrollbar.is_some()))
+                {
+                    let position = queue_drag::queue_row(
+                        table_offset,
+                        y - layout.track_top,
+                        self.track_drop_target,
                     );
+                    if position.is_none() {
+                        let marker = format!(
+                            "▶ Insert here {}",
+                            "─".repeat(content_width.saturating_sub(14))
+                        );
+                        paint(
+                            &mut screen,
+                            y + 1,
+                            right_x,
+                            &marker,
+                            content_width,
+                            Surface::Accent,
+                            true,
+                        );
+                        continue;
+                    }
+                    let index = position
+                        .and_then(|position| visible_tracks.get(position))
+                        .copied();
+                    // Ctrl-click can leave the cursor on an unselected row. Keep its
+                    // bold focus cue separate from the selection background.
+                    let selected = index.is_some_and(|index| table_selected.contains(&index));
+                    let focused = index == Some(table_cursor) && self.focus == Focus::Tracks;
+                    let surface = if selected {
+                        Surface::Selected
+                    } else if y % 2 == 1 {
+                        Surface::MainAlt
+                    } else {
+                        Surface::Main
+                    };
                     paint(
                         &mut screen,
                         y + 1,
                         right_x,
-                        &marker,
+                        "",
                         content_width,
-                        Surface::Accent,
-                        true,
+                        surface,
+                        false,
                     );
-                    continue;
-                }
-                let index = position
-                    .and_then(|position| visible_tracks.get(position))
-                    .copied();
-                // Ctrl-click can leave the cursor on an unselected row. Keep its
-                // bold focus cue separate from the selection background.
-                let selected = index.is_some_and(|index| table_selected.contains(&index));
-                let focused = index == Some(table_cursor) && self.focus == Focus::Tracks;
-                let surface = if selected {
-                    Surface::Selected
-                } else if y % 2 == 1 {
-                    Surface::MainAlt
-                } else {
-                    Surface::Main
-                };
-                paint(
-                    &mut screen,
-                    y + 1,
-                    right_x,
-                    "",
-                    content_width,
-                    surface,
-                    false,
-                );
-                if let Some((index, track)) = index
-                    .and_then(|index| self.table_tracks().get(index).map(|track| (index, track)))
-                {
-                    if self.metadata_ready(track) {
-                        for &(column_index, start, column_width) in &column_positions {
-                            let value = self.table_column_value(
-                                index,
-                                track,
-                                self.columns.entries[column_index].id,
-                            );
-                            paint_playlist_cell(
-                                &mut screen,
-                                &mut hover_labels,
-                                y + 1,
-                                right_x,
-                                content_width,
-                                start,
-                                column_width,
-                                self.columns.scroll,
-                                &value,
-                                marquee_tick,
-                                surface,
-                                focused && !selected,
-                            );
-                            if self.columns.entries[column_index].id == "status"
-                                && self.table_playing() == Some(index)
-                                && self.player.state() == PlaybackState::Playing
-                            {
-                                let glyphs = status_waveform.get_or_insert_with(|| {
-                                    status_waveform_glyphs(self.player.audio_levels())
-                                });
-                                paint_playlist_waveform(
+                    if let Some((index, track)) = index
+                        .and_then(|index| self.table_tracks().get(index).map(|track| (index, track)))
+                    {
+                        if self.metadata_ready(track) {
+                            for &(column_index, start, column_width) in &column_positions {
+                                let value = self.table_column_value(
+                                    index,
+                                    track,
+                                    self.columns.entries[column_index].id,
+                                );
+                                paint_playlist_cell(
                                     &mut screen,
+                                    &mut hover_labels,
                                     y + 1,
                                     right_x,
                                     content_width,
                                     start,
                                     column_width,
                                     self.columns.scroll,
-                                    glyphs,
+                                    &value,
+                                    marquee_tick,
                                     surface,
+                                    focused && !selected,
                                 );
+                                if self.columns.entries[column_index].id == "status"
+                                    && self.table_playing() == Some(index)
+                                    && self.player.state() == PlaybackState::Playing
+                                {
+                                    let glyphs = status_waveform.get_or_insert_with(|| {
+                                        status_waveform_glyphs(self.player.audio_levels())
+                                    });
+                                    paint_playlist_waveform(
+                                        &mut screen,
+                                        y + 1,
+                                        right_x,
+                                        content_width,
+                                        start,
+                                        column_width,
+                                        self.columns.scroll,
+                                        glyphs,
+                                        surface,
+                                    );
+                                }
                             }
                         }
                     }
+                    paint_playlist_separators(
+                        &mut screen,
+                        y + 1,
+                        right_x,
+                        content_width,
+                        self.columns.scroll,
+                        &column_positions,
+                        surface,
+                        None,
+                    );
                 }
-                paint_playlist_separators(
+            } else {
+                // Multi-line rows, laid out like a mail list: the format's
+                // mark and the title in bold, the artist under it, then the
+                // album, format and length in quieter text. The column
+                // header gives way to what the songs are sorted by.
+                let header = format!(" Sort by: {}  ·  O to change", self.sort_bar_label());
+                paint(
                     &mut screen,
-                    y + 1,
+                    layout.track_header + 1,
                     right_x,
+                    &header,
                     content_width,
-                    self.columns.scroll,
-                    &column_positions,
-                    surface,
-                    None,
+                    Surface::Header,
+                    true,
                 );
+                if track_scrollbar.is_some() {
+                    paint(
+                        &mut screen,
+                        layout.track_header + 1,
+                        width,
+                        "",
+                        1,
+                        Surface::Header,
+                        false,
+                    );
+                }
+                // The mark's gutter on the left; the status and star, with
+                // the playing song's meter under them, on the right.
+                const GUTTER: usize = 5;
+                const TRAILING: usize = 9;
+                let text_x = right_x + GUTTER;
+                let text_width = content_width.saturating_sub(GUTTER + TRAILING);
+                let trailing_x = right_x + content_width.saturating_sub(TRAILING);
+                let mut status_waveform = None::<Vec<(char, (u8, u8, u8))>>;
+                for slot in 0..layout.track_page {
+                    let top = layout.track_top + slot * lines;
+                    if top + lines > layout.footer_top {
+                        break;
+                    }
+                    let position =
+                        queue_drag::queue_row(table_offset, slot, self.track_drop_target);
+                    if position.is_none() {
+                        for line in 0..lines {
+                            paint(
+                                &mut screen,
+                                top + line + 1,
+                                right_x,
+                                "",
+                                content_width,
+                                Surface::Main,
+                                false,
+                            );
+                        }
+                        let marker = format!(
+                            "▶ Insert here {}",
+                            "─".repeat(content_width.saturating_sub(14))
+                        );
+                        paint(
+                            &mut screen,
+                            top + 2,
+                            right_x,
+                            &marker,
+                            content_width,
+                            Surface::Accent,
+                            true,
+                        );
+                        continue;
+                    }
+                    let index = position
+                        .and_then(|position| visible_tracks.get(position))
+                        .copied();
+                    let selected = index.is_some_and(|index| table_selected.contains(&index));
+                    let focused = index == Some(table_cursor) && self.focus == Focus::Tracks;
+                    let (surface, muted, accent) = if selected {
+                        (Surface::Selected, Surface::SelectedMuted, Surface::Selected)
+                    } else if slot % 2 == 1 {
+                        (Surface::MainAlt, Surface::MainAltMuted, Surface::MainAltAccent)
+                    } else {
+                        (Surface::Main, Surface::MainMuted, Surface::MainAccent)
+                    };
+                    for line in 0..lines {
+                        paint(
+                            &mut screen,
+                            top + line + 1,
+                            right_x,
+                            "",
+                            content_width,
+                            surface,
+                            false,
+                        );
+                    }
+                    let Some((index, track)) = index
+                        .and_then(|index| self.table_tracks().get(index).map(|track| (index, track)))
+                    else {
+                        continue;
+                    };
+                    // The cursor's song is marked in the gutter, apart from
+                    // the selection's background.
+                    let gutter = format!(
+                        "{}{}",
+                        if focused && !selected { "›" } else { " " },
+                        glyph(&track.entry)
+                    );
+                    paint(&mut screen, top + 1, right_x, &gutter, GUTTER, surface, true);
+                    let title = self.title_for(track);
+                    let playing_here = self.table_playing() == Some(index);
+                    register_hover_label(
+                        &mut hover_labels,
+                        text_x - 1,
+                        top,
+                        text_width,
+                        &title,
+                        text_width,
+                    );
+                    paint(
+                        &mut screen,
+                        top + 1,
+                        text_x,
+                        &title,
+                        text_width,
+                        if playing_here { accent } else { surface },
+                        true,
+                    );
+                    if !self.metadata_ready(track) {
+                        continue;
+                    }
+                    let mut artist = self.table_column_value(index, track, "artist");
+                    if artist.is_empty() {
+                        artist = self.table_column_value(index, track, "albumartist");
+                    }
+                    register_hover_label(
+                        &mut hover_labels,
+                        text_x - 1,
+                        top + 1,
+                        text_width,
+                        &artist,
+                        text_width,
+                    );
+                    paint(&mut screen, top + 2, text_x, &artist, text_width, surface, false);
+                    let mut format = self.table_column_value(index, track, "codec");
+                    if format.is_empty() {
+                        format = track
+                            .name
+                            .rsplit_once('.')
+                            .map(|(_, extension)| extension.to_ascii_uppercase())
+                            .unwrap_or_default();
+                    }
+                    let detail = [
+                        self.table_column_value(index, track, "album"),
+                        format,
+                        self.table_column_value(index, track, "length"),
+                    ]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                    register_hover_label(
+                        &mut hover_labels,
+                        text_x - 1,
+                        top + 2,
+                        text_width,
+                        &detail,
+                        text_width,
+                    );
+                    paint(&mut screen, top + 3, text_x, &detail, text_width, muted, false);
+                    let status = self.table_column_value(index, track, "status");
+                    let star = self.table_column_value(index, track, "star");
+                    paint(
+                        &mut screen,
+                        top + 1,
+                        trailing_x,
+                        &format!("{status:>6} {}", if star.is_empty() { " " } else { "★" }),
+                        TRAILING,
+                        if playing_here { accent } else { surface },
+                        true,
+                    );
+                    if playing_here && self.player.state() == PlaybackState::Playing {
+                        let glyphs = status_waveform.get_or_insert_with(|| {
+                            status_waveform_glyphs(self.player.audio_levels())
+                        });
+                        paint_playlist_waveform(
+                            &mut screen,
+                            top + 2,
+                            right_x,
+                            content_width,
+                            content_width.saturating_sub(TRAILING),
+                            TRAILING,
+                            0,
+                            glyphs,
+                            surface,
+                        );
+                    }
+                }
             }
             if let Some(bar) = scrollbar {
                 let row = layout.footer_top.saturating_sub(1);
@@ -11099,7 +11451,7 @@ const REMOTE_MENU: [&str; 9] = [
     "Queue Current Folder",
     "Use Local Library",
 ];
-const VIEW_MENU: [&str; 13] = [
+const VIEW_MENU: [&str; 15] = [
     "Show/Hide Files and Playlists",
     "Track Info…",
     "Lyrics…",
@@ -11113,6 +11465,8 @@ const VIEW_MENU: [&str; 13] = [
     "Channel Tracker…",
     "MML Score…",
     "Piano Roll…",
+    "Multi-Line Rows",
+    "Sort by…",
 ];
 const PLAYBACK_MENU: [&str; 14] = [
     "Play/Pause",
@@ -12050,6 +12404,13 @@ enum Surface {
     RadioOn,
     Selected,
     Muted,
+    /// Quiet and accent text on the song rows' own backgrounds, for the
+    /// multi-line rows view's detail line and playing title.
+    MainMuted,
+    MainAltMuted,
+    SelectedMuted,
+    MainAccent,
+    MainAltAccent,
     MenuBody,
     MenuTitle,
     MenuSelected,
@@ -12107,6 +12468,11 @@ fn surface_colors(surface: Surface) -> (&'static str, &'static str) {
         Surface::RadioOn => ("255;169;68", "29;32;34"),
         Surface::Selected => ("245;248;251", "49;84;106"),
         Surface::Muted => ("151;160;168", "29;32;34"),
+        Surface::MainMuted => ("151;160;168", "25;27;29"),
+        Surface::MainAltMuted => ("151;160;168", "32;35;37"),
+        Surface::SelectedMuted => ("200;214;226", "49;84;106"),
+        Surface::MainAccent => ("103;179;233", "25;27;29"),
+        Surface::MainAltAccent => ("103;179;233", "32;35;37"),
         Surface::MenuBody => ("27;42;78", "212;221;236"),
         Surface::MenuTitle => ("255;237;171", "39;68;128"),
         Surface::MenuSelected => ("255;255;255", "38;88;166"),
@@ -13506,6 +13872,7 @@ mod tests {
             MenuPage::Synthesis,
             MenuPage::MidiBackend,
             MenuPage::Server,
+            MenuPage::Sort,
         ] {
             let shortcuts = menu_shortcuts(page);
             assert_eq!(shortcuts.len(), page.labels().len());

@@ -871,9 +871,12 @@ impl Ui {
         {
             return false;
         }
-        if !(layout.track_top..layout.track_top + layout.track_page).contains(&y) {
+        let lines = self.track_line_height();
+        if !(layout.track_top..layout.track_top + layout.track_page * lines).contains(&y) {
             return true;
         }
+        // The song under the pointer: three lines to a song in the rows view.
+        let row = (y - layout.track_top) / lines;
         self.focus = Focus::Tracks;
         if button & 0b1100_0000 == 64 {
             if button & 3 >= 2 || button & (4 | 16) != 0 {
@@ -894,7 +897,7 @@ impl Ui {
         if button & 3 == 2 && button & 32 == 0 {
             // Right click: the row joins the selection unless it is in it.
             let visible = self.table_visible_tracks();
-            if let Some(&index) = visible.get(self.workspace_offset + y - layout.track_top) {
+            if let Some(&index) = visible.get(self.workspace_offset + row) {
                 self.workspace_cursor = index;
                 if !state.selected.contains(&index) {
                     self.workspace_select(Select::Choose { index, gesture: Gesture::Replace });
@@ -905,9 +908,9 @@ impl Ui {
         }
         if button & 3 == 0 && button & 32 == 0 {
             let visible = self.table_visible_tracks();
-            if let Some(&index) = visible.get(self.workspace_offset + y - layout.track_top) {
+            if let Some(&index) = visible.get(self.workspace_offset + row) {
                 let relative = x.saturating_sub(left) + self.columns.scroll;
-                if button & (4 | 8 | 16) == 0 && self.table_waveform_at(index, relative) {
+                if button & (4 | 8 | 16) == 0 && lines == 1 && self.table_waveform_at(index, relative) {
                     self.show_visualizer();
                     return true;
                 }

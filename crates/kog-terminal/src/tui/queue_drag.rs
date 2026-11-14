@@ -52,13 +52,14 @@ impl Ui {
             .0
             .saturating_sub(usize::from(self.track_scrollbar(&layout, size).is_some()));
         if !(layout.playlist_left()..right).contains(&x)
-            || !(layout.track_top..layout.track_top + layout.track_page).contains(&y)
+            || !(layout.track_top..layout.track_top + layout.track_page * self.track_line_height())
+                .contains(&y)
         {
             return None;
         }
         queue_row(
             self.table_offset(),
-            y - layout.track_top,
+            (y - layout.track_top) / self.track_line_height(),
             self.track_drop_target,
         )
         .or(self.track_drop_target)
