@@ -19,6 +19,22 @@ GridView {
     // (read inside it) keeps each tile's binding up to date.
     property var selectionTest: function(row) { return false }
 
+    // The song count. Assigning a new integer model resets the view to its
+    // top, so songs arriving keep the scroll position, as the lists do.
+    property int rowCount: 0
+    model: 0
+    function syncRowCount() {
+        if (model === rowCount)
+            return
+        const previousY = contentY
+        model = rowCount
+        forceLayout()
+        contentY = Math.max(-topMargin, Math.min(previousY,
+            contentHeight + bottomMargin - height))
+    }
+    onRowCountChanged: syncRowCount()
+    Component.onCompleted: syncRowCount()
+
     signal pressed(int rowIndex, int modifiers, int button)
     signal activated(int rowIndex)
     signal openVisualizer()

@@ -349,7 +349,7 @@ FocusScope {
             visible: editor.shownMode === "grid"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            model: visible ? editor.rows.length : 0
+            rowCount: visible ? editor.rows.length : 0
             app: rowData
             theme: editor.theme
             searchModel: editor.searchModel

@@ -4516,7 +4516,7 @@ ApplicationWindow {
                         && root.playlistViewMode === "grid"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    model: visible ? appController.playlist_count : 0
+                    rowCount: visible ? appController.playlist_count : 0
                     app: appController
                     theme: root.themePalette
                     searchModel: fileTreeModel
