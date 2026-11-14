@@ -39,6 +39,13 @@ ApplicationWindow {
     property alias playlistsHeight: mainWindowSettings.playlistsHeight
     MainWindowSettings { id: mainWindowSettings; app: appController }
     property string playlistHighlightQuery: ""
+    // How songs show: "list" (the column table), "rows" (two-line rows with
+    // album art, like a mail list) or "grid" (cover tiles). Kept per window.
+    readonly property string playlistViewMode: mainWindowSettings.playlistViewMode
+    function setPlaylistViewMode(mode) {
+        mainWindowSettings.playlistViewMode = mode
+    }
+    readonly property real playlistRowHeight: playlistViewMode === "rows" ? 58 : 24
     // A track can outlive the pane: clearing the playlist detaches what is
     // playing, so transport that acts on the loaded track must not be gated
     // on the list being populated.
@@ -826,7 +833,10 @@ ApplicationWindow {
         const state = JSON.parse(appController.selection_json(JSON.stringify({indices:selectedRows, anchor:selectionAnchor >= 0 ? selectionAnchor : null}),
             JSON.stringify({op:"choose", index:row, gesture:range ? (toggle ? "add_range" : "range") : (toggle ? "toggle" : "replace")}), appController.playlist_count))
         setPlaylistSelection(state.indices, row, state.anchor === null ? -1 : state.anchor)
-        playlistView.forceActiveFocus()
+        if (playlistViewMode === "grid")
+            queueCoverGrid.forceActiveFocus()
+        else
+            playlistView.forceActiveFocus()
     }
 
     function clearPlaylistSelection() {
@@ -1029,7 +1039,48 @@ ApplicationWindow {
         const target = Math.max(0, Math.min(start + delta,
             appController.playlist_count - 1))
         selectPlaylistRow(target, modifiers)
-        playlistView.positionViewAtIndex(target, ListView.Contain)
+        if (playlistViewMode === "grid")
+            queueCoverGrid.positionViewAtIndex(target, GridView.Contain)
+        else
+            playlistView.positionViewAtIndex(target, ListView.Contain)
+    }
+
+    // The play queue's rows and tiles share these, whichever view shows.
+    function queueRowPressed(row, modifiers, button) {
+        if (button !== Qt.RightButton || !isPlaylistRowSelected(row))
+            selectPlaylistRow(row, modifiers)
+        if (button === Qt.RightButton) {
+            if (playlistViewMode === "grid")
+                queueCoverGrid.forceActiveFocus()
+            else
+                playlistView.forceActiveFocus()
+            playlistContextMenu.popup()
+        }
+    }
+    function queueRowActivated(row) {
+        setPlaylistSelection([row], row, row)
+        appController.activate_playlist_index(row)
+    }
+    function queueRowDragStarted(row) {
+        if (!isPlaylistRowSelected(row))
+            setPlaylistSelection([row], row, row)
+    }
+    function queueRowDragMoved(viewX, viewY) {
+        playlistDropTarget = viewX >= 0 && viewX <= playlistView.width
+                && viewY >= 0 && viewY <= playlistView.height
+            ? playlistDropIndex(viewY)
+            : -1
+    }
+    function queueRowDragFinished(viewX, viewY) {
+        if (viewX >= 0 && viewX <= playlistView.width
+                && viewY >= 0 && viewY <= playlistView.height) {
+            const target = playlistDropTarget >= 0
+                ? playlistDropTarget
+                : playlistDropIndex(viewY)
+            const moved = appController.move_tracks(selectedRows.join(","), target)
+            applyMovedSelection(moved)
+        }
+        playlistDropTarget = -1
     }
 
     function revealPlayingRadioTrack() {
@@ -1038,20 +1089,26 @@ ApplicationWindow {
     }
 
     function revealPlayingTrack() {
-        if (activeSourceIndex < 0 || !playlistView.visible)
+        if (activeSourceIndex < 0 || (!playlistView.visible && !queueCoverGrid.visible))
             return
         // Radio appends a source track before changing current_index. Locate
         // the new track in visible order, which may be sorted.
         for (let row = appController.playlist_count - 1; row >= 0; --row) {
             if (Number(appController.track_number_at(row))
                     === activeSourceIndex + 1) {
-                playlistView.revealRowFully(row)
+                if (playlistViewMode === "grid")
+                    queueCoverGrid.positionViewAtIndex(row, GridView.Contain)
+                else
+                    playlistView.revealRowFully(row)
                 return
             }
         }
     }
 
     function playlistDropIndex(y) {
+        // Tiles flow in rows of several: dropped songs go at the end.
+        if (playlistViewMode === "grid")
+            return appController.playlist_count
         const contentPosition = y + playlistView.contentY
         const row = playlistView.indexAt(1, contentPosition)
         if (row < 0)
@@ -2712,6 +2769,48 @@ ApplicationWindow {
                 }
             }
 
+            // List, rows or cover grid, as a small segmented group.
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: 4
+                Layout.rightMargin: root.useMacWindowControls ? 0 : 6
+                implicitWidth: viewModeRow.implicitWidth + 4
+                implicitHeight: 34
+                radius: 9
+                color: "transparent"
+                border.width: 1
+                border.color: Qt.lighter(root.palette.mid, root.baseLuminance < 0.5 ? 1.7 : 0.9)
+
+                Row {
+                    id: viewModeRow
+                    anchors.centerIn: parent
+                    spacing: 0
+
+                    Repeater {
+                        model: [
+                            { mode: "list", icon: "view-list-details", tip: qsTr("Show as List") },
+                            { mode: "rows", icon: "view-list-rows", tip: qsTr("Show as Rows") },
+                            { mode: "grid", icon: "view-grid", tip: qsTr("Show as Cover Grid") }
+                        ]
+                        ToolbarButton {
+                            required property var modelData
+                            width: 30
+                            height: 30
+                            icon.width: 18
+                            icon.height: 18
+                            iconName: modelData.icon
+                            checkable: true
+                            checked: root.playlistViewMode === modelData.mode
+                            toolTip: modelData.tip
+                            onClicked: {
+                                root.setPlaylistViewMode(modelData.mode)
+                                checked = Qt.binding(() => root.playlistViewMode === modelData.mode)
+                            }
+                        }
+                    }
+                }
+            }
+
             RowLayout {
                 visible: !root.useMacWindowControls
                 Layout.leftMargin: 3
@@ -4199,14 +4298,31 @@ ApplicationWindow {
                             queueSelection: root.selectedRows
                             searchModel: fileTreeModel
                             searchQuery: root.playlistHighlightQuery
+                            viewMode: root.playlistViewMode
                             onOpenVisualizer: visualizerWindow.openWaveform()
                         }
+                    }
+                }
+
+                PlaylistSortBar {
+                    visible: root.playlistWorkspace.active === "queue"
+                        && root.playlistViewMode !== "list"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: implicitHeight
+                    theme: root.themePalette
+                    sortColumn: appController.playlist_sort_column
+                    sortAscending: appController.playlist_sort_ascending
+                    onSortRequested: column => {
+                        const selected = appController.sort_playlist(
+                            column, root.selectedRows.join(","))
+                        root.applyMovedSelection(selected)
                     }
                 }
 
                 Item {
                     id: playlistHeaderViewport
                     visible: root.playlistWorkspace.active === "queue"
+                        && root.playlistViewMode === "list"
                     Layout.fillWidth: true
                     // Runs over the scroll bar's gutter too, so the header
                     // island is not cut short of the pane's edge there.
@@ -4239,6 +4355,7 @@ ApplicationWindow {
                     id: playlistView
                     objectName: "queuePlaylistView"
                     visible: root.playlistWorkspace.active === "queue"
+                        && root.playlistViewMode !== "grid"
                     onVisibleChanged: if (!visible) root.playlistDropTarget = -1
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -4256,8 +4373,9 @@ ApplicationWindow {
                     readonly property real horizontalScrollGutter:
                         playlistHorizontalScrollBar.visible
                             ? playlistHorizontalScrollBar.implicitHeight + 4 : 0
-                    contentWidth: Math.max(width,
-                        playlistHeader.totalWidth + verticalScrollGutter)
+                    // Rows fit the pane; only the column table scrolls sideways.
+                    contentWidth: root.playlistViewMode === "rows" ? width
+                        : Math.max(width, playlistHeader.totalWidth + verticalScrollGutter)
                     flickableDirection: Flickable.AutoFlickDirection
                     currentIndex: root.selectedRow
                     keyNavigationEnabled: true
@@ -4284,57 +4402,53 @@ ApplicationWindow {
                         event.accepted = true
                     }
 
-                    delegate: PlaylistRow {
-                        required property int index
-                        width: Math.max(0, playlistView.contentWidth
-                            - playlistView.verticalScrollGutter)
-                        app: appController
-                        columns: playlistHeader
-                        searchModel: fileTreeModel
-                        searchQuery: root.playlistHighlightQuery
-                        theme: root.themePalette
-                        rowIndex: index
-                        selected: root.isPlaylistRowSelected(index)
-                        onOpenVisualizer: visualizerWindow.openWaveform()
-                        onPressed: (row, modifiers, button) => {
-                            if (button !== Qt.RightButton
-                                    || !root.isPlaylistRowSelected(row))
-                                root.selectPlaylistRow(row, modifiers)
-                            if (button === Qt.RightButton) {
-                                playlistView.forceActiveFocus()
-                                playlistContextMenu.popup()
-                            }
+                    delegate: root.playlistViewMode === "rows" ? queueCardRow : queueTableRow
+                    Component {
+                        id: queueTableRow
+                        PlaylistRow {
+                            required property int index
+                            width: Math.max(0, playlistView.contentWidth
+                                - playlistView.verticalScrollGutter)
+                            app: appController
+                            columns: playlistHeader
+                            searchModel: fileTreeModel
+                            searchQuery: root.playlistHighlightQuery
+                            theme: root.themePalette
+                            rowIndex: index
+                            selected: root.isPlaylistRowSelected(index)
+                            onOpenVisualizer: visualizerWindow.openWaveform()
+                            onPressed: (row, modifiers, button) =>
+                                root.queueRowPressed(row, modifiers, button)
+                            onActivated: row => root.queueRowActivated(row)
+                            onDragStarted: row => root.queueRowDragStarted(row)
+                            onDragMoved: (viewX, viewY) => root.queueRowDragMoved(viewX, viewY)
+                            onDragFinished: (viewX, viewY) =>
+                                root.queueRowDragFinished(viewX, viewY)
+                            onDragCanceled: root.playlistDropTarget = -1
                         }
-                        onActivated: row => {
-                            root.setPlaylistSelection([row], row, row)
-                            appController.activate_playlist_index(row)
+                    }
+                    Component {
+                        id: queueCardRow
+                        PlaylistCardRow {
+                            required property int index
+                            width: Math.max(0, playlistView.width
+                                - playlistView.verticalScrollGutter)
+                            app: appController
+                            searchModel: fileTreeModel
+                            searchQuery: root.playlistHighlightQuery
+                            theme: root.themePalette
+                            rowIndex: index
+                            selected: root.isPlaylistRowSelected(index)
+                            onOpenVisualizer: visualizerWindow.openWaveform()
+                            onPressed: (row, modifiers, button) =>
+                                root.queueRowPressed(row, modifiers, button)
+                            onActivated: row => root.queueRowActivated(row)
+                            onDragStarted: row => root.queueRowDragStarted(row)
+                            onDragMoved: (viewX, viewY) => root.queueRowDragMoved(viewX, viewY)
+                            onDragFinished: (viewX, viewY) =>
+                                root.queueRowDragFinished(viewX, viewY)
+                            onDragCanceled: root.playlistDropTarget = -1
                         }
-                        onDragStarted: row => {
-                            if (!root.isPlaylistRowSelected(row))
-                                root.setPlaylistSelection([row], row, row)
-                        }
-                        onDragMoved: (viewX, viewY) => {
-                            root.playlistDropTarget = viewX >= 0
-                                    && viewX <= playlistView.width
-                                    && viewY >= 0
-                                    && viewY <= playlistView.height
-                                ? root.playlistDropIndex(viewY)
-                                : -1
-                        }
-                        onDragFinished: (viewX, viewY) => {
-                            if (viewX >= 0 && viewX <= playlistView.width
-                                    && viewY >= 0
-                                    && viewY <= playlistView.height) {
-                                const target = root.playlistDropTarget >= 0
-                                    ? root.playlistDropTarget
-                                    : root.playlistDropIndex(viewY)
-                                const moved = appController.move_tracks(
-                                    root.selectedRows.join(","), target)
-                                root.applyMovedSelection(moved)
-                            }
-                            root.playlistDropTarget = -1
-                        }
-                        onDragCanceled: root.playlistDropTarget = -1
                     }
                     ScrollBar.vertical: FadingScrollBar {
                         id: playlistVerticalScrollBar
@@ -4394,10 +4508,41 @@ ApplicationWindow {
                         }
                     }
                 }
+
+                PlaylistCoverGrid {
+                    id: queueCoverGrid
+                    objectName: "queueCoverGrid"
+                    visible: root.playlistWorkspace.active === "queue"
+                        && root.playlistViewMode === "grid"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    model: visible ? appController.playlist_count : 0
+                    app: appController
+                    theme: root.themePalette
+                    searchModel: fileTreeModel
+                    searchQuery: root.playlistHighlightQuery
+                    selectionTest: row => root.isPlaylistRowSelected(row)
+                    onPressed: (row, modifiers, button) =>
+                        root.queueRowPressed(row, modifiers, button)
+                    onActivated: row => root.queueRowActivated(row)
+                    onOpenVisualizer: visualizerWindow.openWaveform()
+                    onMoveRequested: (delta, modifiers) =>
+                        root.keyboardSelectPlaylistRow(delta, modifiers)
+                    Keys.onReturnPressed: if (root.selectedRow >= 0)
+                        appController.play_index(root.selectedRow)
+                    Keys.onEnterPressed: if (root.selectedRow >= 0)
+                        appController.play_index(root.selectedRow)
+                    Keys.onDeletePressed: removeSelectedAction.trigger()
+                    // Opening the grid shows where the list was.
+                    onVisibleChanged: if (visible && root.selectedRow >= 0)
+                        Qt.callLater(() => queueCoverGrid.positionViewAtIndex(
+                            root.selectedRow, GridView.Contain))
+                }
             }
 
             PlaylistDropIndicator {
                 objectName: "queueDropIndicator"
+                rowHeight: root.playlistRowHeight
                 view: playlistView
                 target: root.playlistDropTarget
                 color: root.palette.highlight
@@ -4408,9 +4553,10 @@ ApplicationWindow {
             DropArea {
                 enabled: root.playlistWorkspace.active === "queue"
                 x: 0
-                y: playlistView.y
+                y: root.playlistViewMode === "grid" ? queueCoverGrid.y : playlistView.y
                 width: parent.width
-                height: playlistView.height
+                height: root.playlistViewMode === "grid" ? queueCoverGrid.height
+                    : playlistView.height
                 onEntered: drag => {
                     if (drag.hasUrls
                             || drag.formats.indexOf("text/uri-list") !== -1)

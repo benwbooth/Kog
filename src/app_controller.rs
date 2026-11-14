@@ -519,6 +519,10 @@ pub mod qobject {
         #[qinvokable]
         fn workspace_tab_cover_at(self: &AppController, key: QString, index: i32) -> QString;
         #[qinvokable]
+        fn track_tile_at(self: &AppController, index: i32) -> QString;
+        #[qinvokable]
+        fn workspace_tab_tile_at(self: &AppController, key: QString, index: i32) -> QString;
+        #[qinvokable]
         fn playlist_icon(self: &AppController, id: i32) -> QString;
         #[qinvokable]
         fn poll_desktop_art(self: Pin<&mut AppController>);
@@ -7313,18 +7317,41 @@ impl qobject::AppController {
     }
 
     fn track_cover(&self, track: &Track) -> QString {
+        self.track_image(track, false)
+    }
+
+    /// The cover grid's large image for the song row, as [`Self::track_cover_at`]
+    /// gives its icon.
+    pub fn track_tile_at(&self, index: i32) -> QString {
+        visible_source_index(self, index)
+            .and_then(|source_index| self.rust().tracks.get(source_index))
+            .map(|track| self.track_image(track, true))
+            .unwrap_or_default()
+    }
+
+    /// The same for a playlist tab's row.
+    pub fn workspace_tab_tile_at(&self, key: QString, index: i32) -> QString {
+        self.tab_workspace_tracks(&key.to_string())
+            .and_then(|tracks| usize::try_from(index).ok().and_then(|index| tracks.rows.get(index)))
+            .and_then(|row| row.track.as_ref())
+            .map(|track| self.track_image(track, true))
+            .unwrap_or_default()
+    }
+
+    fn track_image(&self, track: &Track, tile: bool) -> QString {
         // A song from an archive asks with its extracted file, as the
         // now-playing cover does: its keys are the same.
         if track.source.remote_url.is_some() {
             return QString::default();
         }
         let file = &track.source.path;
-        qstring(self.rust().desktop_art.song_icon(
-            &file.to_string_lossy(),
-            file,
-            &track.artist,
-            &track.album,
-        ))
+        let art = &self.rust().desktop_art;
+        let song = file.to_string_lossy();
+        qstring(if tile {
+            art.song_tile(&song, file, &track.artist, &track.album)
+        } else {
+            art.song_icon(&song, file, &track.artist, &track.album)
+        })
     }
 
     /// The playlist's cover icon (0: Favorites) as a file URL, or empty for

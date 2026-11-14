@@ -34,7 +34,9 @@ const TILES_CHECK: Duration = Duration::from_secs(3);
 const REMEMBERED: usize = 16384;
 
 struct Ask {
+    /// The song and the image's side, as [`State::songs`] keys them.
     song: String,
+    side: u32,
     file: PathBuf,
     artist: String,
     album: String,
@@ -149,7 +151,13 @@ fn work(shared: Arc<Shared>) {
                 }
             }
         };
-        let icon = kog_server::desktop_art::song_icon(&shared.cover_cache, &ask.file, &ask.artist, &ask.album);
+        let icon = kog_server::desktop_art::song_image(
+            &shared.cover_cache,
+            &ask.file,
+            &ask.artist,
+            &ask.album,
+            ask.side,
+        );
         let provisional = icon.as_ref().is_some_and(|icon| icon.provisional);
         let url = icon.map(|icon| file_url(&icon.path)).unwrap_or_default();
         let mut state = shared.lock();
@@ -229,6 +237,18 @@ impl DesktopArt {
     /// (the revision moves when it is found) and for songs without one. A
     /// stand-in being looked up again keeps showing meanwhile.
     pub fn song_icon(&self, song: &str, file: &Path, artist: &str, album: &str) -> String {
+        self.song_image(song, file, artist, album, kog_server::desktop_art::ICON_SIZE)
+    }
+
+    /// The same for the cover grid's large tiles.
+    pub fn song_tile(&self, song: &str, file: &Path, artist: &str, album: &str) -> String {
+        self.song_image(song, file, artist, album, kog_server::desktop_art::TILE_SIZE)
+    }
+
+    fn song_image(&self, song: &str, file: &Path, artist: &str, album: &str, side: u32) -> String {
+        // Each size is its own image: keyed apart, so a row's icon never
+        // stands in for a tile.
+        let song = &format!("{side}\0{song}");
         let mut state = self.shared.lock();
         let mut showing = String::new();
         if let Some(answer) = state.songs.get(song) {
@@ -237,7 +257,7 @@ impl DesktopArt {
             }
             showing = answer.url.clone();
         }
-        let album_key = kog_server::desktop_art::album_key(file, album);
+        let album_key = format!("{side}\0{}", kog_server::desktop_art::album_key(file, album));
         if let Some(url) = state.albums.get(&album_key) {
             return url.clone();
         }
@@ -246,6 +266,7 @@ impl DesktopArt {
             let generation = state.generation;
             state.queue.push_front(Ask {
                 song: song.to_owned(),
+                side,
                 file: file.to_path_buf(),
                 artist: artist.to_owned(),
                 album: album.to_owned(),

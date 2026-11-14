@@ -26,6 +26,16 @@ use kog_audio::cover_art;
 pub const ICON_SIZE: u32 = 72;
 /// The corner radius, in pixels of [`ICON_SIZE`]: 3 points of 18.
 const RADIUS: f32 = 12.0;
+/// The cover grid's tiles: sharp at two device pixels per point for a
+/// 160-point tile.
+pub const TILE_SIZE: u32 = 320;
+/// Their corner radius: 7 points of 160.
+const TILE_RADIUS: f32 = 14.0;
+
+/// The corner radius for an image of `side` pixels.
+fn radius_for(side: u32) -> f32 {
+    if side >= TILE_SIZE { TILE_RADIUS } else { RADIUS * side as f32 / ICON_SIZE as f32 }
+}
 const THUMB_DIRECTORY: &str = "cover-thumbs";
 const TILE_DIRECTORY: &str = "playlist-tiles";
 const TILES_FILE: &str = "tiles.json";
@@ -118,12 +128,12 @@ pub fn is_rejected_file(cover_cache: &Path, path: &Path) -> bool {
 
 /// Coverage of the pixel at (x, y) by a square of `size` with rounded
 /// corners: 1 inside, 0 outside, anti-aliased along the curve.
-fn coverage(x: u32, y: u32, size: u32) -> f32 {
+fn coverage(x: u32, y: u32, size: u32, radius: f32) -> f32 {
     let centre = |value: u32| {
         let value = value as f32 + 0.5;
-        let far = size as f32 - RADIUS;
-        if value < RADIUS {
-            RADIUS - value
+        let far = size as f32 - radius;
+        if value < radius {
+            radius - value
         } else if value > far {
             value - far
         } else {
@@ -134,13 +144,14 @@ fn coverage(x: u32, y: u32, size: u32) -> f32 {
     if dx == 0.0 || dy == 0.0 {
         return 1.0;
     }
-    (RADIUS - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0)
+    (radius - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0)
 }
 
 fn round_corners(image: &mut RgbaImage) {
     let size = image.width();
+    let radius = radius_for(size);
     for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let alpha = coverage(x, y, size);
+        let alpha = coverage(x, y, size, radius);
         if alpha < 1.0 {
             pixel.0[3] = (f32::from(pixel.0[3]) * alpha).round() as u8;
         }
@@ -197,9 +208,16 @@ pub struct SongIcon {
 /// The song's cover as a small rounded icon, or `None` for a song without
 /// one on disk.
 pub fn song_icon(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Option<SongIcon> {
+    song_image(cover_cache, file, artist, album, ICON_SIZE)
+}
+
+/// The song's cover as a rounded square of `side` pixels ([`ICON_SIZE`]
+/// for a row, [`TILE_SIZE`] for the cover grid), or `None` for a song
+/// without one on disk.
+pub fn song_image(cover_cache: &Path, file: &Path, artist: &str, album: &str, side: u32) -> Option<SongIcon> {
     let (cover, provisional) = song_cover(cover_cache, file, artist, album)?;
-    let name = format!("{:016x}-r{ICON_SIZE}.png", fnv(FNV_START, &cover));
-    let path = keep(&beside(cover_cache, THUMB_DIRECTORY), &name, || square(&cover, ICON_SIZE))?;
+    let name = format!("{:016x}-r{side}.png", fnv(FNV_START, &cover));
+    let path = keep(&beside(cover_cache, THUMB_DIRECTORY), &name, || square(&cover, side))?;
     Some(SongIcon { path, provisional })
 }
 

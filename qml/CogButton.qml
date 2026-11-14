@@ -26,7 +26,7 @@ ToolButton {
         "edit-find", "folder", "folder-open", "gear", "go-up", "media-playback-pause",
         "media-playback-start", "media-playback-stop", "media-playlist-random",
         "media-playlist-repeat", "media-playlist-shuffle", "media-skip-backward",
-        "media-skip-forward", "view-list-tree", "view-refresh", "view-restore",
+        "media-skip-forward", "view-grid", "view-list-details", "view-list-rows", "view-list-tree", "view-refresh", "view-restore",
         "window-close"
     ]
     readonly property bool ownIcon: ownIcons.indexOf(iconName) >= 0

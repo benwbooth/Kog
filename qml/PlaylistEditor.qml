@@ -9,6 +9,12 @@ FocusScope {
     required property var theme
     property var queueSelection: []
     property bool compact: false
+    // "list" (the column table), "rows" (two-line rows with album art) or
+    // "grid" (cover tiles); the compact skin always lists.
+    property string viewMode: "list"
+    readonly property string shownMode: compact ? "list" : viewMode
+    readonly property real rowHeight: shownMode === "rows" ? 58 : 24
+    readonly property Item focusView: shownMode === "grid" ? coverGrid : list
     property var searchModel: fallbackSearch
     property string searchQuery: ""
     property string sortColumn: "index"
@@ -53,6 +59,12 @@ FocusScope {
         if (!live || playingRow < 0)
             return
         const at = rows.indexOf(playingRow)
+        if (shownMode === "grid") {
+            revealPending = at < 0 || coverGrid.height <= 0
+            if (!revealPending)
+                coverGrid.positionViewAtIndex(at, GridView.Contain)
+            return
+        }
         revealPending = at < 0 || list.height <= 0
         if (revealPending)
             return
@@ -143,7 +155,7 @@ FocusScope {
                 || y < 0 || y >= list.height - list.horizontalScrollGutter)
             return -1
         return Math.max(0, Math.min(rows.length,
-            Math.floor((y + list.contentY - list.originY + 12) / 24)))
+            Math.floor((y + list.contentY - list.originY + rowHeight / 2) / rowHeight)))
     }
     function choose(index, modifiers) {
         const range = !!(modifiers & Qt.ShiftModifier)
@@ -151,23 +163,32 @@ FocusScope {
         send({op: "selection", command: {op: "choose", index: index,
             gesture: range ? (toggle ? "add_range" : "range") : (toggle ? "toggle" : "replace")}})
         list.currentIndex = rows.indexOf(index)
-        list.forceActiveFocus()
+        focusView.forceActiveFocus()
     }
     function selectAll() { send({op: "select", indices: rows}) }
     function activate(index) {
         send({op: "activate", index: index})
         list.currentIndex = rows.indexOf(index)
-        list.forceActiveFocus()
+        focusView.forceActiveFocus()
     }
     function moveCursor(delta, modifiers) {
         if (!rows.length) return
         const next = Math.max(0, Math.min(rows.length - 1, list.currentIndex + delta))
         choose(rows[next], modifiers)
-        list.positionViewAtIndex(next, ListView.Contain)
+        if (shownMode === "grid")
+            coverGrid.positionViewAtIndex(next, GridView.Contain)
+        else
+            list.positionViewAtIndex(next, ListView.Contain)
+    }
+    function sortBy(column) {
+        if (!actions.append) return
+        sortAscending = column === sortColumn ? !sortAscending : true
+        sortColumn = column
+        app.workspace_sort(column, !sortAscending)
     }
     function openContext(index, modifiers) {
         if (index >= 0 && selection.indexOf(index) < 0) choose(index, modifiers)
-        list.forceActiveFocus()
+        focusView.forceActiveFocus()
         contextMenu.popup()
     }
     onSearchQueryChanged: {
@@ -205,6 +226,7 @@ FocusScope {
         function toggle_stars(row) { editor.app.workspace_toggle_stars(String(editor.rows[Number(row)])) }
         readonly property int desktop_art_revision: editor.app.desktop_art_revision
         function track_cover_at(row) { return editor.app.workspace_tab_cover_at(editor.activeKey, editor.rows[row]) }
+        function track_tile_at(row) { return editor.app.workspace_tab_tile_at(editor.activeKey, editor.rows[row]) }
     }
     QtObject {
         id: fallbackSearch
@@ -216,7 +238,7 @@ FocusScope {
         spacing: 0
         Item {
             id: headerViewport
-            visible: !editor.compact
+            visible: editor.shownMode === "list" && !editor.compact
             Layout.fillWidth: true
             // Runs over the scroll bar's gutter too, so the header island
             // is not cut short of the pane's edge there.
@@ -235,14 +257,19 @@ FocusScope {
                 savedLayout: editor.app.playlist_column_layout
                 sortColumn: editor.sortColumn
                 sortAscending: editor.sortAscending
-                onSortRequested: column => {
-                    if (!editor.actions.append) return
-                    editor.sortAscending = column === editor.sortColumn ? !editor.sortAscending : true
-                    editor.sortColumn = column
-                    editor.app.workspace_sort(column, !editor.sortAscending)
-                }
+                onSortRequested: column => editor.sortBy(column)
                 onColumnLayoutChanged: layout => editor.app.save_playlist_column_layout(layout)
             }
+        }
+        PlaylistSortBar {
+            visible: editor.shownMode !== "list"
+            Layout.fillWidth: true
+            Layout.preferredHeight: implicitHeight
+            theme: editor.theme
+            orderLabel: qsTr("Playlist Order")
+            sortColumn: editor.sortColumn
+            sortAscending: editor.sortAscending
+            onSortRequested: column => editor.sortBy(column)
         }
         Label {
             visible: text.length > 0
@@ -255,6 +282,7 @@ FocusScope {
         ListView {
             id: list
             objectName: "workspacePlaylistView"
+            visible: editor.shownMode !== "grid"
             onHeightChanged: if (editor.revealPending) Qt.callLater(editor.revealPlaying)
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -265,7 +293,8 @@ FocusScope {
             boundsBehavior: Flickable.StopAtBounds
             readonly property real verticalScrollGutter: verticalBar.visible ? verticalBar.implicitWidth + 4 : 0
             readonly property real horizontalScrollGutter: horizontalBar.visible ? horizontalBar.implicitHeight + 4 : 0
-            contentWidth: editor.compact ? width : Math.max(width, header.totalWidth + verticalScrollGutter)
+            contentWidth: editor.compact || editor.shownMode === "rows" ? width
+                : Math.max(width, header.totalWidth + verticalScrollGutter)
             flickableDirection: Flickable.AutoFlickDirection
             maximumFlickVelocity: 12000
             flickDeceleration: 2200
@@ -283,7 +312,7 @@ FocusScope {
                     event.accepted = true
                 }
             }
-            delegate: editor.compact ? classicRow : tableRow
+            delegate: editor.compact ? classicRow : (editor.shownMode === "rows" ? cardRow : tableRow)
             onContentYChanged: { scrollSave.restart(); verticalBar.flash() }
             onContentXChanged: { scrollSave.restart(); horizontalBar.flash() }
             // Away from the window's right edge, so the pointer grabs the
@@ -313,6 +342,43 @@ FocusScope {
                     onClicked: editor.openContext(-1, Qt.NoModifier)
                 }
             }
+        }
+        PlaylistCoverGrid {
+            id: coverGrid
+            objectName: "workspaceCoverGrid"
+            visible: editor.shownMode === "grid"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            model: visible ? editor.rows.length : 0
+            app: rowData
+            theme: editor.theme
+            searchModel: editor.searchModel
+            searchQuery: editor.searchQuery
+            selectionTest: row => editor.selection.indexOf(editor.rows[row]) >= 0
+            onPressed: (row, modifiers, button) => {
+                if (button === Qt.RightButton) editor.openContext(editor.rows[row], modifiers)
+                else editor.choose(editor.rows[row], modifiers)
+            }
+            onActivated: row => editor.activate(editor.rows[row])
+            onOpenVisualizer: editor.openVisualizer()
+            onMoveRequested: (delta, modifiers) => editor.moveCursor(delta, modifiers)
+            Keys.onReturnPressed: if (list.currentIndex >= 0) editor.activate(editor.rows[list.currentIndex])
+            Keys.onEnterPressed: if (list.currentIndex >= 0) editor.activate(editor.rows[list.currentIndex])
+            Keys.onPressed: event => {
+                if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && event.modifiers & Qt.ShiftModifier)) {
+                    editor.openContext(-1, Qt.NoModifier)
+                    event.accepted = true
+                } else if (event.key === Qt.Key_A && event.modifiers & (Qt.ControlModifier | Qt.MetaModifier)) {
+                    editor.selectAll()
+                    event.accepted = true
+                }
+            }
+            onVisibleChanged: if (visible) Qt.callLater(() => {
+                if (list.currentIndex >= 0)
+                    coverGrid.positionViewAtIndex(list.currentIndex, GridView.Contain)
+                else
+                    editor.revealPlaying()
+            })
         }
     }
     Component {
@@ -347,8 +413,40 @@ FocusScope {
             onDragCanceled: editor.dropTarget = -1
         }
     }
+    Component {
+        id: cardRow
+        PlaylistCardRow {
+            required property int index
+            width: Math.max(0, list.width - list.verticalScrollGutter)
+            app: rowData
+            searchModel: editor.searchModel
+            searchQuery: editor.searchQuery
+            theme: editor.theme
+            rowIndex: index
+            selected: editor.selection.indexOf(editor.rows[index]) >= 0
+            onOpenVisualizer: editor.openVisualizer()
+            onPressed: (row, modifiers, button) => {
+                if (button === Qt.RightButton) editor.openContext(editor.rows[row], modifiers)
+                else editor.choose(editor.rows[row], modifiers)
+            }
+            onActivated: row => editor.activate(editor.rows[row])
+            onDragStarted: row => {
+                if (editor.actions.append && editor.selection.indexOf(editor.rows[row]) < 0)
+                    editor.choose(editor.rows[row], Qt.NoModifier)
+            }
+            onDragMoved: (viewX, viewY) => editor.dropTarget = editor.dropIndex(viewX, viewY)
+            onDragFinished: (viewX, viewY) => {
+                const target = editor.dropIndex(viewX, viewY)
+                editor.dropTarget = -1
+                if (target < 0) return
+                editor.app.workspace_move(target === editor.rows.length ? editor.shownState.entries.length : editor.rows[target])
+            }
+            onDragCanceled: editor.dropTarget = -1
+        }
+    }
     PlaylistDropIndicator {
         objectName: "workspaceDropIndicator"
+        rowHeight: editor.rowHeight
         view: list
         target: editor.dropTarget
         color: editor.theme.highlight
