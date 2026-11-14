@@ -13,6 +13,10 @@ FocusScope {
     // "grid" (cover tiles); the compact skin always lists.
     property string viewMode: "list"
     readonly property string shownMode: compact ? "list" : viewMode
+    // What each of the rows view's three lines shows; the window keeps it.
+    property var rowLines: [["title"], ["artist"], ["album", "format", "length"]]
+    property var defaultRowLines: rowLines
+    signal rowLinesRequested(var lines)
     readonly property real rowHeight: shownMode === "rows" ? 58 : 24
     readonly property Item focusView: shownMode === "grid" ? coverGrid : list
     property var searchModel: fallbackSearch
@@ -267,6 +271,10 @@ FocusScope {
             Layout.preferredHeight: implicitHeight
             theme: editor.theme
             orderLabel: qsTr("Playlist Order")
+            showLines: editor.shownMode === "rows"
+            rowLines: editor.rowLines
+            defaultRowLines: editor.defaultRowLines
+            onRowLinesRequested: lines => editor.rowLinesRequested(lines)
             sortColumn: editor.sortColumn
             sortAscending: editor.sortAscending
             onSortRequested: column => editor.sortBy(column)
@@ -423,6 +431,7 @@ FocusScope {
             searchQuery: editor.searchQuery
             theme: editor.theme
             rowIndex: index
+            lines: editor.rowLines
             selected: editor.selection.indexOf(editor.rows[index]) >= 0
             onOpenVisualizer: editor.openVisualizer()
             onPressed: (row, modifiers, button) => {

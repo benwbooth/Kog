@@ -51,11 +51,11 @@ Item {
         return String(app.track_value_at(rowIndex, column))
     }
     readonly property string trackPath: value("path")
-    readonly property string titleText: value("title")
-    readonly property string artistText: {
-        const artist = value("artist")
-        return artist.length > 0 ? artist : value("albumartist")
-    }
+    // The fields each of the three lines shows, in order, joined by a
+    // middle dot. "format" is the codec, or the file's extension without
+    // one; "artist" falls back to the album artist unless the line shows
+    // that too. A line with no fields is left out.
+    property var lines: [["title"], ["artist"], ["album", "format", "length"]]
     readonly property string formatText: {
         const codec = value("codec")
         if (codec.length > 0)
@@ -64,8 +64,27 @@ Item {
         const dot = name.lastIndexOf(".")
         return dot > 0 ? name.slice(dot + 1).toUpperCase() : ""
     }
-    readonly property string detailText: [value("album"), formatText, value("length")]
-        .filter(part => part.length > 0).join("  ·  ")
+    function fieldText(field, fields) {
+        if (field === "format")
+            return formatText
+        const text = value(field)
+        if (field === "artist" && text.length === 0 && fields.indexOf("albumartist") < 0)
+            return value("albumartist")
+        return text
+    }
+    function lineFields(line) {
+        const fields = lines && lines[line]
+        return Array.isArray(fields) ? fields : []
+    }
+    function lineText(line) {
+        const fields = lineFields(line)
+        return fields.map(field => fieldText(field, fields))
+            .filter(part => part.length > 0).join("  ·  ")
+    }
+    readonly property var lineTexts: {
+        revision
+        return [lineText(0), lineText(1), lineText(2)]
+    }
     readonly property bool starred: value("star").length > 0
 
     signal pressed(int rowIndex, int modifiers, int button)
@@ -246,8 +265,9 @@ Item {
 
         SearchHighlightLabel {
             id: titleLabel
+            visible: root.lineFields(0).length > 0
             width: copy.width
-            sourceText: root.titleText
+            sourceText: root.lineTexts[0]
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
@@ -258,8 +278,9 @@ Item {
         }
         SearchHighlightLabel {
             id: artistLabel
+            visible: root.lineFields(1).length > 0
             width: copy.width
-            sourceText: root.artistText
+            sourceText: root.lineTexts[1]
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
@@ -268,8 +289,9 @@ Item {
         }
         SearchHighlightLabel {
             id: detailLabel
+            visible: root.lineFields(2).length > 0
             width: copy.width
-            sourceText: root.detailText
+            sourceText: root.lineTexts[2]
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
@@ -283,6 +305,8 @@ Item {
         if (x < 0)
             return ""
         for (const line of [titleLabel, artistLabel, detailLabel]) {
+            if (!line.visible)
+                continue
             const point = line.mapFromItem(root, x, y)
             if (point.x >= 0 && point.x < line.width && point.y >= 0
                     && point.y < line.height)

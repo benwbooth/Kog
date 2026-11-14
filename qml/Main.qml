@@ -46,6 +46,20 @@ ApplicationWindow {
         mainWindowSettings.playlistViewMode = mode
     }
     readonly property real playlistRowHeight: playlistViewMode === "rows" ? 58 : 24
+    // What each of the rows view's three lines shows.
+    readonly property var defaultPlaylistRowLines: [["title"], ["artist"], ["album", "format", "length"]]
+    readonly property var playlistRowLines: {
+        try {
+            const lines = JSON.parse(mainWindowSettings.playlistRowLines)
+            if (Array.isArray(lines) && lines.length === 3 && lines.every(Array.isArray))
+                return lines
+        } catch (_) {}
+        return defaultPlaylistRowLines
+    }
+    function setPlaylistRowLines(lines) {
+        mainWindowSettings.playlistRowLines = JSON.stringify(lines) === JSON.stringify(defaultPlaylistRowLines)
+            ? "" : JSON.stringify(lines)
+    }
     // A track can outlive the pane: clearing the playlist detaches what is
     // playing, so transport that acts on the loaded track must not be gated
     // on the list being populated.
@@ -4299,6 +4313,9 @@ ApplicationWindow {
                             searchModel: fileTreeModel
                             searchQuery: root.playlistHighlightQuery
                             viewMode: root.playlistViewMode
+                            rowLines: root.playlistRowLines
+                            defaultRowLines: root.defaultPlaylistRowLines
+                            onRowLinesRequested: lines => root.setPlaylistRowLines(lines)
                             onOpenVisualizer: visualizerWindow.openWaveform()
                         }
                     }
@@ -4310,6 +4327,10 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.preferredHeight: implicitHeight
                     theme: root.themePalette
+                    showLines: root.playlistViewMode === "rows"
+                    rowLines: root.playlistRowLines
+                    defaultRowLines: root.defaultPlaylistRowLines
+                    onRowLinesRequested: lines => root.setPlaylistRowLines(lines)
                     sortColumn: appController.playlist_sort_column
                     sortAscending: appController.playlist_sort_ascending
                     onSortRequested: column => {
@@ -4437,6 +4458,7 @@ ApplicationWindow {
                             searchModel: fileTreeModel
                             searchQuery: root.playlistHighlightQuery
                             theme: root.themePalette
+                            lines: root.playlistRowLines
                             rowIndex: index
                             selected: root.isPlaylistRowSelected(index)
                             onOpenVisualizer: visualizerWindow.openWaveform()
