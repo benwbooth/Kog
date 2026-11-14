@@ -27,7 +27,7 @@ FocusScope {
     property var frozenState: ({})
     // Checks the new state itself: `live` may not have caught up with it yet.
     onWorkspaceStateChanged: if (tabKey.length === 0 || workspaceState.active === tabKey) frozenState = workspaceState
-    readonly property var shownState: live ? workspaceState : frozenState
+    readonly property var shownState: (live ? workspaceState : frozenState) || ({})
     readonly property string activeKey: tabKey.length > 0 ? tabKey : (workspaceState.active || "")
     // Moves only when this tab's rows, their metadata or stars changed, and
     // only while it is in front, so switching tabs never re-renders them.

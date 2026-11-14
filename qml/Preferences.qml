@@ -1271,10 +1271,10 @@ Window {
                                 Layout.fillWidth: true
                                 PreferenceLabel {
                                     Layout.fillWidth: true
-                                    text: devices.length === 0
+                                    text: deviceList.devices.length === 0
                                         ? qsTr("No devices have connected yet. Browsers that open the player show up here.")
-                                        : qsTr("%1 device%2 have connected. Blocking refuses a device's requests at the API until you unblock it.")
-                                            .arg(devices.length).arg(devices.length === 1 ? " has" : "s have")
+                                        : qsTr("%1 device%2 connected. Blocking refuses a device's requests at the API until you unblock it.")
+                                            .arg(deviceList.devices.length).arg(deviceList.devices.length === 1 ? " has" : "s have")
                                     wrapMode: Text.Wrap
                                     color: palette.placeholderText
                                 }
@@ -1285,7 +1285,7 @@ Window {
                             }
 
                             Repeater {
-                                model: devices
+                                model: deviceList.devices
 
                                 delegate: RowLayout {
                                     Layout.fillWidth: true
@@ -1306,7 +1306,7 @@ Window {
                                         PreferenceLabel {
                                             Layout.fillWidth: true
                                             text: (modelData.addr !== "-" ? modelData.addr + " · " : "")
-                                                  + ago(modelData.last_seen)
+                                                  + deviceList.ago(modelData.last_seen)
                                                   + " · " + modelData.requests + " requests"
                                                   + (modelData.blocked ? " · " + qsTr("blocked") : "")
                                             elide: Text.ElideRight
@@ -1320,7 +1320,7 @@ Window {
                                         onClicked: {
                                             root.app.set_device_blocked(
                                                 modelData.id, !modelData.blocked)
-                                            parent.parent.refresh()
+                                            deviceList.refresh()
                                         }
                                     }
                                 }
