@@ -988,6 +988,12 @@ fn font_family(selector: &str) -> String {
         .unwrap_or_else(|| "sans-serif".to_owned())
 }
 
+/// A quiet hue for a cover without art, picked from its title so covers
+/// tell apart at a glance.
+fn tint_hue(text: &str) -> u32 {
+    text.chars().fold(0_u32, |hash, character| hash.wrapping_mul(31).wrapping_add(character as u32)) % 360
+}
+
 /// Two bars that take the text color.
 const PAUSE_GLYPH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 5h3.5v14H7zm6.5 0H17v14h-3.5z"/></svg>"#;
 
@@ -8433,17 +8439,30 @@ fn App() -> impl IntoView {
                                                     thumbs::load_for_row(base(), token.get_untracked(), entry, tags, cover, true);
                                                 }
                                                 let flow_rows = tile_info.as_ref().map(|info| info.rows.clone()).unwrap_or_default();
+                                                // Without art: the album's (or song's) name and artist.
+                                                let flow_title = tile_info
+                                                    .as_ref()
+                                                    .map(|info| {
+                                                        if info.single() {
+                                                            first
+                                                                .as_ref()
+                                                                .map(|(_, entry)| {
+                                                                    metadata.with_untracked(|cache| meta_for(cache, entry))
+                                                                        .and_then(|meta| meta.title)
+                                                                        .filter(|title| !title.trim().is_empty())
+                                                                        .unwrap_or_else(|| entry.name.clone())
+                                                                })
+                                                                .unwrap_or_default()
+                                                        } else {
+                                                            info.album.clone()
+                                                        }
+                                                    })
+                                                    .unwrap_or_default();
+                                                let flow_artist = tile_info.as_ref().map(|info| info.artist.clone()).unwrap_or_default();
                                                 let active_rows = flow_rows.clone();
                                                 let label_rows = flow_rows.clone();
                                                 let glyph_rows = flow_rows.clone();
                                                 let button_rows = flow_rows.clone();
-                                                let mark = first
-                                                    .as_ref()
-                                                    .map(|(_, entry)| match file_icon(&entry.path, &entry.entry) {
-                                                        FileIcon::Svg(svg) => svg.to_owned(),
-                                                        FileIcon::Badge(_) | FileIcon::None => icons::FMT_AUDIO.to_owned(),
-                                                    })
-                                                    .unwrap_or_else(|| icons::FMT_AUDIO.to_owned());
                                                 let style = move || {
                                                     let offset = tile as f64 - flow_position.get();
                                                     let distance = offset.abs();
@@ -8491,7 +8510,10 @@ fn App() -> impl IntoView {
                                                             on:dblclick=move |ev: web_sys::MouseEvent| ev.stop_propagation()
                                                         ></span>
                                                         <div class="cover-flow-art" class:has-cover=move || cover.with(Option::is_some)>
-                                                            <span class="cover-flow-mark" inner_html=mark></span>
+                                                            <span class="text-cover" style=format!("--tint:{}", tint_hue(&flow_title))>
+                                                                <b>{flow_title.clone()}</b>
+                                                                <span>{flow_artist.clone()}</span>
+                                                            </span>
                                                             {move || cover.get().map(|src| view! {
                                                                 <img src=src alt="" draggable="false" on:error=move |_| cover.set(None)/>
                                                             })}
@@ -8788,7 +8810,10 @@ fn App() -> impl IntoView {
                                                 ></button>
                                                 <div class="album-page-hero">
                                                     <div class="album-page-cover" class:has-cover=move || cover.with(Option::is_some)>
-                                                        <span class="album-page-mark" inner_html=icons::FMT_AUDIO></span>
+                                                        <span class="text-cover" style=move || format!("--tint:{}", tint_hue(&title()))>
+                                                            <b>{title}</b>
+                                                            <span>{move || open_tile.with(|tile| tile.as_ref().map(|tile| tile.artist.clone()).unwrap_or_default())}</span>
+                                                        </span>
                                                         {move || cover.get().map(|src| view! {
                                                             <img src=src alt="" draggable="false" on:error=move |_| cover.set(None)/>
                                                         })}
@@ -8872,6 +8897,17 @@ fn App() -> impl IntoView {
                                         // The cover grid's tiles ask for the large image.
                                         let row_grid = shown_mode.get_untracked() == row_window::ViewMode::Grid
                                             && !row_window::RowWindow::compact();
+                                        // An album's page and the cover flow's songs start
+                                        // with the album's cover, so no row shows a stand-in
+                                        // while its own cover is fetched.
+                                        if album_open.get_untracked() || view_mode.get_untracked() == row_window::ViewMode::Flow {
+                                            let album = row_meta.with_untracked(|meta| meta.as_ref().and_then(|meta| meta.album.clone()));
+                                            if let Some(url) = thumbs::known_cover(&entry, album.as_deref(), false)
+                                                .or_else(|| thumbs::known_cover(&entry, album.as_deref(), true))
+                                            {
+                                                row_cover.set(Some(url));
+                                            }
+                                        }
                                         thumbs::load_for_row(base(), token.get_untracked(), &entry, row_meta, row_cover, row_grid);
                                         let card_entry = entry.clone();
                                         view! {
@@ -9166,6 +9202,7 @@ fn App() -> impl IntoView {
                                                             _ => file.replace('/', "/\u{200B}"),
                                                         }
                                                     };
+                                                    let cover_line = card_line.clone();
                                                     let card_line_view = move |line: usize, class: &'static str| {
                                                         let text = card_line.clone();
                                                         let empty = card_line.clone();
@@ -9188,6 +9225,19 @@ fn App() -> impl IntoView {
                                                                 class:has-cover=move || row_cover.with(Option::is_some)
                                                             >
                                                                 <span class="row-card-mark" inner_html=card_icon></span>
+                                                                // A grid tile without art shows its album's (or
+                                                                // song's) name and artist instead.
+                                                                {
+                                                                    let title = cover_line.clone();
+                                                                    let artist = cover_line.clone();
+                                                                    let tint = cover_line.clone();
+                                                                    view! {
+                                                                        <span class="text-cover" style=move || format!("--tint:{}", tint_hue(&tint(0)))>
+                                                                            <b>{move || title(0)}</b>
+                                                                            <span>{move || artist(1)}</span>
+                                                                        </span>
+                                                                    }
+                                                                }
                                                                 {move || row_cover.get().map(|src| view! {
                                                                     <img
                                                                         class="row-card-cover"

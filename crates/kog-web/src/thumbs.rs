@@ -269,6 +269,15 @@ async fn fetch(want: Want) {
     pump();
 }
 
+/// The cover already known for `entry`'s song (or its album), without
+/// asking: its URL, or None while unknown or for a song known to have none.
+pub(super) fn known_cover(entry: &Entry, album: Option<&str>, large: bool) -> Option<String> {
+    let song = if large { format!("large\0{}", entry.path) } else { entry.path.clone() };
+    LOADER
+        .with(|loader| loader.borrow().known(&song, album))
+        .filter(|url| !url.is_empty())
+}
+
 /// Load the cover for a row of `entry` into `shown`, once the row's
 /// tags arrive (they name its album, which the server finds without reading
 /// the song) or after a short wait without them; with `large`, the cover
@@ -283,6 +292,13 @@ pub(super) fn load_for_row(
 ) {
     if !matches!(entry.kind.as_str(), "local" | "archive") {
         return;
+    }
+    // A cover already known shows on the row's first frame.
+    if shown.with_untracked(Option::is_none) {
+        let album = tags.with_untracked(|tags| tags.as_ref().map(|tags| tags.album.clone().unwrap_or_default()));
+        if let Some(url) = known_cover(entry, album.as_deref(), large) {
+            shown.set(Some(url));
+        }
     }
     // 0: not asked yet; u64::MAX: answered; else the running request.
     let ticket = Arc::new(AtomicU64::new(0));

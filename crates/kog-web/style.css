@@ -6374,3 +6374,57 @@ button.primary:hover:not(:disabled) {
   width: 20px;
   height: 20px;
 }
+
+/* A cover without art: its album's (or song's) name in bold with its
+ * artist under it, on a quiet tint picked from the name. Shown on grid
+ * tiles, the album page and the cover flow; rows keep their format mark. */
+.text-cover {
+  display: none;
+}
+
+.rows.view-grid .row-card-art:not(.has-cover) .text-cover,
+.album-page-cover:not(.has-cover) .text-cover,
+.cover-flow-art:not(.has-cover) .text-cover {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3cqi;
+  padding: 9cqi;
+  overflow: hidden;
+  background: color-mix(in srgb, hsl(var(--tint, 220) 45% 50%) 20%, var(--base));
+  text-align: left;
+}
+
+.rows.view-grid .row-card-art,
+.album-page-cover,
+.cover-flow-art {
+  container-type: inline-size;
+}
+
+.text-cover b {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11cqi;
+  font-weight: 800;
+  line-height: 1.12;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.text-cover span {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 8cqi;
+  line-height: 1.2;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.rows.view-grid .row-card-art:not(.has-cover) .row-card-mark {
+  display: none;
+}
