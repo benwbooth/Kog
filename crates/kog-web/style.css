@@ -5789,6 +5789,23 @@ button.primary:hover:not(:disabled) {
     opacity: 0.8;
   }
 
+  /* The full path, small and quiet. */
+  .row-card-path {
+    font-size: 10px;
+    color: var(--muted);
+    opacity: 0.85;
+  }
+
+  .track.selected .row-card-path {
+    color: var(--highlight-text);
+    opacity: 0.75;
+  }
+
+  /* Paths and filenames run to the edge and are cut there, never "…". */
+  .row-card-line.row-card-clip {
+    text-overflow: clip;
+  }
+
   /* The playing song's state and meter, in a dark pill on its cover. */
   .row-card-playing {
     position: absolute;
@@ -5967,7 +5984,7 @@ button.primary:hover:not(:disabled) {
 
   .row-lines-columns {
     display: grid;
-    grid-template-columns: repeat(3, minmax(128px, 1fr));
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
     gap: 10px;
     padding: 4px 4px 2px;
   }

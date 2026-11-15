@@ -998,13 +998,23 @@ fn default_row_lines() -> Vec<Vec<String>> {
         vec!["title".to_owned()],
         vec!["artist".to_owned()],
         vec!["album".to_owned(), "format".to_owned(), "length".to_owned()],
+        vec!["path".to_owned()],
     ]
 }
 
+/// The rows view's lines as saved; lines saved before the fourth existed
+/// get the path there.
 fn load_row_lines() -> Vec<Vec<String>> {
     load("kog.row-lines")
         .and_then(|text| serde_json::from_str::<Vec<Vec<String>>>(&text).ok())
-        .filter(|lines| lines.len() == 3)
+        .and_then(|mut lines| match lines.len() {
+            3 => {
+                lines.push(vec!["path".to_owned()]);
+                Some(lines)
+            }
+            4 => Some(lines),
+            _ => None,
+        })
         .unwrap_or_else(default_row_lines)
 }
 
@@ -3046,7 +3056,7 @@ fn App() -> impl IntoView {
     };
     // The rows and grid views' "Sort by" menu, at its button.
     let (sort_menu_at, set_sort_menu_at) = signal(None::<(f64, f64)>);
-    // What each of the rows view's three lines shows, as field keys in
+    // What each of the rows view's four lines shows, as field keys in
     // order, and the menu that picks them, at its button.
     let row_lines = RwSignal::new(load_row_lines());
     let set_row_lines = move |lines: Vec<Vec<String>>| {
@@ -3054,7 +3064,8 @@ fn App() -> impl IntoView {
         row_lines.set(lines);
     };
     let (lines_menu_at, set_lines_menu_at) = signal(None::<(f64, f64)>);
-    let row_window = row_window::RowWindow::new(view_mode);
+    let card_row = Memo::new(move |_| row_lines.with(|lines| row_window::card_row_height(lines)));
+    let row_window = row_window::RowWindow::new(view_mode, card_row.into());
     let row_range = Memo::new(move |_| row_window.range(all_rows.with(Vec::len)));
     let mounted_rows = move || {
         let range = row_range.get();
@@ -8334,12 +8345,13 @@ fn App() -> impl IntoView {
                                                         FileIcon::None => icons::FMT_AUDIO.to_owned(),
                                                     };
                                                     // The rows view shows the lines chosen in its Lines
-                                                    // menu; the grid's tiles keep the default two.
+                                                    // menu; the grid's tiles keep the default first three.
                                                     let card_fields = move |line: usize| {
                                                         if view_mode.get() == row_window::ViewMode::Rows {
                                                             row_lines.with(|lines| lines.get(line).cloned().unwrap_or_default())
                                                         } else {
-                                                            default_row_lines().swap_remove(line)
+                                                            // Not the path: tiles keep to their cover's width.
+                                                            default_row_lines().into_iter().take(3).nth(line).unwrap_or_default()
                                                         }
                                                     };
                                                     let card_line_entry = card_entry.clone();
@@ -8354,6 +8366,9 @@ fn App() -> impl IntoView {
                                                             <span
                                                                 class=format!("row-card-line {class}")
                                                                 class:row-card-empty=move || card_fields(line).is_empty()
+                                                                class:row-card-clip=move || {
+                                                                    card_fields(line).iter().any(|field| field == "path" || field == "filename")
+                                                                }
                                                                 title=move || tip(line)
                                                             >
                                                                 {move || highlight_label(text(line), row_filter.get())}
@@ -8405,6 +8420,7 @@ fn App() -> impl IntoView {
                                                                 {card_line_view(0, "row-card-title")}
                                                                 {card_line_view(1, "row-card-artist")}
                                                                 {card_line_view(2, "row-card-detail")}
+                                                                {card_line_view(3, "row-card-path")}
                                                             </span>
                                                             <span
                                                                 class="row-card-star"
@@ -10134,7 +10150,7 @@ fn App() -> impl IntoView {
                         }
                     >
                         <div class="row-lines-columns">
-                            <For each=|| 0..3usize key=|line| *line let:line>
+                            <For each=|| 0..4usize key=|line| *line let:line>
                                 <div class="row-lines-column" role="group" aria-label=format!("Line {}", line + 1)>
                                     <span class="row-lines-heading">{format!("Line {}", line + 1)}</span>
                                     // Checking a field adds it to the end of its line;
@@ -10154,7 +10170,7 @@ fn App() -> impl IntoView {
                                                     class:checked=move || order().is_some()
                                                     on:click=move |_| {
                                                         let mut lines = row_lines.get_untracked();
-                                                        lines.resize(3, Vec::new());
+                                                        lines.resize(4, Vec::new());
                                                         let fields = &mut lines[line];
                                                         match fields.iter().position(|field| field == key) {
                                                             Some(at) => { fields.remove(at); }

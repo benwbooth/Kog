@@ -9,8 +9,21 @@ const OVERSCAN: usize = 12;
 const TILE_WIDTH: f64 = 180.0;
 /// A tile's height beyond its square cover: the title and artist lines.
 const TILE_TEXT: f64 = 62.0;
-/// A rows-view row: the title, artist and detail lines beside the cover.
+/// The shortest rows-view row; lines beyond three make it taller (see
+/// `card_row_height`).
 const CARD_ROW: f64 = 64.0;
+
+/// A rows-view row's height for the lines it shows: their text (13, 12, 11
+/// and 10px at a 1.3 line height) with room around them.
+pub fn card_row_height(lines: &[Vec<String>]) -> f64 {
+    const HEIGHTS: [f64; 4] = [16.9, 15.6, 14.3, 13.0];
+    let (total, shown) = lines
+        .iter()
+        .zip(HEIGHTS)
+        .filter(|(fields, _)| !fields.is_empty())
+        .fold((0.0, 0.0), |(total, shown), (_, height)| (total + height, shown + 1.0));
+    (14.0 + total + (shown - 1.0_f64).max(0.0)).max(CARD_ROW).round()
+}
 
 /// How the desktop shows songs: the column table, two-line rows with album
 /// art, or a grid of cover tiles. Phones keep their own cards.
@@ -53,10 +66,12 @@ pub struct RowWindow {
     pub node: NodeRef<leptos::html::Div>,
     metrics: RwSignal<Metrics>,
     mode: RwSignal<ViewMode>,
+    /// The rows view's row height, from the lines it shows.
+    card_row: Signal<f64>,
 }
 
 impl RowWindow {
-    pub fn new(mode: RwSignal<ViewMode>) -> Self {
+    pub fn new(mode: RwSignal<ViewMode>, card_row: Signal<f64>) -> Self {
         let window = Self {
             node: NodeRef::new(),
             metrics: RwSignal::new(Metrics {
@@ -66,10 +81,12 @@ impl RowWindow {
                 columns: 1,
             }),
             mode,
+            card_row,
         };
         Effect::new(move |_| {
             window.node.track();
             window.mode.track();
+            window.card_row.track();
             window.refresh();
         });
         let resize = window_event_listener(leptos::ev::resize, move |_| window.refresh());
@@ -104,7 +121,7 @@ impl RowWindow {
             // Phones: room for a title on two lines over its detail line.
             ViewMode::List if compact => (68.0, 1),
             ViewMode::List => (26.0, 1),
-            ViewMode::Rows => (CARD_ROW, 1),
+            ViewMode::Rows => (self.card_row.get_untracked(), 1),
             ViewMode::Grid => {
                 let width = f64::from(node.client_width()).max(TILE_WIDTH);
                 let columns = ((width / TILE_WIDTH).floor() as usize).max(1);
