@@ -158,6 +158,59 @@ FocusScope {
         return app.current_index >= 0 && tile !== undefined ? tile : -1
     }
 
+    // Following the playing song: when it changes, the grid scrolls its
+    // album into view (leaving an open album page alone) and the cover
+    // flow springs to its album and shows it in the songs below. Someone
+    // browsing is not pulled away mid-gesture: the follow waits until they
+    // have been idle a few seconds.
+    property real lastBrowse: 0
+    property bool followPending: true
+    function noteBrowse() {
+        lastBrowse = Date.now()
+    }
+    Connections {
+        target: browser.app
+        function onCurrent_indexChanged() {
+            browser.followPending = true
+            Qt.callLater(browser.followPlaying)
+        }
+    }
+    onPlayingTileChanged: if (followPending) Qt.callLater(followPlaying)
+    onVisibleChanged: if (visible) {
+        followPending = true
+        lastBrowse = 0
+        Qt.callLater(followPlaying)
+    }
+    onFlowChanged: if (flow) {
+        followPending = true
+        lastBrowse = 0
+        Qt.callLater(followPlaying)
+    }
+    Timer {
+        id: followIdle
+        interval: 500
+        onTriggered: browser.followPlaying()
+    }
+    function followPlaying() {
+        if (!followPending || !visible)
+            return
+        const tile = playingTile
+        if (tile < 0)
+            return
+        const idle = Date.now() - lastBrowse
+        if (idle < 3000 || flowPane.dragging || grid.moving) {
+            followIdle.interval = Math.max(200, 3000 - idle)
+            followIdle.restart()
+            return
+        }
+        followPending = false
+        if (flow) {
+            flowPane.showTile(tile)
+        } else if (openTile < 0) {
+            grid.positionViewAtIndex(tile, GridView.Contain)
+        }
+    }
+
     // Shows a row's tile, as the lists show a row.
     function positionViewAtIndex(row, mode) {
         const tile = rowTile[row]
@@ -294,6 +347,7 @@ FocusScope {
 
         onDraggingChanged: if (dragging) gridWheel.stop()
         onContentYChanged: gridScrollBar.flash()
+        onMovingChanged: if (moving) browser.noteBrowse()
         ScrollBar.vertical: FadingScrollBar {
             id: gridScrollBar
             edgeInset: 10
@@ -907,6 +961,19 @@ FocusScope {
         function moveTo(tile) {
             target = Math.max(0, Math.min(count - 1, tile))
         }
+        // Centres the album and lists its songs, revealing the playing one.
+        function showTile(tile) {
+            const group = browser.groups[tile]
+            if (!group)
+                return
+            moveTo(tile)
+            chosenKey = group.single ? "row:" + group.rows[0] : group.key
+            const at = group.numbers.indexOf(browser.app.current_index + 1)
+            Qt.callLater(() => {
+                if (at >= 0)
+                    flowSongs.positionViewAtIndex(at, ListView.Contain)
+            })
+        }
         onCountChanged: if (target >= count) moveTo(count - 1)
 
         // The album listed below, by its key so it stays put as tiles move;
@@ -933,9 +1000,10 @@ FocusScope {
             flowSongs.positionViewAtBeginning()
         }
 
-        Keys.onLeftPressed: event => { moveTo(target - 1); event.accepted = true }
-        Keys.onRightPressed: event => { moveTo(target + 1); event.accepted = true }
+        Keys.onLeftPressed: event => { browser.noteBrowse(); moveTo(target - 1); event.accepted = true }
+        Keys.onRightPressed: event => { browser.noteBrowse(); moveTo(target + 1); event.accepted = true }
         Keys.onPressed: event => {
+            browser.noteBrowse()
             if (event.key === Qt.Key_Home) {
                 moveTo(0)
                 event.accepted = true
@@ -1178,6 +1246,7 @@ FocusScope {
                 property bool moved: false
 
                 onWheel: wheel => {
+                    browser.noteBrowse()
                     const pixels = wheel.pixelDelta.x !== 0 || wheel.pixelDelta.y !== 0
                     const delta = Math.abs(wheel.angleDelta.x) > Math.abs(wheel.angleDelta.y)
                         ? -wheel.angleDelta.x : -wheel.angleDelta.y
@@ -1192,6 +1261,7 @@ FocusScope {
                     wheel.accepted = true
                 }
                 onPressed: mouse => {
+                    browser.noteBrowse()
                     flowPane.forceActiveFocus()
                     pressX = mouse.x
                     lastX = mouse.x
