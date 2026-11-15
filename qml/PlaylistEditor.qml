@@ -21,7 +21,7 @@ FocusScope {
     signal rowLinesRequested(var lines)
     // Rows view rows are as tall as their wrapped text; this is only an
     // estimate where no row is laid out to measure.
-    readonly property real rowHeight: shownMode === "rows" ? 74 : 24
+    readonly property real rowHeight: shownMode === "rows" ? 76 : 24
     readonly property Item focusView: tileMode ? coverGrid : list
     property var searchModel: fallbackSearch
     property string searchQuery: ""

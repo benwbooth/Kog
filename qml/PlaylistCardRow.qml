@@ -109,8 +109,9 @@ Item {
     signal dragFinished(real viewX, real viewY)
     signal dragCanceled()
 
-    // As tall as the wrapped lines, and no shorter than the cover.
-    implicitHeight: Math.max(58, Math.ceil(copy.implicitHeight) + 14)
+    // As tall as the wrapped lines, and no shorter than the cover with the
+    // playing strip under it.
+    implicitHeight: Math.max(76, Math.ceil(copy.implicitHeight) + 14)
     height: implicitHeight
 
     ListView.onPooled: {
@@ -185,7 +186,9 @@ Item {
     Item {
         id: art
         x: 14
+        // Raised to leave the playing strip room below it.
         anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenterOffset: -10
         width: 42
         height: 42
 
@@ -224,6 +227,43 @@ Item {
             smooth: true
             mipmap: true
             fillMode: Image.PreserveAspectFit
+        }
+    }
+
+    // Under the cover, the playing song's icon and meter side by side. Its
+    // room is kept on every row, so nothing moves when a song starts or
+    // stops; clicking the meter opens the visualizer.
+    Item {
+        id: playingMark
+        anchors.horizontalCenter: art.horizontalCenter
+        anchors.top: art.bottom
+        anchors.topMargin: 3
+        width: 36
+        height: 16
+        visible: root.isActiveTrack
+
+        ControlsImpl.IconImage {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: 10
+            height: 10
+            sourceSize.width: 10
+            sourceSize.height: 10
+            name: root.isPlaying ? "media-playback-start" : "media-playback-pause"
+            color: root.selected ? root.theme.highlightedText : root.theme.accent
+        }
+        Loader {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            width: 22
+            height: 16
+            active: root.isPlaying
+            sourceComponent: WaveformMeter {
+                app: root.app
+                highlighted: root.selected
+                highlightColor: root.theme.highlightedText
+                dark: root.darkRows
+            }
         }
     }
 
@@ -272,45 +312,8 @@ Item {
             wholeQuery: true
             font.pixelSize: 13
             font.bold: true
-            // Room before the title for the playing song's icon and meter,
-            // kept on every row so no text moves when a song starts or stops.
-            leftPadding: 40
             // The playing song's title takes the accent, as in Earshot.
             color: root.isActiveTrack && !root.selected ? root.theme.accent : root.textColor
-
-            Item {
-                id: playingMark
-                x: 0
-                // Centred on the title's first line.
-                y: Math.round((titleLabel.fontInfo.pixelSize * 1.3 - height) / 2)
-                width: 36
-                height: 18
-                visible: root.isActiveTrack
-
-                ControlsImpl.IconImage {
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 12
-                    height: 12
-                    sourceSize.width: 12
-                    sourceSize.height: 12
-                    name: root.isPlaying ? "media-playback-start" : "media-playback-pause"
-                    color: root.selected ? root.theme.highlightedText : root.theme.accent
-                }
-                Loader {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 20
-                    height: 18
-                    active: root.isPlaying
-                    sourceComponent: WaveformMeter {
-                        app: root.app
-                        highlighted: root.selected
-                        highlightColor: root.theme.highlightedText
-                        dark: root.darkRows
-                    }
-                }
-            }
         }
         SearchHighlightLabel {
             id: artistLabel

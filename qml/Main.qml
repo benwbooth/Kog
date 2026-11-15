@@ -49,7 +49,7 @@ ApplicationWindow {
     readonly property bool playlistTileMode: playlistViewMode === "grid" || playlistViewMode === "flow"
     // Rows view rows are as tall as their wrapped text; this is only an
     // estimate where no row is laid out to measure.
-    readonly property real playlistRowHeight: playlistViewMode === "rows" ? 74 : 24
+    readonly property real playlistRowHeight: playlistViewMode === "rows" ? 76 : 24
     // The fields the rows view shows, as a flat list; each row lays them out
     // by role. Lines saved per line by an earlier picker become the fields
     // they named.
