@@ -976,91 +976,183 @@ fn styled_font(selector: &str, fallback: &str) -> String {
     format!("{} {} {}", weight.trim(), size.trim(), family.trim())
 }
 
+/// The computed font family of the first element matching `selector`.
+fn font_family(selector: &str) -> String {
+    web_sys::window()
+        .and_then(|window| {
+            let element = window.document()?.query_selector(selector).ok()??;
+            window.get_computed_style(&element).ok()?
+        })
+        .and_then(|style| style.get_property_value("font-family").ok())
+        .filter(|family| !family.trim().is_empty())
+        .unwrap_or_else(|| "sans-serif".to_owned())
+}
+
 /// Two bars that take the text color.
 const PAUSE_GLYPH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 5h3.5v14H7zm6.5 0H17v14h-3.5z"/></svg>"#;
 
 /// A filled play triangle that takes the text color.
 const PLAY_GLYPH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>"#;
 
-/// The fields the rows view's lines can show, with their menu labels: the
-/// sort menu's columns plus the format.
-const ROW_LINE_FIELDS: [(&str, &str); 12] = [
+/// The fields the rows view can show, with their menu labels, in the Show
+/// menu's order. The row places each by its role.
+const ROW_FIELDS: [(&str, &str); 12] = [
     ("title", "Title"),
     ("artist", "Artist"),
-    ("album", "Album"),
     ("albumartist", "Album Artist"),
-    ("length", "Length"),
+    ("album", "Album"),
     ("year", "Year"),
     ("track", "Track"),
     ("genre", "Genre"),
+    ("format", "Format"),
+    ("length", "Length"),
     ("playcount", "Play Count"),
     ("filename", "Filename"),
     ("path", "Path"),
-    ("format", "Format"),
 ];
 
-/// The rows view's lines unless changed: title, artist, then album, format
-/// and length.
-fn default_row_lines() -> Vec<Vec<String>> {
-    vec![
-        vec!["title".to_owned()],
-        vec!["artist".to_owned()],
-        vec!["album".to_owned(), "format".to_owned(), "length".to_owned()],
-        vec!["path".to_owned()],
-    ]
+/// The rows view's fields unless changed.
+fn default_row_fields() -> Vec<String> {
+    ["title", "artist", "album", "format", "length", "path"].map(str::to_owned).to_vec()
 }
 
-/// The rows view's lines as saved; lines saved before the fourth existed
-/// get the path there.
-fn load_row_lines() -> Vec<Vec<String>> {
-    load("kog.row-lines")
-        .and_then(|text| serde_json::from_str::<Vec<Vec<String>>>(&text).ok())
-        .and_then(|mut lines| match lines.len() {
-            3 => {
-                lines.push(vec!["path".to_owned()]);
-                Some(lines)
-            }
-            4 => Some(lines),
-            _ => None,
-        })
-        .unwrap_or_else(default_row_lines)
-}
-
-
-/// One line of a song in the rows view: its fields' text joined by a middle
-/// dot, skipping empty ones. Format is the codec, or the file's extension
-/// without one; artist falls back to the album artist unless the line shows
-/// that too.
-fn row_line_text(fields: &[String], index: usize, entry: &Entry, meta: Option<&MetaRow>) -> String {
-    fields
-        .iter()
-        .map(|field| match field.as_str() {
-            "format" => meta
-                .and_then(|meta| meta.codec.clone())
-                .filter(|codec| !codec.is_empty())
-                .unwrap_or_else(|| suffix_of(&entry.name).to_uppercase()),
-            "title" => meta
-                .and_then(|meta| meta.title.clone())
-                .filter(|title| !title.trim().is_empty())
-                .unwrap_or_else(|| entry.name.clone()),
-            "artist" => meta
-                .and_then(|meta| meta.artist.clone())
-                .filter(|artist| !artist.is_empty())
-                .or_else(|| {
-                    if fields.iter().any(|field| field == "albumartist") {
-                        None
-                    } else {
-                        meta.and_then(|meta| meta.album_artist.clone())
+/// The rows view's fields as saved; lines saved per line by the earlier
+/// picker become the fields they named. The title always shows.
+fn load_row_fields() -> Vec<String> {
+    let mut fields = load("kog.row-fields")
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+        .or_else(|| {
+            load("kog.row-lines")
+                .and_then(|text| serde_json::from_str::<Vec<Vec<String>>>(&text).ok())
+                .map(|lines| {
+                    let mut fields = Vec::new();
+                    for field in lines.into_iter().flatten() {
+                        if !fields.contains(&field) {
+                            fields.push(field);
+                        }
                     }
+                    fields
                 })
-                .unwrap_or_default(),
-            other => ColumnId::from_key(other)
-                .map(|id| column_text(id, index, entry, meta, None, false, ""))
-                .unwrap_or_default(),
         })
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("  ·  ")
+        .unwrap_or_else(default_row_fields);
+    if !fields.iter().any(|field| field == "title") {
+        fields.insert(0, "title".to_owned());
+    }
+    fields
+}
+
+/// A song's four lines in the rows view, each field placed by its role: the
+/// title; the artist (falling back to the album artist, and the album
+/// artist beside it when shown and different); album, year, track number,
+/// genre, format, length and play count; then the path, or the filename.
+/// Lines with nothing to show are empty.
+fn card_lines(fields: &[String], index: usize, entry: &Entry, meta: Option<&MetaRow>) -> [String; 4] {
+    let shows = |field: &str| fields.iter().any(|shown| shown == field);
+    let text = |field: &str| {
+        ColumnId::from_key(field)
+            .map(|id| column_text(id, index, entry, meta, None, false, ""))
+            .unwrap_or_default()
+    };
+    let title = meta
+        .and_then(|meta| meta.title.clone())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| entry.name.clone());
+    let artist = meta.and_then(|meta| meta.artist.clone()).unwrap_or_default();
+    let album_artist = meta.and_then(|meta| meta.album_artist.clone()).unwrap_or_default();
+    let mut people = Vec::new();
+    if shows("artist") {
+        people.push(if artist.is_empty() { album_artist.clone() } else { artist });
+    }
+    if shows("albumartist") && !album_artist.is_empty() && !people.contains(&album_artist) {
+        people.push(album_artist);
+    }
+    let format = || {
+        meta.and_then(|meta| meta.codec.clone())
+            .filter(|codec| !codec.is_empty())
+            .unwrap_or_else(|| suffix_of(&entry.name).to_uppercase())
+    };
+    let track = meta.and_then(|meta| meta.track_number).map(|number| format!("#{number}"));
+    let details = [
+        shows("album").then(|| text("album")),
+        shows("year").then(|| text("year")),
+        if shows("track") { track } else { None },
+        shows("genre").then(|| text("genre")),
+        shows("format").then(format),
+        shows("length").then(|| text("length")),
+        shows("playcount").then(|| text("playcount")),
+    ];
+    // The path holds the filename: it shows alone when both are on.
+    let file = if shows("path") {
+        text("path")
+    } else if shows("filename") {
+        text("filename")
+    } else {
+        String::new()
+    };
+    let join = |parts: Vec<String>| {
+        parts.into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("  ·  ")
+    };
+    [title, join(people), join(details.into_iter().flatten().collect()), file]
+}
+
+/// How many lines `text` wraps onto in `width` pixels, measured in `font`:
+/// breaking at spaces, after a path's slashes, and anywhere in a word too
+/// long for a line. Widths are cached per font and piece.
+fn wrapped_lines(text: &str, font: &str, width: f64) -> usize {
+    thread_local! {
+        static WIDTHS: RefCell<HashMap<(String, String), f64>> = RefCell::new(HashMap::new());
+    }
+    if text.is_empty() {
+        return 0;
+    }
+    let Some(context) = measure_context() else { return 1 };
+    let width = width.max(40.0);
+    let measure = |piece: &str| -> f64 {
+        WIDTHS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() > 200_000 {
+                cache.clear();
+            }
+            *cache.entry((font.to_owned(), piece.to_owned())).or_insert_with(|| {
+                context.set_font(font);
+                measured(&context, piece)
+            })
+        })
+    };
+    if measure(text) <= width {
+        return 1;
+    }
+    // Pieces that may start a line: words with their trailing space, and
+    // path segments with their trailing slash.
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    for (at, character) in text.char_indices() {
+        if character == ' ' || character == '/' {
+            pieces.push(&text[start..at + 1]);
+            start = at + 1;
+        }
+    }
+    if start < text.len() {
+        pieces.push(&text[start..]);
+    }
+    let mut lines = 1;
+    let mut used = 0.0;
+    for piece in pieces {
+        let piece_width = measure(piece);
+        if used + piece_width <= width {
+            used += piece_width;
+        } else if piece_width <= width {
+            lines += 1;
+            used = piece_width;
+        } else {
+            // Broken anywhere: it fills whole lines and starts a fresh one.
+            let filled = if used > 0.0 { 1 } else { 0 };
+            let spans = (piece_width / width).ceil() as usize;
+            lines += filled + spans - 1;
+            used = piece_width - (spans - 1) as f64 * width;
+        }
+    }
+    lines
 }
 
 /// The text a column shows for one queue row, shared by the cell and auto-fit.
@@ -3072,15 +3164,14 @@ fn App() -> impl IntoView {
     };
     // The rows and grid views' "Sort by" menu, at its button.
     let (sort_menu_at, set_sort_menu_at) = signal(None::<(f64, f64)>);
-    // What each of the rows view's four lines shows, as field keys in
-    // order, and the menu that picks them, at its button.
-    let row_lines = RwSignal::new(load_row_lines());
-    let set_row_lines = move |lines: Vec<Vec<String>>| {
-        store("kog.row-lines", &serde_json::to_string(&lines).unwrap_or_default());
-        row_lines.set(lines);
+    // The fields the rows view shows, as a flat list the rows lay out by
+    // role, and the Show menu that picks them, at its button.
+    let row_fields = RwSignal::new(load_row_fields());
+    let set_row_fields = move |fields: Vec<String>| {
+        store("kog.row-fields", &serde_json::to_string(&fields).unwrap_or_default());
+        row_fields.set(fields);
     };
     let (lines_menu_at, set_lines_menu_at) = signal(None::<(f64, f64)>);
-    let card_row = Memo::new(move |_| row_lines.with(|lines| row_window::card_row_height(lines)));
     // The cover grid shows one tile per album: songs sharing an album tag and
     // album artist (or artist). Regrouped only when the rows or their tags
     // change, and only for the grid.
@@ -3190,7 +3281,54 @@ fn App() -> impl IntoView {
         let at = tile_of_index.with(|tiles| tiles.get(&index).copied())?;
         album_tiles.with(|tiles| tiles.get(at).cloned())
     };
-    let row_window = row_window::RowWindow::new(shown_mode.into(), card_row.into());
+    let row_window = row_window::RowWindow::new(shown_mode.into());
+    // The rows view's rows are as tall as their wrapped lines: each row's
+    // height is worked out from its text, measured at the pane's width, so
+    // the window of mounted rows and the spacers around it match them.
+    let row_offsets = Memo::new(move |_| {
+        if shown_mode.get() != row_window::ViewMode::Rows || row_window::RowWindow::compact() {
+            return None;
+        }
+        // The text column: the pane less the cover, star, gaps and padding.
+        let width = row_window.width() - 132.0;
+        if width <= 0.0 {
+            return None;
+        }
+        let family = font_family("#playlist-rows");
+        let fonts = [
+            format!("700 13px {family}"),
+            format!("400 12px {family}"),
+            format!("400 11px {family}"),
+            format!("400 10px {family}"),
+        ];
+        const LINE: [f64; 4] = [16.9, 15.6, 14.3, 13.0];
+        let fields = row_fields.get();
+        shown_rows.with(|rows| {
+            metadata.with(|cache| {
+                let mut offsets = Vec::with_capacity(rows.len() + 1);
+                let mut top = 0.0;
+                offsets.push(top);
+                for (index, entry) in rows {
+                    let meta = cache.get(&meta_key(entry)).and_then(Option::as_ref);
+                    let lines = card_lines(&fields, *index, entry, meta);
+                    let mut text = 0.0;
+                    let mut shown = 0;
+                    for (line, words) in lines.iter().enumerate() {
+                        let count = wrapped_lines(words, &fonts[line], width);
+                        if count > 0 {
+                            text += count as f64 * LINE[line];
+                            shown += 1;
+                        }
+                    }
+                    let gaps = shown.max(1) - 1;
+                    top += (text + gaps as f64 + 14.0).max(64.0).ceil();
+                    offsets.push(top);
+                }
+                Some(std::sync::Arc::new(offsets))
+            })
+        })
+    });
+    Effect::new(move |_| row_window.set_offsets(row_offsets.get()));
     let row_range = Memo::new(move |_| row_window.range(shown_rows.with(Vec::len)));
     let mounted_rows = move || {
         let range = row_range.get();
@@ -8127,7 +8265,7 @@ fn App() -> impl IntoView {
                                         class="flat sort-bar-button sort-bar-lines"
                                         type="button"
                                         aria-haspopup="menu"
-                                        title="Choose what each line shows"
+                                        title="Choose what the rows show"
                                         on:click=move |ev: web_sys::MouseEvent| {
                                             let place = ev
                                                 .current_target()
@@ -8140,7 +8278,7 @@ fn App() -> impl IntoView {
                                             set_lines_menu_at.set(Some(place));
                                         }
                                     >
-                                        "Lines"
+                                        "Show"
                                         <span class="sort-bar-caret" aria-hidden="true">"▾"</span>
                                     </button>
                                 </Show>
@@ -8679,7 +8817,7 @@ fn App() -> impl IntoView {
                                         }
                                     }}
                                 </Show>
-                                <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", row_window.height(row_range.get().start))></div>
+                                <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", row_window.span(0, row_range.get().start, shown_rows.with(Vec::len)))></div>
                                 <For
                                     each=mounted_rows
                                     // The view mode too: switching it builds the rows afresh,
@@ -8998,20 +9136,11 @@ fn App() -> impl IntoView {
                                                         FileIcon::Badge(ext) => format!("{}<span class=\"ext\">{ext}</span>", icons::FMT_PAPER),
                                                         FileIcon::None => icons::FMT_AUDIO.to_owned(),
                                                     };
-                                                    // The rows view shows the lines chosen in its Lines
-                                                    // menu; the grid's tiles keep the default first three.
-                                                    let card_fields = move |line: usize| {
-                                                        if shown_mode.get() == row_window::ViewMode::Rows {
-                                                            row_lines.with(|lines| lines.get(line).cloned().unwrap_or_default())
-                                                        } else {
-                                                            // Not the path: tiles keep to their cover's width.
-                                                            default_row_lines().into_iter().take(3).nth(line).unwrap_or_default()
-                                                        }
-                                                    };
+                                                    // The rows view lays out the fields chosen in its Show
+                                                    // menu; a grid tile shows the title and artist, or
+                                                    // an album's name, artist and song count.
                                                     let card_line_entry = card_entry.clone();
-                                                    // An album's tile shows its name, artist and
-                                                    // song count instead.
-                                                    let card_line = move |line: usize| {
+                                                    let card_line = move |line: usize| -> String {
                                                         if let Some(tile) = grid_tile(index).filter(|tile| !tile.single()) {
                                                             return match line {
                                                                 0 => tile.album,
@@ -9020,21 +9149,31 @@ fn App() -> impl IntoView {
                                                                 _ => String::new(),
                                                             };
                                                         }
-                                                        let fields = card_fields(line);
-                                                        row_meta.with(|meta| row_line_text(&fields, index, &card_line_entry, meta.as_ref()))
+                                                        let rows_view = shown_mode.get() == row_window::ViewMode::Rows;
+                                                        let lines = row_meta.with(|meta| {
+                                                            if rows_view {
+                                                                row_fields.with(|fields| card_lines(fields, index, &card_line_entry, meta.as_ref()))
+                                                            } else {
+                                                                card_lines(&["title".to_owned(), "artist".to_owned()], index, &card_line_entry, meta.as_ref())
+                                                            }
+                                                        });
+                                                        let [title, people, details, file] = lines;
+                                                        match line {
+                                                            0 => title,
+                                                            1 => people,
+                                                            2 => details,
+                                                            // A path may break after any slash.
+                                                            _ => file.replace('/', "/\u{200B}"),
+                                                        }
                                                     };
                                                     let card_line_view = move |line: usize, class: &'static str| {
                                                         let text = card_line.clone();
-                                                        let tip = card_line.clone();
+                                                        let empty = card_line.clone();
                                                         view! {
                                                             <span
                                                                 class=format!("row-card-line {class}")
-                                                                class:row-card-empty=move || card_fields(line).is_empty()
+                                                                class:row-card-empty=move || empty(line).is_empty()
                                                                 class:row-card-count=move || line == 2 && grid_tile(index).is_some_and(|tile| !tile.single())
-                                                                class:row-card-clip=move || {
-                                                                    card_fields(line).iter().any(|field| field == "path" || field == "filename")
-                                                                }
-                                                                title=move || tip(line)
                                                             >
                                                                 {move || highlight_label(text(line), row_filter.get())}
                                                             </span>
@@ -9307,7 +9446,10 @@ fn App() -> impl IntoView {
                                         }
                                     }
                                 </For>
-                                <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", row_window.height(shown_rows.with(Vec::len).saturating_sub(row_range.get().end)))></div>
+                                <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", {
+                                    let count = shown_rows.with(Vec::len);
+                                    row_window.span(row_range.get().end, count, count)
+                                })></div>
                             </Show>
                         </div>
                     </main>
@@ -10834,56 +10976,50 @@ fn App() -> impl IntoView {
                     <div
                         class="context-menu row-lines-menu"
                         role="dialog"
-                        aria-label="Choose what each line shows"
+                        aria-label="Choose what the rows show"
                         style=move || match lines_menu_at.get() {
                             Some((x, y)) => format!("left:{x:.0}px; top:{y:.0}px;"),
                             None => String::new(),
                         }
                     >
-                        <div class="row-lines-columns">
-                            <For each=|| 0..4usize key=|line| *line let:line>
-                                <div class="row-lines-column" role="group" aria-label=format!("Line {}", line + 1)>
-                                    <span class="row-lines-heading">{format!("Line {}", line + 1)}</span>
-                                    // Checking a field adds it to the end of its line;
-                                    // the number is its place there.
-                                    <For each=|| ROW_LINE_FIELDS key=|(key, _)| *key let:field>
-                                        {
-                                            let (key, label) = field;
-                                            let order = move || row_lines.with(|lines| {
-                                                lines.get(line).and_then(|fields| fields.iter().position(|field| field == key))
-                                            });
-                                            view! {
-                                                <button
-                                                    class="menu-item row-lines-field"
-                                                    type="button"
-                                                    role="menuitemcheckbox"
-                                                    aria-checked=move || order().is_some().to_string()
-                                                    class:checked=move || order().is_some()
-                                                    on:click=move |_| {
-                                                        let mut lines = row_lines.get_untracked();
-                                                        lines.resize(4, Vec::new());
-                                                        let fields = &mut lines[line];
-                                                        match fields.iter().position(|field| field == key) {
-                                                            Some(at) => { fields.remove(at); }
-                                                            None => fields.push(key.to_owned()),
-                                                        }
-                                                        set_row_lines(lines);
-                                                    }
-                                                >
-                                                    <span class="row-lines-box">{move || order().map(|at| (at + 1).to_string()).unwrap_or_default()}</span>
-                                                    {label}
-                                                </button>
+                        // The fields to show, one checklist; the rows lay them
+                        // out. The title always shows.
+                        <For each=|| ROW_FIELDS key=|(key, _)| *key let:field>
+                            {
+                                let (key, label) = field;
+                                let always = key == "title";
+                                let checked = move || always || row_fields.with(|fields| fields.iter().any(|shown| shown == key));
+                                view! {
+                                    <button
+                                        class="menu-item row-lines-field"
+                                        type="button"
+                                        role="menuitemcheckbox"
+                                        disabled=always
+                                        aria-checked=move || checked().to_string()
+                                        class:checked=checked
+                                        on:click=move |_| {
+                                            if always {
+                                                return;
                                             }
+                                            let mut fields = row_fields.get_untracked();
+                                            match fields.iter().position(|shown| shown == key) {
+                                                Some(at) => { fields.remove(at); }
+                                                None => fields.push(key.to_owned()),
+                                            }
+                                            set_row_fields(fields);
                                         }
-                                    </For>
-                                </div>
-                            </For>
-                        </div>
+                                    >
+                                        <span class="row-lines-box">{move || if checked() { "✓" } else { "" }}</span>
+                                        {label}
+                                    </button>
+                                }
+                            }
+                        </For>
                         <div class="menu-separator"></div>
                         <button
                             class="menu-item"
                             type="button"
-                            on:click=move |_| set_row_lines(default_row_lines())
+                            on:click=move |_| set_row_fields(default_row_fields())
                         >"Reset to Default"</button>
                     </div>
                 </Show>

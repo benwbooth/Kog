@@ -3765,6 +3765,9 @@ body.touch .track .index-cell {
 /* Keep a full-height scrollbar while mounting only nearby playlist rows. */
 #playlist-rows { overflow-anchor: none; }
 .row-spacer { min-width: var(--table-width); pointer-events: none; }
+/* Rows, tiles and the cover flow's songs fit the pane: no sideways scroll. */
+.rows.view-rows .row-spacer,
+.rows.view-grid .row-spacer { min-width: 0; }
 @media (max-width: 820px), (pointer: coarse) and (max-width: 1200px) {
   .row-spacer { min-width: 0; }
   .track { height: 68px; }
@@ -5670,11 +5673,12 @@ button.primary:hover:not(:disabled) {
     display: none;
   }
 
-  /* Rows: one line per song, as tall as its three lines of text. */
+  /* Rows: one per song, as tall as its wrapped lines of text. */
   .rows.view-rows .track {
     display: block;
     min-width: 0;
-    height: 64px;
+    height: auto;
+    min-height: 64px;
   }
 
   .rows.view-rows .track::before {
@@ -5691,7 +5695,17 @@ button.primary:hover:not(:disabled) {
   .rows.view-rows .row-card {
     align-items: center;
     gap: 12px;
-    padding: 0 16px 0 14px;
+    min-height: 64px;
+    padding: 7px 16px 7px 14px;
+    box-sizing: border-box;
+  }
+
+  /* Nothing is cut off in the rows view: every line wraps, a path after its
+   * slashes and a long word anywhere. */
+  .rows.view-rows .row-card-line {
+    overflow: visible;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .row-card-art {
@@ -5809,10 +5823,7 @@ button.primary:hover:not(:disabled) {
     opacity: 0.75;
   }
 
-  /* Paths and filenames run to the edge and are cut there, never "…". */
-  .row-card-line.row-card-clip {
-    text-overflow: clip;
-  }
+
 
   /* The playing song's state and meter, in a dark pill on its cover. */
   .row-card-playing {
