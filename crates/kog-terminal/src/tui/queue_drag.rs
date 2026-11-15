@@ -51,15 +51,21 @@ impl Ui {
         let right = size
             .0
             .saturating_sub(usize::from(self.track_scrollbar(&layout, size).is_some()));
-        if !(layout.playlist_left()..right).contains(&x)
-            || !(layout.track_top..layout.track_top + layout.track_page * self.track_line_height())
+        // The slot under the pointer: in the rows view, cards as tall as
+        // their wrapped lines.
+        let slot = if self.track_line_height() > 1 {
+            self.card_slot_at(&layout, size, y).map(|(slot, _)| slot)
+        } else {
+            (layout.track_top..layout.track_top + layout.track_page)
                 .contains(&y)
-        {
+                .then(|| y - layout.track_top)
+        };
+        let Some(slot) = slot.filter(|_| (layout.playlist_left()..right).contains(&x)) else {
             return None;
-        }
+        };
         queue_row(
             self.table_offset(),
-            (y - layout.track_top) / self.track_line_height(),
+            slot,
             self.track_drop_target,
         )
         .or(self.track_drop_target)

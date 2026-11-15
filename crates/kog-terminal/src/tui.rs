@@ -81,48 +81,45 @@ fn export_with_effects() -> bool {
 const SIDEBAR_WIDTH_FILE: &str = "tui-sidebar-width";
 const PLAYLISTS_HEIGHT_FILE: &str = "tui-playlists-height";
 const ROWS_VIEW_FILE: &str = "tui-rows-view";
+const ROW_FIELDS_FILE: &str = "tui-row-fields.json";
+/// Where the earlier per-line picker kept its lines; read once to carry
+/// them over.
 const ROW_LINES_FILE: &str = "tui-row-lines.json";
-/// The fields a line of the multi-line rows view can show, as column ids
-/// ("format" is the codec, or the file's extension without one), in the
-/// line menus' order.
-const ROW_LINE_IDS: [&str; 12] = [
+/// The fields the multi-line rows view can show, as column ids ("format"
+/// is the codec, or the file's extension without one), in the Show Fields
+/// menu's order. The rows place each by its role.
+const ROW_FIELD_IDS: [&str; 12] = [
     "title",
     "artist",
-    "album",
     "albumartist",
-    "length",
+    "album",
     "date",
     "track",
     "genre",
+    "format",
+    "length",
     "playcount",
     "filename",
     "path",
-    "format",
 ];
-const ROW_LINE_MENU: [&str; 12] = [
+const ROW_FIELD_MENU: [&str; 12] = [
     "Title",
     "Artist",
-    "Album",
     "Album Artist",
-    "Length",
+    "Album",
     "Year",
     "Track Number",
     "Genre",
+    "Format",
+    "Length",
     "Play Count",
     "Filename",
     "Path",
-    "Format",
 ];
-/// Lines the multi-line rows view can show.
-const ROW_LINE_COUNT: usize = 4;
-const ROW_LINES_MENU: [&str; 6] = [
-    "First Line ›",
-    "Second Line ›",
-    "Third Line ›",
-    "Fourth Line ›",
-    "",
-    "Reset to Default",
-];
+/// A rows view card's gutter (the cursor and format mark) and its trailing
+/// status and star, either side of its text.
+const CARD_GUTTER: usize = 5;
+const CARD_TRAILING: usize = 9;
 /// The Sort by menu's columns, in its order.
 const SORT_MENU_IDS: [&str; 11] = [
     "index",
@@ -189,39 +186,91 @@ fn save_rows_view(on: bool) -> Result<(), String> {
     kog_audio::settings::save_text(ROWS_VIEW_FILE, if on { "1" } else { "0" })
 }
 
-/// The rows view's lines unless changed: title, artist, then album, format
-/// and length, then the path.
-fn default_row_lines() -> Vec<Vec<String>> {
-    [&["title"][..], &["artist"], &["album", "format", "length"], &["path"]]
-        .iter()
-        .map(|fields| fields.iter().map(|field| (*field).to_owned()).collect())
-        .collect()
+/// The rows view's fields unless changed.
+fn default_row_fields() -> Vec<String> {
+    ["title", "artist", "album", "format", "length", "path"].map(str::to_owned).to_vec()
 }
 
-fn load_row_lines() -> Vec<Vec<String>> {
-    kog_audio::settings::load_text(ROW_LINES_FILE)
-        .and_then(|text| serde_json::from_str::<Vec<Vec<String>>>(&text).ok())
-        .filter(|lines| lines.len() == ROW_LINE_COUNT)
-        .map(unique_row_fields)
-        .unwrap_or_else(default_row_lines)
+/// The rows view's fields as saved; lines saved per line by the earlier
+/// picker become the fields they named. The title always shows.
+fn load_row_fields() -> Vec<String> {
+    let mut fields = kog_audio::settings::load_text(ROW_FIELDS_FILE)
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+        .or_else(|| {
+            kog_audio::settings::load_text(ROW_LINES_FILE)
+                .and_then(|text| serde_json::from_str::<Vec<Vec<String>>>(&text).ok())
+                .map(|lines| {
+                    let mut fields = Vec::new();
+                    for field in lines.into_iter().flatten() {
+                        if !fields.contains(&field) {
+                            fields.push(field);
+                        }
+                    }
+                    fields
+                })
+        })
+        .unwrap_or_else(default_row_fields);
+    if !fields.iter().any(|field| field == "title") {
+        fields.insert(0, "title".to_owned());
+    }
+    fields
 }
 
-/// Each field on one line only: a field saved on several stays on the
-/// lowest.
-fn unique_row_fields(mut lines: Vec<Vec<String>>) -> Vec<Vec<String>> {
-    for line in (0..lines.len()).rev() {
-        let (above, below) = lines.split_at_mut(line);
-        let Some(fields) = below.first() else { continue };
-        for upper in above.iter_mut() {
-            upper.retain(|field| !fields.contains(field));
+fn save_row_fields(fields: &[String]) -> Result<(), String> {
+    let text = serde_json::to_string(fields).map_err(|error| error.to_string())?;
+    kog_audio::settings::save_text(ROW_FIELDS_FILE, &text)
+}
+
+/// `text` wrapped onto lines of at most `width` cells: breaking at spaces
+/// and after a path's slashes, and anywhere in a piece too long for a line.
+fn wrap_cells(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    for (at, character) in text.char_indices() {
+        if character == ' ' || character == '/' {
+            pieces.push(&text[start..at + 1]);
+            start = at + 1;
         }
     }
+    if start < text.len() {
+        pieces.push(&text[start..]);
+    }
+    let mut lines = vec![String::new()];
+    let mut used = 0;
+    for piece in pieces {
+        let cells = cell_width(piece);
+        if used + cells <= width {
+            lines.last_mut().expect("a line").push_str(piece);
+            used += cells;
+            continue;
+        }
+        if cells <= width {
+            lines.push(piece.to_owned());
+            used = cells;
+            continue;
+        }
+        // Too long for any line: broken anywhere.
+        for grapheme in piece.graphemes(true) {
+            let cells = UnicodeWidthStr::width(grapheme);
+            if used + cells > width && used > 0 {
+                lines.push(String::new());
+                used = 0;
+            }
+            lines.last_mut().expect("a line").push_str(grapheme);
+            used += cells;
+        }
+    }
+    // A line's trailing space never needs a cell of its own.
+    for line in &mut lines {
+        let trimmed = line.trim_end_matches(' ').len();
+        line.truncate(trimmed);
+    }
+    lines.retain(|line| !line.is_empty());
     lines
-}
-
-fn save_row_lines(lines: &[Vec<String>]) -> Result<(), String> {
-    let text = serde_json::to_string(lines).map_err(|error| error.to_string())?;
-    kog_audio::settings::save_text(ROW_LINES_FILE, &text)
 }
 
 fn load_playlists_height() -> Option<usize> {
@@ -515,8 +564,7 @@ enum MenuPage {
     MidiBackend,
     Server,
     Sort,
-    RowLines,
-    RowLine(u8),
+    RowFields,
 }
 
 #[derive(Clone, Copy)]
@@ -551,11 +599,7 @@ impl MenuPage {
             Self::MidiBackend => "MIDI Backend",
             Self::Server => "API Server",
             Self::Sort => "Sort by",
-            Self::RowLines => "Row Lines",
-            Self::RowLine(line) => ["First Line", "Second Line", "Third Line", "Fourth Line"]
-                .get(usize::from(line))
-                .copied()
-                .unwrap_or("Line"),
+            Self::RowFields => "Show Fields",
         }
     }
     fn labels(self) -> &'static [&'static str] {
@@ -581,8 +625,7 @@ impl MenuPage {
             Self::MidiBackend => &MIDI_BACKEND_MENU,
             Self::Server => &SERVER_MENU,
             Self::Sort => &SORT_MENU,
-            Self::RowLines => &ROW_LINES_MENU,
-            Self::RowLine(_) => &ROW_LINE_MENU,
+            Self::RowFields => &ROW_FIELD_MENU,
         }
     }
 }
@@ -1420,8 +1463,8 @@ struct Ui {
     /// Songs show on several lines each (see `row_lines`) instead of as the
     /// column table.
     rows_view: bool,
-    /// What each line of the rows view shows, as field ids in order.
-    row_lines: Vec<Vec<String>>,
+    /// The fields the rows view shows; the cards lay them out by role.
+    row_fields: Vec<String>,
     /// Rows of the sidebar's Playlists pane, set by dragging its header or
     /// Ctrl+Up/Down; None keeps the default of up to six.
     playlists_height: Option<usize>,
@@ -1842,7 +1885,7 @@ impl Ui {
             playlists_expanded: true,
             sidebar_width: load_sidebar_width(),
             rows_view: load_rows_view(),
-            row_lines: load_row_lines(),
+            row_fields: load_row_fields(),
             playlists_height: load_playlists_height(),
             playlists_drag: None,
             split_drag: false,
@@ -2450,10 +2493,30 @@ impl Ui {
             .footer_top
             .saturating_sub(layout.track_top + 1)
             .max(1);
-        // In the rows view a page counts songs of three lines each.
-        let lines = self.track_line_height();
-        if lines > 1 {
-            layout.track_page = (layout.track_page / lines).max(1);
+        // In the rows view a page counts the songs whose cards fit, each as
+        // tall as its wrapped lines.
+        if self.track_line_height() > 1 {
+            let available = layout.track_page;
+            let width = self.card_text_width(&layout, size);
+            let visible = self.table_visible_tracks();
+            let offset = self.table_offset();
+            let mut used = 0;
+            let mut slots = 0;
+            while used < available {
+                let height = match queue_drag::queue_row(offset, slots, self.track_drop_target) {
+                    None => 1,
+                    Some(position) => match visible.get(position) {
+                        Some(&index) => self.card_height(index, width),
+                        None => self.track_line_height(),
+                    },
+                };
+                if used + height > available && slots > 0 {
+                    break;
+                }
+                used += height;
+                slots += 1;
+            }
+            layout.track_page = slots.max(1);
             return layout;
         }
         let track_width = size.0.saturating_sub(layout.playlist_left());
@@ -2546,13 +2609,19 @@ impl Ui {
         if self.compact_mode || !(layout.show_sidebar || self.focus == Focus::Tracks) {
             return None;
         }
-        let lines = self.track_line_height();
+        // In songs; in the rows view, songs scaled to the pane's lines.
+        let height = if self.track_line_height() > 1 {
+            layout.footer_top.saturating_sub(layout.track_top + 1).max(1)
+        } else {
+            layout.track_page
+        };
+        let scale = |songs: usize| songs * height / layout.track_page.max(1);
         VerticalScrollbar::new(
             size.0.saturating_sub(1),
             layout.track_top,
-            layout.track_page * lines,
-            (count + usize::from(self.track_drop_target.is_some())) * lines,
-            self.table_offset() * lines,
+            height,
+            scale(count + usize::from(self.track_drop_target.is_some())),
+            scale(self.table_offset()),
         )
     }
 
@@ -2582,10 +2651,15 @@ impl Ui {
         bar: VerticalScrollbar,
         y: usize,
         grip: usize,
+        page: usize,
     ) {
         let offset = bar.offset_at(y, grip);
-        // The songs' bar runs in lines: three to a song in the rows view.
-        let offset = if pane == 2 { offset / self.track_line_height() } else { offset };
+        // The rows view's bar runs in lines, scaled from songs.
+        let offset = if pane == 2 && self.track_line_height() > 1 {
+            offset * page.max(1) / bar.height.max(1)
+        } else {
+            offset
+        };
         self.set_pane_scroll(pane, offset);
     }
 
@@ -2870,16 +2944,9 @@ impl Ui {
                 );
             }
             (MenuPage::Sort, index) => self.sort_from_menu(index),
-            (MenuPage::View, 15) => self.open_child_menu(MenuPage::RowLines, size),
-            (MenuPage::RowLines, 0..=3) => {
-                self.open_child_menu(MenuPage::RowLine(index as u8), size)
-            }
-            (MenuPage::RowLines, 5) => {
-                self.set_row_lines(default_row_lines());
-                self.status = "Row lines reset".to_owned();
-            }
-            (MenuPage::RowLine(line), index) => {
-                self.toggle_row_line_field(usize::from(line), index);
+            (MenuPage::View, 15) => self.open_child_menu(MenuPage::RowFields, size),
+            (MenuPage::RowFields, index) => {
+                self.toggle_row_field(index);
                 // Stay open to check more fields.
                 self.menu_open = true;
             }
@@ -3558,13 +3625,9 @@ impl Ui {
         if page == MenuPage::View && index == 13 {
             return Some(self.rows_view);
         }
-        if let MenuPage::RowLine(line) = page {
-            let field = ROW_LINE_IDS.get(index)?;
-            return Some(
-                self.row_lines
-                    .get(usize::from(line))
-                    .is_some_and(|fields| fields.iter().any(|shown| shown == field)),
-            );
+        if page == MenuPage::RowFields {
+            let field = ROW_FIELD_IDS.get(index)?;
+            return Some(self.shows_field(field));
         }
         if page == MenuPage::Sort {
             let column = self.columns.index(SORT_MENU_IDS.get(index)?);
@@ -3727,77 +3790,169 @@ impl Ui {
         );
     }
 
-    /// Terminal lines each song takes: one per non-empty line in the
-    /// multi-line rows view.
+    /// Terminal lines a song takes at least: one per kind of line its
+    /// card can show in the multi-line rows view (wrapping adds more; see
+    /// `card_height`), one in the table.
     fn track_line_height(&self) -> usize {
         if self.rows_view && !self.compact_mode {
-            self.row_lines.iter().filter(|fields| !fields.is_empty()).count().max(1)
+            let people = self.shows_field("artist") || self.shows_field("albumartist");
+            let details = ["album", "date", "track", "genre", "format", "length", "playcount"]
+                .iter()
+                .any(|field| self.shows_field(field));
+            let file = self.shows_field("path") || self.shows_field("filename");
+            1 + usize::from(people) + usize::from(details) + usize::from(file)
         } else {
             1
         }
     }
 
-    /// Adds or removes a field at the end of one of the rows view's lines.
-    fn toggle_row_line_field(&mut self, line: usize, index: usize) {
-        let Some(&field) = ROW_LINE_IDS.get(index) else { return };
-        let mut lines = self.row_lines.clone();
-        lines.resize(ROW_LINE_COUNT, Vec::new());
-        let line = line.min(ROW_LINE_COUNT - 1);
-        match lines[line].iter().position(|shown| shown == field) {
+    fn shows_field(&self, field: &str) -> bool {
+        field == "title" || self.row_fields.iter().any(|shown| shown == field)
+    }
+
+    /// Shows or hides one of the rows view's fields; the title always shows.
+    fn toggle_row_field(&mut self, index: usize) {
+        let Some(&field) = ROW_FIELD_IDS.get(index) else { return };
+        if field == "title" {
+            return;
+        }
+        let mut fields = self.row_fields.clone();
+        match fields.iter().position(|shown| shown == field) {
             Some(at) => {
-                lines[line].remove(at);
+                fields.remove(at);
             }
-            None => {
-                // A field shows on one line only.
-                for other in lines.iter_mut() {
-                    other.retain(|shown| shown != field);
-                }
-                lines[line].push(field.to_owned());
-            }
+            None => fields.push(field.to_owned()),
         }
-        self.set_row_lines(lines);
-    }
-
-    fn set_row_lines(&mut self, lines: Vec<Vec<String>>) {
-        self.row_lines = lines;
-        if let Err(error) = save_row_lines(&self.row_lines) {
-            self.status = format!("Could not save the row lines: {error}");
+        self.row_fields = fields;
+        if let Err(error) = save_row_fields(&self.row_fields) {
+            self.status = format!("Could not save the row fields: {error}");
         }
     }
 
-    /// One line of a song in the rows view: its fields joined by a middle
-    /// dot, skipping empty ones. Artist falls back to the album artist
-    /// unless the line shows that too.
-    fn row_line_text(&self, fields: &[String], index: usize, track: &Track) -> String {
-        fields
+    /// A song's card in the rows view, each field placed by its role: the
+    /// title; the artist (falling back to the album artist, and the album
+    /// artist beside it when shown and different); album, year, track
+    /// number, genre, format, length and play count; then the path, or the
+    /// filename. Empty lines are left empty. Before its tags load, only the
+    /// title and path show.
+    fn card_lines(&self, index: usize, track: &Track) -> [String; 4] {
+        let ready = self.metadata_ready(track);
+        let value = |field: &str| {
+            if ready { self.table_column_value(index, track, field) } else { String::new() }
+        };
+        let mut people = Vec::new();
+        if self.shows_field("artist") {
+            let artist = value("artist");
+            people.push(if artist.is_empty() { value("albumartist") } else { artist });
+        }
+        let album_artist = value("albumartist");
+        if self.shows_field("albumartist") && !album_artist.is_empty() && !people.contains(&album_artist) {
+            people.push(album_artist);
+        }
+        let format = || {
+            let codec = value("codec");
+            if !codec.is_empty() || !ready {
+                codec
+            } else {
+                track
+                    .name
+                    .rsplit_once('.')
+                    .map(|(_, extension)| extension.to_ascii_uppercase())
+                    .unwrap_or_default()
+            }
+        };
+        let track_number = value("track");
+        let details = [
+            if self.shows_field("album") { value("album") } else { String::new() },
+            if self.shows_field("date") { value("date") } else { String::new() },
+            if self.shows_field("track") && !track_number.is_empty() { format!("#{track_number}") } else { String::new() },
+            if self.shows_field("genre") { value("genre") } else { String::new() },
+            if self.shows_field("format") { format() } else { String::new() },
+            if self.shows_field("length") { value("length") } else { String::new() },
+            if self.shows_field("playcount") { value("playcount") } else { String::new() },
+        ];
+        // The path holds the filename: it shows alone when both are on.
+        let file = if self.shows_field("path") {
+            self.table_column_value(index, track, "path")
+        } else if self.shows_field("filename") {
+            self.table_column_value(index, track, "filename")
+        } else {
+            String::new()
+        };
+        let join = |parts: Vec<String>| {
+            parts.into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" · ")
+        };
+        [self.title_for(track), join(people), join(details.to_vec()), file]
+    }
+
+    /// A card's lines wrapped to `width` cells, with which of the four kinds
+    /// of line each is.
+    fn card_wrapped(&self, index: usize, track: &Track, width: usize) -> Vec<(usize, String)> {
+        self.card_lines(index, track)
             .iter()
-            .map(|field| match field.as_str() {
-                "title" => self.title_for(track),
-                "format" => {
-                    let codec = self.table_column_value(index, track, "codec");
-                    if codec.is_empty() {
-                        track
-                            .name
-                            .rsplit_once('.')
-                            .map(|(_, extension)| extension.to_ascii_uppercase())
-                            .unwrap_or_default()
-                    } else {
-                        codec
-                    }
-                }
-                "artist" => {
-                    let artist = self.table_column_value(index, track, "artist");
-                    if artist.is_empty() && !fields.iter().any(|field| field == "albumartist") {
-                        self.table_column_value(index, track, "albumartist")
-                    } else {
-                        artist
-                    }
-                }
-                other => self.table_column_value(index, track, other),
+            .enumerate()
+            .flat_map(|(kind, text)| wrap_cells(text, width).into_iter().map(move |line| (kind, line)))
+            .collect()
+    }
+
+    /// The width of a rows view card's text in a pane of `size`.
+    fn card_text_width(&self, layout: &Layout, size: (usize, usize)) -> usize {
+        size.0
+            .saturating_sub(layout.playlist_left())
+            .saturating_sub(1 + CARD_GUTTER + CARD_TRAILING)
+            .max(8)
+    }
+
+    /// The terminal lines the `index`th table song's card takes.
+    fn card_height(&self, index: usize, width: usize) -> usize {
+        self.table_tracks()
+            .get(index)
+            .map(|track| self.card_wrapped(index, track, width).len())
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    /// In the rows view, the slot (counted from the first shown song) and
+    /// the line within its card at row `y`, laid out as drawn.
+    fn card_slot_at(&self, layout: &Layout, size: (usize, usize), y: usize) -> Option<(usize, usize)> {
+        if y < layout.track_top {
+            return None;
+        }
+        let width = self.card_text_width(layout, size);
+        let visible = self.table_visible_tracks();
+        let offset = self.table_offset();
+        let mut top = layout.track_top;
+        for slot in 0..layout.track_page {
+            let height = match queue_drag::queue_row(offset, slot, self.track_drop_target) {
+                None => 1,
+                Some(position) => visible
+                    .get(position)
+                    .map(|&index| self.card_height(index, width))
+                    .unwrap_or(1),
+            };
+            if y < top + height {
+                return Some((slot, y - top));
+            }
+            top += height;
+        }
+        None
+    }
+
+    /// The rows view's last row of drawn cards.
+    fn cards_bottom(&self, layout: &Layout, size: (usize, usize)) -> usize {
+        let width = self.card_text_width(layout, size);
+        let visible = self.table_visible_tracks();
+        let offset = self.table_offset();
+        (0..layout.track_page)
+            .map(|slot| match queue_drag::queue_row(offset, slot, self.track_drop_target) {
+                None => 1,
+                Some(position) => visible
+                    .get(position)
+                    .map(|&index| self.card_height(index, width))
+                    .unwrap_or(1),
             })
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join(" · ")
+            .sum::<usize>()
+            + layout.track_top
     }
 
     fn toggle_rows_view(&mut self) {
@@ -6925,8 +7080,21 @@ impl Ui {
             Focus::Tracks if !self.tracks.is_empty() => (
                 MenuPage::Tracks,
                 layout.playlist_left() + 1,
-                layout.track_top
-                    + self.selected[2].saturating_sub(self.offsets[2]) * self.track_line_height(),
+                if self.track_line_height() > 1 {
+                    // The cursor's card, laid out as drawn.
+                    let width = self.card_text_width(&layout, size);
+                    let visible = self.table_visible_tracks();
+                    let offset = self.table_offset();
+                    layout.track_top
+                        + visible
+                            .iter()
+                            .skip(offset)
+                            .take(self.selected[2].saturating_sub(offset))
+                            .map(|&index| self.card_height(index, width))
+                            .sum::<usize>()
+                } else {
+                    layout.track_top + self.selected[2].saturating_sub(self.offsets[2])
+                },
             ),
             Focus::Tracks => (
                 MenuPage::Playlist,
@@ -7916,7 +8084,7 @@ impl Ui {
                 self.track_scrollbar(&layout, size)
             };
             if let Some(bar) = bar {
-                self.scroll_vertical_to_mouse(pane, bar, y, grip);
+                self.scroll_vertical_to_mouse(pane, bar, y, grip, layout.track_page);
             }
             return;
         }
@@ -8188,16 +8356,24 @@ impl Ui {
             } else if (layout.show_sidebar || self.focus == Focus::Tracks)
                 && x >= layout.playlist_left()
                 && y >= layout.track_top
-                && y < layout.track_top + layout.track_page * self.track_line_height()
+                && y < if self.track_line_height() > 1 {
+                    self.cards_bottom(&layout, size)
+                } else {
+                    layout.track_top + layout.track_page
+                }
             {
                 self.focus = Focus::Tracks;
                 if self.scrollbar(&layout, size).is_some() && y == layout.footer_top - 2 {
                     self.open_context(MenuPage::Playlist, x, y, size);
                     return;
                 }
-                if let Some(&index) = self
-                    .visible_tracks()
-                    .get(self.offsets[2] + (y - layout.track_top) / self.track_line_height())
+                let slot = if self.track_line_height() > 1 {
+                    self.card_slot_at(&layout, size, y).map(|(slot, _)| slot)
+                } else {
+                    Some(y - layout.track_top)
+                };
+                let visible = self.visible_tracks();
+                if let Some(&index) = slot.and_then(|slot| visible.get(self.offsets[2] + slot))
                 {
                     if !self.selected_tracks.contains(&index) {
                         self.select_track(index, false, false);
@@ -8243,7 +8419,7 @@ impl Ui {
                         bar.thumb_height / 2
                     };
                 self.vertical_scroll_drag = Some((pane, grip));
-                self.scroll_vertical_to_mouse(pane, bar, y, grip);
+                self.scroll_vertical_to_mouse(pane, bar, y, grip, layout.track_page);
             }
             return;
         }
@@ -8718,13 +8894,21 @@ impl Ui {
             return;
         }
         let lines = self.track_line_height();
-        if y >= layout.track_top
-            && y < layout.track_top + layout.track_page * lines
-            && x >= layout.playlist_left()
-        {
+        let bottom = if lines > 1 {
+            self.cards_bottom(&layout, size)
+        } else {
+            layout.track_top + layout.track_page
+        };
+        if y >= layout.track_top && y < bottom && x >= layout.playlist_left() {
             self.focus = Focus::Tracks;
             let visible = self.visible_tracks();
-            let Some(&index) = visible.get(self.offsets[2] + (y - layout.track_top) / lines) else {
+            // The song under the pointer, and the line of its card.
+            let (slot, card_line) = if lines > 1 {
+                self.card_slot_at(&layout, size, y).unwrap_or((usize::MAX, 0))
+            } else {
+                (y - layout.track_top, 0)
+            };
+            let Some(&index) = visible.get(self.offsets[2].saturating_add(slot)) else {
                 return;
             };
             let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
@@ -8732,7 +8916,7 @@ impl Ui {
                 // The rows view's star sits at the right end of the title
                 // line, and its meter under it.
                 let right = size.0.saturating_sub(usize::from(self.track_scrollbar(&layout, size).is_some()));
-                let line = (y - layout.track_top) % lines;
+                let line = card_line;
                 if button & (3 | 4 | 8 | 16) == 0 && line == 0 && x + 3 >= right {
                     self.select_track(index, false, false);
                     self.toggle_star();
@@ -9634,8 +9818,8 @@ impl Ui {
                 }
             } else {
                 // Multi-line rows, laid out like a mail list: the format's
-                // mark in the gutter, then the lines View → Row Lines picks
-                // (title, artist, album · format · length, path). The column
+                // mark in the gutter, then the fields View → Show Fields
+                // picks, placed by role and wrapped. The column
                 // header gives way to what the songs are sorted by.
                 let header = format!(" Sort by: {}  ·  O to change", self.sort_bar_label());
                 paint(
@@ -9660,44 +9844,36 @@ impl Ui {
                 }
                 // The mark's gutter on the left; the status and star, with
                 // the playing song's meter under them, on the right.
-                const GUTTER: usize = 5;
-                const TRAILING: usize = 9;
+                const GUTTER: usize = CARD_GUTTER;
+                const TRAILING: usize = CARD_TRAILING;
                 let text_x = right_x + GUTTER;
                 let text_width = content_width.saturating_sub(GUTTER + TRAILING);
                 let trailing_x = right_x + content_width.saturating_sub(TRAILING);
                 let mut status_waveform = None::<Vec<(char, (u8, u8, u8))>>;
+                // Cards are as tall as their wrapped lines.
+                let wrap_width = self.card_text_width(&layout, size).min(text_width.max(1));
+                let mut top = layout.track_top;
                 for slot in 0..layout.track_page {
-                    let top = layout.track_top + slot * lines;
-                    if top + lines > layout.footer_top {
+                    if top >= layout.footer_top {
                         break;
                     }
                     let position =
                         queue_drag::queue_row(table_offset, slot, self.track_drop_target);
                     if position.is_none() {
-                        for line in 0..lines {
-                            paint(
-                                &mut screen,
-                                top + line + 1,
-                                right_x,
-                                "",
-                                content_width,
-                                Surface::Main,
-                                false,
-                            );
-                        }
                         let marker = format!(
                             "▶ Insert here {}",
                             "─".repeat(content_width.saturating_sub(14))
                         );
                         paint(
                             &mut screen,
-                            top + 2,
+                            top + 1,
                             right_x,
                             &marker,
                             content_width,
                             Surface::Accent,
                             true,
                         );
+                        top += 1;
                         continue;
                     }
                     let index = position
@@ -9712,22 +9888,21 @@ impl Ui {
                     } else {
                         (Surface::Main, Surface::MainMuted, Surface::MainAccent)
                     };
-                    for line in 0..lines {
-                        paint(
-                            &mut screen,
-                            top + line + 1,
-                            right_x,
-                            "",
-                            content_width,
-                            surface,
-                            false,
-                        );
-                    }
                     let Some((index, track)) = index
                         .and_then(|index| self.table_tracks().get(index).map(|track| (index, track)))
                     else {
+                        top += lines;
                         continue;
                     };
+                    // The fields chosen in View → Show Fields, by role: the
+                    // title bold, the people plain, the rest quieter; every
+                    // line wraps rather than being cut off.
+                    let card = self.card_wrapped(index, track, wrap_width);
+                    let height = card.len().max(1);
+                    let bottom = (top + height).min(layout.footer_top.saturating_sub(1).max(top + 1));
+                    for row in top..bottom {
+                        paint(&mut screen, row + 1, right_x, "", content_width, surface, false);
+                    }
                     // The cursor's song is marked in the gutter, apart from
                     // the selection's background.
                     let gutter = format!(
@@ -9737,73 +9912,52 @@ impl Ui {
                     );
                     paint(&mut screen, top + 1, right_x, &gutter, GUTTER, surface, true);
                     let playing_here = self.table_playing() == Some(index);
-                    // The lines chosen in View → Row Lines, empty ones left
-                    // out: the first bold, the second plain, the rest
-                    // quieter. Paths and filenames clip without an ellipsis.
-                    let ready = self.metadata_ready(track);
-                    for (line, fields) in
-                        self.row_lines.iter().filter(|fields| !fields.is_empty()).enumerate()
-                    {
-                        let fields: Vec<String> = if ready {
-                            fields.clone()
-                        } else {
-                            fields
-                                .iter()
-                                .filter(|field| matches!(field.as_str(), "title" | "path" | "filename"))
-                                .cloned()
-                                .collect()
-                        };
-                        let text = self.row_line_text(&fields, index, track);
-                        register_hover_label(
-                            &mut hover_labels,
-                            text_x - 1,
-                            top + line,
-                            text_width,
-                            &text,
-                            text_width,
-                        );
-                        let line_surface = match line {
+                    for (row, (kind, text)) in card.iter().enumerate() {
+                        if top + row >= bottom {
+                            break;
+                        }
+                        let line_surface = match kind {
                             0 if playing_here => accent,
                             0 | 1 => surface,
                             _ => muted,
                         };
-                        let clips = fields.iter().any(|field| field == "path" || field == "filename");
-                        if clips {
-                            paint_clipped(&mut screen, top + line + 1, text_x, &text, text_width, line_surface, line == 0);
-                        } else {
-                            paint(&mut screen, top + line + 1, text_x, &text, text_width, line_surface, line == 0);
+                        paint(&mut screen, top + row + 1, text_x, text, text_width, line_surface, *kind == 0);
+                    }
+                    let ready = self.metadata_ready(track);
+                    if ready {
+                        let status = self.table_column_value(index, track, "status");
+                        let star = self.table_column_value(index, track, "star");
+                        paint(
+                            &mut screen,
+                            top + 1,
+                            trailing_x,
+                            &format!("{status:>6} {}", if star.is_empty() { " " } else { "★" }),
+                            TRAILING,
+                            if playing_here { accent } else { surface },
+                            true,
+                        );
+                        if playing_here && self.player.state() == PlaybackState::Playing && height > 1 {
+                            let glyphs = status_waveform.get_or_insert_with(|| {
+                                status_waveform_glyphs(self.player.audio_levels())
+                            });
+                            paint_playlist_waveform(
+                                &mut screen,
+                                top + 2,
+                                right_x,
+                                content_width,
+                                content_width.saturating_sub(TRAILING),
+                                TRAILING,
+                                0,
+                                glyphs,
+                                surface,
+                            );
                         }
                     }
-                    if !ready {
-                        continue;
-                    }
-                    let status = self.table_column_value(index, track, "status");
-                    let star = self.table_column_value(index, track, "star");
-                    paint(
-                        &mut screen,
-                        top + 1,
-                        trailing_x,
-                        &format!("{status:>6} {}", if star.is_empty() { " " } else { "★" }),
-                        TRAILING,
-                        if playing_here { accent } else { surface },
-                        true,
-                    );
-                    if playing_here && self.player.state() == PlaybackState::Playing {
-                        let glyphs = status_waveform.get_or_insert_with(|| {
-                            status_waveform_glyphs(self.player.audio_levels())
-                        });
-                        paint_playlist_waveform(
-                            &mut screen,
-                            top + lines.min(2),
-                            right_x,
-                            content_width,
-                            content_width.saturating_sub(TRAILING),
-                            TRAILING,
-                            0,
-                            glyphs,
-                            surface,
-                        );
-                    }
+                    top += height;
+                }
+                // Below the last card that fits, the pane's own background.
+                for row in top..layout.footer_top.saturating_sub(1 + usize::from(scrollbar.is_some())) {
+                    paint(&mut screen, row + 1, right_x, "", content_width, Surface::Main, false);
                 }
             }
             if let Some(bar) = scrollbar {
@@ -11624,7 +11778,7 @@ const VIEW_MENU: [&str; 16] = [
     "Piano Roll…",
     "Multi-Line Rows",
     "Sort by…",
-    "Row Lines          ›",
+    "Show Fields        ›",
 ];
 const PLAYBACK_MENU: [&str; 14] = [
     "Play/Pause",
@@ -12616,28 +12770,6 @@ fn paint(
         "\x1b[{row};{col}H\x1b[{};38;2;{foreground};48;2;{background}m{}\x1b[0m",
         if bold { "1" } else { "22" },
         truncate(text, width)
-    ));
-}
-
-/// `paint`, cutting text that doesn't fit at the edge without an ellipsis,
-/// for paths and filenames.
-fn paint_clipped(
-    out: &mut String,
-    row: usize,
-    col: usize,
-    text: &str,
-    width: usize,
-    surface: Surface,
-    bold: bool,
-) {
-    if width == 0 {
-        return;
-    }
-    let (foreground, background) = surface_colors(surface);
-    out.push_str(&format!(
-        "\x1b[{row};{col}H\x1b[{};38;2;{foreground};48;2;{background}m{}\x1b[0m",
-        if bold { "1" } else { "22" },
-        clip(text, width)
     ));
 }
 
@@ -14075,8 +14207,7 @@ mod tests {
             MenuPage::MidiBackend,
             MenuPage::Server,
             MenuPage::Sort,
-            MenuPage::RowLines,
-            MenuPage::RowLine(0),
+            MenuPage::RowFields,
         ] {
             let shortcuts = menu_shortcuts(page);
             assert_eq!(shortcuts.len(), page.labels().len());

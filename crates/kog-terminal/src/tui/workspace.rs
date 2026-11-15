@@ -871,12 +871,18 @@ impl Ui {
         {
             return false;
         }
-        let lines = self.track_line_height();
-        if !(layout.track_top..layout.track_top + layout.track_page * lines).contains(&y) {
+        // The song under the pointer: in the rows view, cards as tall as
+        // their wrapped lines.
+        let row = if self.track_line_height() > 1 {
+            self.card_slot_at(&layout, size, y).map(|(slot, _)| slot)
+        } else {
+            (layout.track_top..layout.track_top + layout.track_page)
+                .contains(&y)
+                .then(|| y - layout.track_top)
+        };
+        let Some(row) = row else {
             return true;
-        }
-        // The song under the pointer: three lines to a song in the rows view.
-        let row = (y - layout.track_top) / lines;
+        };
         self.focus = Focus::Tracks;
         if button & 0b1100_0000 == 64 {
             if button & 3 >= 2 || button & (4 | 16) != 0 {
@@ -910,7 +916,7 @@ impl Ui {
             let visible = self.table_visible_tracks();
             if let Some(&index) = visible.get(self.workspace_offset + row) {
                 let relative = x.saturating_sub(left) + self.columns.scroll;
-                if button & (4 | 8 | 16) == 0 && lines == 1 && self.table_waveform_at(index, relative) {
+                if button & (4 | 8 | 16) == 0 && self.track_line_height() == 1 && self.table_waveform_at(index, relative) {
                     self.show_visualizer();
                     return true;
                 }
