@@ -157,6 +157,20 @@ FocusScope {
         if (group && group.rows.length > 0)
             activated(group.rows[0])
     }
+    // An album's play button: pauses or resumes while the playing song is
+    // one of its songs, and plays it from its first song otherwise.
+    function tileActive(tile) {
+        return tile >= 0 && tile === playingTile && app.playback_state !== "stopped"
+    }
+    function tilePlaying(tile) {
+        return tile >= 0 && tile === playingTile && app.playback_state === "playing"
+    }
+    function togglePlayTile(tile) {
+        if (tileActive(tile))
+            app.play_pause()
+        else
+            playTile(tile)
+    }
 
     GridView {
         id: grid
@@ -395,7 +409,7 @@ FocusScope {
                     width: 40
                     height: 40
                     radius: 20
-                    visible: !tile.isActiveTrack && tile.row >= 0
+                    visible: tile.row >= 0
                     opacity: tile.hovered ? 1 : 0
                     scale: pointer.overPlay ? 1.06 : 1
                     color: browser.theme.accent
@@ -403,12 +417,12 @@ FocusScope {
                     Behavior on scale { NumberAnimation { duration: 90 } }
                     ControlsImpl.IconImage {
                         anchors.centerIn: parent
-                        anchors.horizontalCenterOffset: 1
+                        anchors.horizontalCenterOffset: tile.isPlaying ? 0 : 1
                         width: 16
                         height: 16
                         sourceSize.width: 16
                         sourceSize.height: 16
-                        name: "media-playback-start"
+                        name: tile.isPlaying ? "media-playback-pause" : "media-playback-start"
                         color: "white"
                     }
                 }
@@ -420,7 +434,8 @@ FocusScope {
                     width: tile.isPlaying ? 62 : 30
                     height: 30
                     radius: 15
-                    visible: tile.isActiveTrack
+                    // The play button takes its place while pointed at.
+                    visible: tile.isActiveTrack && !tile.hovered
                     color: Qt.rgba(0, 0, 0, 0.66)
 
                     ControlsImpl.IconImage {
@@ -531,7 +546,7 @@ FocusScope {
                     if (tile.row < 0)
                         return
                     if (mouse.button === Qt.LeftButton && overPlay) {
-                        browser.playTile(tile.index)
+                        browser.togglePlayTile(tile.index)
                         return
                     }
                     browser.pressed(tile.row, tile.single ? mouse.modifiers : Qt.NoModifier, mouse.button)
@@ -759,8 +774,9 @@ FocusScope {
                     height: 56
                     hoverEnabled: true
                     focusPolicy: Qt.NoFocus
-                    Accessible.name: qsTr("Play album")
-                    onClicked: if (albumList.firstRow >= 0) browser.activated(albumList.firstRow)
+                    readonly property bool albumPlaying: browser.tilePlaying(browser.openTile)
+                    Accessible.name: albumPlaying ? qsTr("Pause") : qsTr("Play album")
+                    onClicked: browser.togglePlayTile(browser.openTile)
                     scale: pressed ? 0.96 : (hovered ? 1.05 : 1)
                     Behavior on scale { NumberAnimation { duration: 90 } }
                     background: Rectangle {
@@ -770,12 +786,12 @@ FocusScope {
                     contentItem: Item {
                         ControlsImpl.IconImage {
                             anchors.centerIn: parent
-                            anchors.horizontalCenterOffset: 2
+                            anchors.horizontalCenterOffset: bigPlay.albumPlaying ? 0 : 2
                             width: 22
                             height: 22
                             sourceSize.width: 22
                             sourceSize.height: 22
-                            name: "media-playback-start"
+                            name: bigPlay.albumPlaying ? "media-playback-pause" : "media-playback-start"
                             color: "white"
                         }
                     }
@@ -997,6 +1013,29 @@ FocusScope {
                             fillMode: Image.PreserveAspectFit
                         }
                     }
+                    // The centre album's play button, shown while the flow is
+                    // pointed at or the album is playing; pauses and resumes
+                    // the album playing.
+                    Rectangle {
+                        x: coverFlow.coverSize - width - 10
+                        y: coverFlow.coverSize - height - 10
+                        width: 44
+                        height: 44
+                        radius: 22
+                        visible: slot.distance < 0.5
+                            && (flowPointer.containsMouse || browser.tileActive(slot.tile))
+                        color: browser.theme.accent
+                        ControlsImpl.IconImage {
+                            anchors.centerIn: parent
+                            anchors.horizontalCenterOffset: browser.tilePlaying(slot.tile) ? 0 : 1
+                            width: 18
+                            height: 18
+                            sourceSize.width: 18
+                            sourceSize.height: 18
+                            name: browser.tilePlaying(slot.tile) ? "media-playback-pause" : "media-playback-start"
+                            color: "white"
+                        }
+                    }
                     // The reflection: the cover (or its blank) upside down,
                     // fading out.
                     Item {
@@ -1083,6 +1122,7 @@ FocusScope {
                 id: flowPointer
                 anchors.fill: parent
                 acceptedButtons: Qt.LeftButton
+                hoverEnabled: true
                 z: 3000
                 property real wheelRest: 0
                 property real pressX: 0
@@ -1168,9 +1208,20 @@ FocusScope {
                     }
                     return best
                 }
+                // Whether a point is on the centre cover's play button.
+                function onPlayButton(x, y) {
+                    const centreX = coverFlow.width / 2 + (flowPane.centre - flowPane.position) * coverFlow.centreGap
+                    const right = centreX + coverFlow.coverSize / 2 - 10
+                    const bottom = coverFlow.coverTop + coverFlow.coverSize - 10
+                    return x >= right - 44 && x <= right && y >= bottom - 44 && y <= bottom
+                }
                 onClicked: mouse => {
                     if (moved)
                         return
+                    if (onPlayButton(mouse.x, mouse.y)) {
+                        browser.togglePlayTile(flowPane.centre)
+                        return
+                    }
                     const tile = tileAt(mouse.x, mouse.y)
                     if (tile >= 0)
                         flowPane.choose(tile)
@@ -1178,7 +1229,7 @@ FocusScope {
                 onDoubleClicked: mouse => {
                     const tile = tileAt(mouse.x, mouse.y)
                     if (tile >= 0 && tile === flowPane.centre)
-                        browser.playTile(tile)
+                        browser.togglePlayTile(tile)
                 }
             }
         }

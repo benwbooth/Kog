@@ -245,6 +245,7 @@ FocusScope {
         function track_number_at(row) { return String(editor.rows[row] + 1) }
         function track_status_message_at(row) { return track_value_at(row, "status_message") }
         function track_missing_at(row) { return track_value_at(row, "missing") === "true" }
+        function play_pause() { editor.app.play_pause() }
         function toggle_stars(row) { editor.app.workspace_toggle_stars(String(editor.rows[Number(row)])) }
         readonly property int desktop_art_revision: editor.app.desktop_art_revision
         function track_cover_at(row) { return editor.app.workspace_tab_cover_at(editor.activeKey, editor.rows[row]) }
