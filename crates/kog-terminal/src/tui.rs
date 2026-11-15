@@ -81,9 +81,48 @@ fn export_with_effects() -> bool {
 const SIDEBAR_WIDTH_FILE: &str = "tui-sidebar-width";
 const PLAYLISTS_HEIGHT_FILE: &str = "tui-playlists-height";
 const ROWS_VIEW_FILE: &str = "tui-rows-view";
-/// Lines a song takes in the multi-line rows view: its title, its artist,
-/// then its album, format and length.
-const CARD_ROW_LINES: usize = 3;
+const ROW_LINES_FILE: &str = "tui-row-lines.json";
+/// The fields a line of the multi-line rows view can show, as column ids
+/// ("format" is the codec, or the file's extension without one), in the
+/// line menus' order.
+const ROW_LINE_IDS: [&str; 12] = [
+    "title",
+    "artist",
+    "album",
+    "albumartist",
+    "length",
+    "date",
+    "track",
+    "genre",
+    "playcount",
+    "filename",
+    "path",
+    "format",
+];
+const ROW_LINE_MENU: [&str; 12] = [
+    "Title",
+    "Artist",
+    "Album",
+    "Album Artist",
+    "Length",
+    "Year",
+    "Track Number",
+    "Genre",
+    "Play Count",
+    "Filename",
+    "Path",
+    "Format",
+];
+/// Lines the multi-line rows view can show.
+const ROW_LINE_COUNT: usize = 4;
+const ROW_LINES_MENU: [&str; 6] = [
+    "First Line ›",
+    "Second Line ›",
+    "Third Line ›",
+    "Fourth Line ›",
+    "",
+    "Reset to Default",
+];
 /// The Sort by menu's columns, in its order.
 const SORT_MENU_IDS: [&str; 11] = [
     "index",
@@ -148,6 +187,27 @@ fn load_rows_view() -> bool {
 
 fn save_rows_view(on: bool) -> Result<(), String> {
     kog_audio::settings::save_text(ROWS_VIEW_FILE, if on { "1" } else { "0" })
+}
+
+/// The rows view's lines unless changed: title, artist, then album, format
+/// and length, then the path.
+fn default_row_lines() -> Vec<Vec<String>> {
+    [&["title"][..], &["artist"], &["album", "format", "length"], &["path"]]
+        .iter()
+        .map(|fields| fields.iter().map(|field| (*field).to_owned()).collect())
+        .collect()
+}
+
+fn load_row_lines() -> Vec<Vec<String>> {
+    kog_audio::settings::load_text(ROW_LINES_FILE)
+        .and_then(|text| serde_json::from_str::<Vec<Vec<String>>>(&text).ok())
+        .filter(|lines| lines.len() == ROW_LINE_COUNT)
+        .unwrap_or_else(default_row_lines)
+}
+
+fn save_row_lines(lines: &[Vec<String>]) -> Result<(), String> {
+    let text = serde_json::to_string(lines).map_err(|error| error.to_string())?;
+    kog_audio::settings::save_text(ROW_LINES_FILE, &text)
 }
 
 fn load_playlists_height() -> Option<usize> {
@@ -441,6 +501,8 @@ enum MenuPage {
     MidiBackend,
     Server,
     Sort,
+    RowLines,
+    RowLine(u8),
 }
 
 #[derive(Clone, Copy)]
@@ -475,6 +537,11 @@ impl MenuPage {
             Self::MidiBackend => "MIDI Backend",
             Self::Server => "API Server",
             Self::Sort => "Sort by",
+            Self::RowLines => "Row Lines",
+            Self::RowLine(line) => ["First Line", "Second Line", "Third Line", "Fourth Line"]
+                .get(usize::from(line))
+                .copied()
+                .unwrap_or("Line"),
         }
     }
     fn labels(self) -> &'static [&'static str] {
@@ -500,6 +567,8 @@ impl MenuPage {
             Self::MidiBackend => &MIDI_BACKEND_MENU,
             Self::Server => &SERVER_MENU,
             Self::Sort => &SORT_MENU,
+            Self::RowLines => &ROW_LINES_MENU,
+            Self::RowLine(_) => &ROW_LINE_MENU,
         }
     }
 }
@@ -1334,9 +1403,11 @@ struct Ui {
     files_expanded: bool,
     playlists_expanded: bool,
     sidebar_width: Option<usize>,
-    /// Songs show on three lines each (title, artist, details) instead of
-    /// as the column table.
+    /// Songs show on several lines each (see `row_lines`) instead of as the
+    /// column table.
     rows_view: bool,
+    /// What each line of the rows view shows, as field ids in order.
+    row_lines: Vec<Vec<String>>,
     /// Rows of the sidebar's Playlists pane, set by dragging its header or
     /// Ctrl+Up/Down; None keeps the default of up to six.
     playlists_height: Option<usize>,
@@ -1757,6 +1828,7 @@ impl Ui {
             playlists_expanded: true,
             sidebar_width: load_sidebar_width(),
             rows_view: load_rows_view(),
+            row_lines: load_row_lines(),
             playlists_height: load_playlists_height(),
             playlists_drag: None,
             split_drag: false,
@@ -2784,6 +2856,19 @@ impl Ui {
                 );
             }
             (MenuPage::Sort, index) => self.sort_from_menu(index),
+            (MenuPage::View, 15) => self.open_child_menu(MenuPage::RowLines, size),
+            (MenuPage::RowLines, 0..=3) => {
+                self.open_child_menu(MenuPage::RowLine(index as u8), size)
+            }
+            (MenuPage::RowLines, 5) => {
+                self.set_row_lines(default_row_lines());
+                self.status = "Row lines reset".to_owned();
+            }
+            (MenuPage::RowLine(line), index) => {
+                self.toggle_row_line_field(usize::from(line), index);
+                // Stay open to check more fields.
+                self.menu_open = true;
+            }
             (MenuPage::View, 8..=12) => {
                 self.modal = None;
                 self.visualizer_open = false;
@@ -3459,6 +3544,14 @@ impl Ui {
         if page == MenuPage::View && index == 13 {
             return Some(self.rows_view);
         }
+        if let MenuPage::RowLine(line) = page {
+            let field = ROW_LINE_IDS.get(index)?;
+            return Some(
+                self.row_lines
+                    .get(usize::from(line))
+                    .is_some_and(|fields| fields.iter().any(|shown| shown == field)),
+            );
+        }
         if page == MenuPage::Sort {
             let column = self.columns.index(SORT_MENU_IDS.get(index)?);
             return Some(column.is_some() && column == self.sort_column);
@@ -3620,9 +3713,71 @@ impl Ui {
         );
     }
 
-    /// Terminal lines each song takes: three in the multi-line rows view.
+    /// Terminal lines each song takes: one per non-empty line in the
+    /// multi-line rows view.
     fn track_line_height(&self) -> usize {
-        if self.rows_view && !self.compact_mode { CARD_ROW_LINES } else { 1 }
+        if self.rows_view && !self.compact_mode {
+            self.row_lines.iter().filter(|fields| !fields.is_empty()).count().max(1)
+        } else {
+            1
+        }
+    }
+
+    /// Adds or removes a field at the end of one of the rows view's lines.
+    fn toggle_row_line_field(&mut self, line: usize, index: usize) {
+        let Some(&field) = ROW_LINE_IDS.get(index) else { return };
+        let mut lines = self.row_lines.clone();
+        lines.resize(ROW_LINE_COUNT, Vec::new());
+        let fields = &mut lines[line.min(ROW_LINE_COUNT - 1)];
+        match fields.iter().position(|shown| shown == field) {
+            Some(at) => {
+                fields.remove(at);
+            }
+            None => fields.push(field.to_owned()),
+        }
+        self.set_row_lines(lines);
+    }
+
+    fn set_row_lines(&mut self, lines: Vec<Vec<String>>) {
+        self.row_lines = lines;
+        if let Err(error) = save_row_lines(&self.row_lines) {
+            self.status = format!("Could not save the row lines: {error}");
+        }
+    }
+
+    /// One line of a song in the rows view: its fields joined by a middle
+    /// dot, skipping empty ones. Artist falls back to the album artist
+    /// unless the line shows that too.
+    fn row_line_text(&self, fields: &[String], index: usize, track: &Track) -> String {
+        fields
+            .iter()
+            .map(|field| match field.as_str() {
+                "title" => self.title_for(track),
+                "format" => {
+                    let codec = self.table_column_value(index, track, "codec");
+                    if codec.is_empty() {
+                        track
+                            .name
+                            .rsplit_once('.')
+                            .map(|(_, extension)| extension.to_ascii_uppercase())
+                            .unwrap_or_default()
+                    } else {
+                        codec
+                    }
+                }
+                "artist" => {
+                    let artist = self.table_column_value(index, track, "artist");
+                    if artist.is_empty() && !fields.iter().any(|field| field == "albumartist") {
+                        self.table_column_value(index, track, "albumartist")
+                    } else {
+                        artist
+                    }
+                }
+                other => self.table_column_value(index, track, other),
+            })
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 
     fn toggle_rows_view(&mut self) {
@@ -9457,8 +9612,8 @@ impl Ui {
                 }
             } else {
                 // Multi-line rows, laid out like a mail list: the format's
-                // mark and the title in bold, the artist under it, then the
-                // album, format and length in quieter text. The column
+                // mark in the gutter, then the lines View → Row Lines picks
+                // (title, artist, album · format · length, path). The column
                 // header gives way to what the songs are sorted by.
                 let header = format!(" Sort by: {}  ·  O to change", self.sort_bar_label());
                 paint(
@@ -9559,67 +9714,47 @@ impl Ui {
                         glyph(&track.entry)
                     );
                     paint(&mut screen, top + 1, right_x, &gutter, GUTTER, surface, true);
-                    let title = self.title_for(track);
                     let playing_here = self.table_playing() == Some(index);
-                    register_hover_label(
-                        &mut hover_labels,
-                        text_x - 1,
-                        top,
-                        text_width,
-                        &title,
-                        text_width,
-                    );
-                    paint(
-                        &mut screen,
-                        top + 1,
-                        text_x,
-                        &title,
-                        text_width,
-                        if playing_here { accent } else { surface },
-                        true,
-                    );
-                    if !self.metadata_ready(track) {
+                    // The lines chosen in View → Row Lines, empty ones left
+                    // out: the first bold, the second plain, the rest
+                    // quieter. Paths and filenames clip without an ellipsis.
+                    let ready = self.metadata_ready(track);
+                    for (line, fields) in
+                        self.row_lines.iter().filter(|fields| !fields.is_empty()).enumerate()
+                    {
+                        let fields: Vec<String> = if ready {
+                            fields.clone()
+                        } else {
+                            fields
+                                .iter()
+                                .filter(|field| matches!(field.as_str(), "title" | "path" | "filename"))
+                                .cloned()
+                                .collect()
+                        };
+                        let text = self.row_line_text(&fields, index, track);
+                        register_hover_label(
+                            &mut hover_labels,
+                            text_x - 1,
+                            top + line,
+                            text_width,
+                            &text,
+                            text_width,
+                        );
+                        let line_surface = match line {
+                            0 if playing_here => accent,
+                            0 | 1 => surface,
+                            _ => muted,
+                        };
+                        let clips = fields.iter().any(|field| field == "path" || field == "filename");
+                        if clips {
+                            paint_clipped(&mut screen, top + line + 1, text_x, &text, text_width, line_surface, line == 0);
+                        } else {
+                            paint(&mut screen, top + line + 1, text_x, &text, text_width, line_surface, line == 0);
+                        }
+                    }
+                    if !ready {
                         continue;
                     }
-                    let mut artist = self.table_column_value(index, track, "artist");
-                    if artist.is_empty() {
-                        artist = self.table_column_value(index, track, "albumartist");
-                    }
-                    register_hover_label(
-                        &mut hover_labels,
-                        text_x - 1,
-                        top + 1,
-                        text_width,
-                        &artist,
-                        text_width,
-                    );
-                    paint(&mut screen, top + 2, text_x, &artist, text_width, surface, false);
-                    let mut format = self.table_column_value(index, track, "codec");
-                    if format.is_empty() {
-                        format = track
-                            .name
-                            .rsplit_once('.')
-                            .map(|(_, extension)| extension.to_ascii_uppercase())
-                            .unwrap_or_default();
-                    }
-                    let detail = [
-                        self.table_column_value(index, track, "album"),
-                        format,
-                        self.table_column_value(index, track, "length"),
-                    ]
-                    .into_iter()
-                    .filter(|part| !part.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                    register_hover_label(
-                        &mut hover_labels,
-                        text_x - 1,
-                        top + 2,
-                        text_width,
-                        &detail,
-                        text_width,
-                    );
-                    paint(&mut screen, top + 3, text_x, &detail, text_width, muted, false);
                     let status = self.table_column_value(index, track, "status");
                     let star = self.table_column_value(index, track, "star");
                     paint(
@@ -9637,7 +9772,7 @@ impl Ui {
                         });
                         paint_playlist_waveform(
                             &mut screen,
-                            top + 2,
+                            top + lines.min(2),
                             right_x,
                             content_width,
                             content_width.saturating_sub(TRAILING),
@@ -11451,7 +11586,7 @@ const REMOTE_MENU: [&str; 9] = [
     "Queue Current Folder",
     "Use Local Library",
 ];
-const VIEW_MENU: [&str; 15] = [
+const VIEW_MENU: [&str; 16] = [
     "Show/Hide Files and Playlists",
     "Track Info…",
     "Lyrics…",
@@ -11467,6 +11602,7 @@ const VIEW_MENU: [&str; 15] = [
     "Piano Roll…",
     "Multi-Line Rows",
     "Sort by…",
+    "Row Lines          ›",
 ];
 const PLAYBACK_MENU: [&str; 14] = [
     "Play/Pause",
@@ -12098,6 +12234,25 @@ fn menu_mnemonic(row: &str, shortcut: char) -> Option<(usize, char)> {
         .map(|(byte, character)| (cell_width(&row[..byte]), character))
 }
 
+/// Text cut to `width` cells with no ellipsis, padded with spaces.
+fn clip(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for grapheme in text.graphemes(true) {
+        if grapheme.chars().any(char::is_control) {
+            continue;
+        }
+        let cells = UnicodeWidthStr::width(grapheme);
+        if used + cells > width {
+            break;
+        }
+        out.push_str(grapheme);
+        used += cells;
+    }
+    out.push_str(&" ".repeat(width.saturating_sub(used)));
+    out
+}
+
 fn truncate(text: &str, width: usize) -> String {
     let clipped = cell_width(text) > width;
     let limit = if clipped {
@@ -12436,6 +12591,28 @@ fn paint(
         "\x1b[{row};{col}H\x1b[{};38;2;{foreground};48;2;{background}m{}\x1b[0m",
         if bold { "1" } else { "22" },
         truncate(text, width)
+    ));
+}
+
+/// `paint`, cutting text that doesn't fit at the edge without an ellipsis,
+/// for paths and filenames.
+fn paint_clipped(
+    out: &mut String,
+    row: usize,
+    col: usize,
+    text: &str,
+    width: usize,
+    surface: Surface,
+    bold: bool,
+) {
+    if width == 0 {
+        return;
+    }
+    let (foreground, background) = surface_colors(surface);
+    out.push_str(&format!(
+        "\x1b[{row};{col}H\x1b[{};38;2;{foreground};48;2;{background}m{}\x1b[0m",
+        if bold { "1" } else { "22" },
+        clip(text, width)
     ));
 }
 
@@ -13873,6 +14050,8 @@ mod tests {
             MenuPage::MidiBackend,
             MenuPage::Server,
             MenuPage::Sort,
+            MenuPage::RowLines,
+            MenuPage::RowLine(0),
         ] {
             let shortcuts = menu_shortcuts(page);
             assert_eq!(shortcuts.len(), page.labels().len());
