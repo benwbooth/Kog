@@ -72,12 +72,25 @@ ApplicationWindow {
             const lines = JSON.parse(mainWindowSettings.playlistRowLines)
             if (Array.isArray(lines) && lines.every(Array.isArray)) {
                 if (lines.length === 3)
-                    return lines.concat([["path"]])
+                    return uniqueRowFields(lines.concat([["path"]]))
                 if (lines.length === 4)
-                    return lines
+                    return uniqueRowFields(lines)
             }
         } catch (_) {}
         return defaultPlaylistRowLines
+    }
+    // Each field on one line only: one saved on several (the path, when lines
+    // from before the fourth had it and the fourth was added) stays on the
+    // lowest.
+    function uniqueRowFields(lines) {
+        const below = new Set()
+        const unique = []
+        for (let line = lines.length - 1; line >= 0; --line) {
+            unique.unshift(lines[line].filter(field => !below.has(field)))
+            for (const field of lines[line])
+                below.add(field)
+        }
+        return unique
     }
     function setPlaylistRowLines(lines) {
         mainWindowSettings.playlistRowLines = JSON.stringify(lines) === JSON.stringify(defaultPlaylistRowLines)

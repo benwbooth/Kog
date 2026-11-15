@@ -202,7 +202,21 @@ fn load_row_lines() -> Vec<Vec<String>> {
     kog_audio::settings::load_text(ROW_LINES_FILE)
         .and_then(|text| serde_json::from_str::<Vec<Vec<String>>>(&text).ok())
         .filter(|lines| lines.len() == ROW_LINE_COUNT)
+        .map(unique_row_fields)
         .unwrap_or_else(default_row_lines)
+}
+
+/// Each field on one line only: a field saved on several stays on the
+/// lowest.
+fn unique_row_fields(mut lines: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    for line in (0..lines.len()).rev() {
+        let (above, below) = lines.split_at_mut(line);
+        let Some(fields) = below.first() else { continue };
+        for upper in above.iter_mut() {
+            upper.retain(|field| !fields.contains(field));
+        }
+    }
+    lines
 }
 
 fn save_row_lines(lines: &[Vec<String>]) -> Result<(), String> {
@@ -3728,12 +3742,18 @@ impl Ui {
         let Some(&field) = ROW_LINE_IDS.get(index) else { return };
         let mut lines = self.row_lines.clone();
         lines.resize(ROW_LINE_COUNT, Vec::new());
-        let fields = &mut lines[line.min(ROW_LINE_COUNT - 1)];
-        match fields.iter().position(|shown| shown == field) {
+        let line = line.min(ROW_LINE_COUNT - 1);
+        match lines[line].iter().position(|shown| shown == field) {
             Some(at) => {
-                fields.remove(at);
+                lines[line].remove(at);
             }
-            None => fields.push(field.to_owned()),
+            None => {
+                // A field shows on one line only.
+                for other in lines.iter_mut() {
+                    other.retain(|shown| shown != field);
+                }
+                lines[line].push(field.to_owned());
+            }
         }
         self.set_row_lines(lines);
     }

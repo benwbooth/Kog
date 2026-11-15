@@ -48,10 +48,17 @@ Item {
     function toggleField(line, field) {
         const next = [0, 1, 2, 3].map(index => lineFields(index).slice())
         const at = next[line].indexOf(field)
-        if (at >= 0)
+        if (at >= 0) {
             next[line].splice(at, 1)
-        else
+        } else {
+            // A field shows on one line only.
+            for (const other of next) {
+                const there = other.indexOf(field)
+                if (there >= 0)
+                    other.splice(there, 1)
+            }
             next[line].push(field)
+        }
         rowLinesRequested(next)
     }
     readonly property string sortLabel: {
