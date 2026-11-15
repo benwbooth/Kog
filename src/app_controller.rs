@@ -442,6 +442,10 @@ pub mod qobject {
         #[qinvokable]
         fn track_value_at(self: &AppController, index: i32, column: QString) -> QString;
         #[qinvokable]
+        fn album_groups(self: &AppController) -> QString;
+        #[qinvokable]
+        fn workspace_tab_album_groups(self: &AppController, key: QString, rows: QString) -> QString;
+        #[qinvokable]
         fn track_missing_at(self: &AppController, index: i32) -> bool;
         #[qinvokable]
         fn tag_editor_data(self: &AppController, indices: QString) -> QString;
@@ -6445,6 +6449,33 @@ impl qobject::AppController {
         visible_source_index(self, index)
             .and_then(|source_index| self.rust().tracks.get(source_index))
             .is_some_and(|track| track.missing)
+    }
+
+    /// The cover grid's tiles for the play queue's shown rows: one per
+    /// album, as JSON (see `album_groups::to_json`).
+    pub fn album_groups(&self) -> QString {
+        let rust = self.rust();
+        let groups = crate::album_groups::group(
+            rust.visible_indices
+                .iter()
+                .map(|&index| (index + 1, rust.tracks.get(index))),
+        );
+        qstring(crate::album_groups::to_json(&groups))
+    }
+
+    /// The cover grid's tiles for a playlist tab: `rows` is the JSON list of
+    /// the tab's rows it shows, in order.
+    pub fn workspace_tab_album_groups(&self, key: QString, rows: QString) -> QString {
+        let Some(tracks) = self.tab_workspace_tracks(&key.to_string()) else {
+            return qstring("[]");
+        };
+        let rows: Vec<usize> = serde_json::from_str(&rows.to_string()).unwrap_or_default();
+        let groups = crate::album_groups::group(
+            rows.iter().map(|&row| {
+                (row + 1, tracks.rows.get(row).and_then(|row| row.track.as_ref()))
+            }),
+        );
+        qstring(crate::album_groups::to_json(&groups))
     }
 
     pub fn track_value_at(&self, index: i32, column: QString) -> QString {

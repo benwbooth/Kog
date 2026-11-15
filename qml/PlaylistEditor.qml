@@ -379,13 +379,15 @@ FocusScope {
             searchModel: editor.searchModel
             searchQuery: editor.searchQuery
             selectionTest: row => editor.selection.indexOf(editor.rows[row]) >= 0
+            groupSource: () => editor.app.workspace_tab_album_groups(editor.activeKey,
+                JSON.stringify(editor.rows))
+            rowLines: editor.rowLines
             onPressed: (row, modifiers, button) => {
                 if (button === Qt.RightButton) editor.openContext(editor.rows[row], modifiers)
                 else editor.choose(editor.rows[row], modifiers)
             }
             onActivated: row => editor.activate(editor.rows[row])
             onOpenVisualizer: editor.openVisualizer()
-            onMoveRequested: (delta, modifiers) => editor.moveCursor(delta, modifiers)
             Keys.onReturnPressed: if (list.currentIndex >= 0) editor.activate(editor.rows[list.currentIndex])
             Keys.onEnterPressed: if (list.currentIndex >= 0) editor.activate(editor.rows[list.currentIndex])
             Keys.onPressed: event => {

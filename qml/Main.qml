@@ -4570,12 +4570,12 @@ ApplicationWindow {
                     searchModel: fileTreeModel
                     searchQuery: root.playlistHighlightQuery
                     selectionTest: row => root.isPlaylistRowSelected(row)
+                    groupSource: () => appController.album_groups()
+                    rowLines: root.playlistRowLines
                     onPressed: (row, modifiers, button) =>
                         root.queueRowPressed(row, modifiers, button)
                     onActivated: row => root.queueRowActivated(row)
                     onOpenVisualizer: visualizerWindow.openWaveform()
-                    onMoveRequested: (delta, modifiers) =>
-                        root.keyboardSelectPlaylistRow(delta, modifiers)
                     Keys.onReturnPressed: if (root.selectedRow >= 0)
                         appController.play_index(root.selectedRow)
                     Keys.onEnterPressed: if (root.selectedRow >= 0)

@@ -1,3 +1,4 @@
+mod album_groups;
 mod app_controller;
 mod desktop_art;
 mod desktop_integration;
