@@ -473,7 +473,8 @@ FocusScope {
             // An album's song count.
             Label {
                 x: art.x
-                y: artistLabel.y + artistLabel.height + 1
+                y: tile.artistText.length > 0 ? artistLabel.y + artistLabel.height + 1
+                    : artistLabel.y
                 width: art.width
                 visible: !tile.single
                 text: tile.countText
