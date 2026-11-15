@@ -3187,10 +3187,34 @@ fn App() -> impl IntoView {
     // The cover grid shows one tile per album: songs sharing an album tag and
     // album artist (or artist). Regrouped only when the rows or their tags
     // change, and only for the grid.
-    let album_tiles = Memo::new(move |_| {
+    //
+    // Albums are grouped only once every song's tags are in, so the grid never
+    // shows songs apart that later merge into their album (tags arrive in
+    // batches): until then it keeps the tiles it had for this list (none for
+    // a list just opened) and says how many songs are left to read.
+    let tags_pending = Memo::new(move |_| {
+        if !matches!(view_mode.get(), row_window::ViewMode::Grid | row_window::ViewMode::Flow) {
+            return 0;
+        }
+        all_rows.with(|rows| {
+            metadata.with(|cache| {
+                metadata_failed.with(|failed| rows.iter().filter(|(_, entry)| !metadata_ready(cache, failed, entry)).count())
+            })
+        })
+    });
+    let tiles_scope = StoredValue::new(String::new());
+    let album_tiles = Memo::new(move |previous: Option<&Vec<albums::AlbumTile>>| {
         if !matches!(view_mode.get(), row_window::ViewMode::Grid | row_window::ViewMode::Flow) {
             return Vec::new();
         }
+        let scope = pane_key.get();
+        if tags_pending.get() > 0 {
+            return match previous {
+                Some(tiles) if tiles_scope.with_value(|kept| *kept == scope) => tiles.clone(),
+                _ => Vec::new(),
+            };
+        }
+        tiles_scope.set_value(scope);
         all_rows.with(|rows| {
             metadata.with(|cache| {
                 albums::group(rows, |entry| cache.get(&meta_key(entry)).and_then(Option::as_ref))
@@ -8864,6 +8888,16 @@ fn App() -> impl IntoView {
                                     </Show>
                                 }
                             >
+                                <Show
+                                    when=move || {
+                                        tags_pending.get() != 0
+                                            && album_tiles.with(|tiles| tiles.is_empty())
+                                            && matches!(view_mode.get(), row_window::ViewMode::Grid | row_window::ViewMode::Flow)
+                                    }
+                                    fallback=|| ()
+                                >
+                                    <div class="tags-pending">{move || format!("Reading tags… {} songs to go", tags_pending.get())}</div>
+                                </Show>
                                 <Show when=move || album_open.get() fallback=|| ()>
                                     {move || {
                                         // The album page's head: a big cover, "Album", the

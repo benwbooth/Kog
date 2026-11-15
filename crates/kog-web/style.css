@@ -6672,3 +6672,12 @@ button.primary:hover:not(:disabled) {
 .history-icon svg path {
   stroke: currentColor;
 }
+
+/* While a list's tags are still read and its album tiles cannot show yet. */
+.tags-pending {
+  grid-column: 1 / -1;
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
