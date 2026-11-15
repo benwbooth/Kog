@@ -30,8 +30,9 @@ use mixes::{Home, Inputs, MixSong};
 use store::{Song, Store, now_ms};
 
 /// The lease is renewed this often and lapses after `LEASE_TTL` without.
-const LEASE_RENEW: Duration = Duration::from_secs(30);
-const LEASE_TTL: Duration = Duration::from_secs(120);
+const LEASE_RENEW: Duration = Duration::from_secs(20);
+/// A Kog that stops without letting go (it crashed) holds a lease this long.
+const LEASE_TTL: Duration = Duration::from_secs(60);
 /// How long reading one file's songs may take before it is given up on: a
 /// wedged emulator must not stop the crawl.
 const UNIT_TIMEOUT: Duration = Duration::from_secs(90);
@@ -93,6 +94,8 @@ struct Inner {
 }
 
 pub struct Discover {
+    /// This process's name in the leases.
+    owner: String,
     inner: Mutex<Inner>,
     wake: Condvar,
     generation: AtomicU64,
@@ -105,6 +108,7 @@ pub fn shared() -> Arc<Discover> {
     SHARED
         .get_or_init(|| {
             let discover = Arc::new(Discover {
+                owner: format!("{}-{:x}", std::process::id(), kog_audio::radio::random_seed()),
                 inner: Mutex::new(Inner::default()),
                 wake: Condvar::new(),
                 generation: AtomicU64::new(1),
@@ -220,6 +224,15 @@ fn stamp_of(path: &Path) -> Option<(String, i64)> {
 }
 
 impl Discover {
+    /// Give up this process's leases, as it quits, so another Kog takes over
+    /// the background jobs at once.
+    pub fn release(&self) {
+        if let Ok(store) = Store::open() {
+            store.release_lease(&self.owner);
+            store.release_named_lease("embed_lease", &self.owner);
+        }
+    }
+
     /// Changes whenever the mixes do, so a frontend knows to fetch them.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
@@ -327,7 +340,7 @@ impl Discover {
 
     fn run(self: Arc<Self>) {
         lower_priority();
-        let owner = format!("{}-{:x}", std::process::id(), kog_audio::radio::random_seed());
+        let owner = self.owner.clone();
         let mut store = loop {
             match Store::open() {
                 Ok(store) => break store,
@@ -418,7 +431,13 @@ impl Discover {
             match crawler.step(&self, &mut store) {
                 Step::Indexed => std::thread::sleep(FILE_PAUSE),
                 Step::Analysed => std::thread::sleep(ANALYSIS_PAUSE),
-                Step::Idle => self.sleep(Duration::from_secs(15)),
+                Step::Idle => {
+                    // Nothing to do: let another Kog take the job.
+                    store.release_lease(&owner);
+                    leased = false;
+                    last_lease = Some(Instant::now());
+                    self.sleep(Duration::from_secs(15));
+                }
             }
         }
     }
@@ -649,7 +668,11 @@ impl EmbedWorker {
                 store.unembedded_from(start, 1).into_iter().next()
             })?
         });
-        let Some(song) = song else { return false };
+        let Some(song) = song else {
+            store.release_named_lease("embed_lease", &discover.owner);
+            self.leased = false;
+            return false;
+        };
         note_activity(store, "embed", &mut self.noted, &format!("Listening to {}", song_label(&song)));
         let decoders = Arc::clone(&crawler.decoders);
         let settings = crawler.decoder_settings.clone();

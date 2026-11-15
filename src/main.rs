@@ -184,6 +184,9 @@ fn main() {
     desktop_integration::restore_main_window();
 
     application.exec();
+    // Hand the background jobs (library index, sound model) to the server
+    // or another Kog at once.
+    kog_server::discover::shared().release();
 }
 
 /// An import path whose org.kog.player module is the embedded one with each

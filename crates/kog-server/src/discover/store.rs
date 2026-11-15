@@ -274,12 +274,16 @@ impl Store {
     }
 
     pub fn release_lease(&self, owner: &str) {
-        if self
-            .meta("lease")
-            .is_some_and(|value| value.split_once('|').is_some_and(|(holder, _)| holder == owner))
-        {
-            let _ = self.conn.execute("DELETE FROM meta WHERE key = 'lease'", []);
-        }
+        self.release_named_lease("lease", owner);
+    }
+
+    /// Give up a job's lease if `owner` holds it, so another Kog can take
+    /// the job at once instead of waiting for it to lapse.
+    pub fn release_named_lease(&self, name: &str, owner: &str) {
+        let _ = self.conn.execute(
+            "DELETE FROM meta WHERE key = ?1 AND value LIKE ?2",
+            params![name, format!("{owner}|%")],
+        );
     }
 
     /// The stamp a file was indexed with, when it was.
