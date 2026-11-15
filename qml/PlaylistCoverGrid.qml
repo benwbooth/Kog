@@ -510,7 +510,9 @@ FocusScope {
                     title: tile.titleText
                     subtitle: tile.artistText
                 }
-                // The tile image already has its corners rounded.
+                // The tile image already has its corners rounded. It shows
+                // whole, at the bottom centre of the square, so a tall game
+                // box and a square cover share a baseline.
                 Image {
                     id: cover
                     anchors.fill: parent
@@ -521,10 +523,20 @@ FocusScope {
                     smooth: true
                     mipmap: true
                     fillMode: Image.PreserveAspectFit
+                    verticalAlignment: Image.AlignBottom
+                }
+                // The image as drawn (the square without one): the ring, the
+                // play button and the playing pill follow its corners.
+                Item {
+                    id: shownArt
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    width: cover.visible && cover.paintedWidth > 0 ? cover.paintedWidth : parent.width
+                    height: cover.visible && cover.paintedHeight > 0 ? cover.paintedHeight : parent.height
                 }
                 // The selected tile's cover gets the accent ring.
                 Rectangle {
-                    anchors.fill: parent
+                    anchors.fill: shownArt
                     anchors.margins: -3
                     radius: 10
                     color: "transparent"
@@ -536,8 +548,8 @@ FocusScope {
                 // tile is pointed at.
                 Rectangle {
                     id: playButton
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
+                    anchors.right: shownArt.right
+                    anchors.bottom: shownArt.bottom
                     anchors.margins: 8
                     width: 40
                     height: 40
@@ -561,8 +573,8 @@ FocusScope {
                 }
                 // The playing song: its state and meter in a dark pill on the art.
                 Rectangle {
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
+                    anchors.right: shownArt.right
+                    anchors.bottom: shownArt.bottom
                     anchors.margins: 6
                     width: tile.isPlaying ? 62 : 30
                     height: 30
@@ -657,7 +669,8 @@ FocusScope {
                 property real hoverX: -1
                 property real hoverY: -1
                 readonly property bool overPlay: playButton.visible && hoverX >= 0
-                    && hoverX >= art.x + art.width - 48 && hoverX < art.x + art.width
+                    && hoverX >= art.x + shownArt.x + shownArt.width - 48
+                    && hoverX < art.x + shownArt.x + shownArt.width
                     && hoverY >= art.y + art.height - 48 && hoverY < art.y + art.height
                 anchors.fill: parent
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -690,7 +703,7 @@ FocusScope {
                 onDoubleClicked: mouse => {
                     if (mouse.button !== Qt.LeftButton)
                         return
-                    if (tile.isPlaying && mouse.x >= art.x + art.width - 60
+                    if (tile.isPlaying && mouse.x >= art.x + shownArt.x + shownArt.width - 60
                             && mouse.y >= art.y + art.height - 36
                             && mouse.y < art.y + art.height) {
                         browser.openVisualizer()
@@ -847,6 +860,7 @@ FocusScope {
                     smooth: true
                     mipmap: true
                     fillMode: Image.PreserveAspectFit
+                    verticalAlignment: Image.AlignBottom
                 }
             }
 
@@ -1158,6 +1172,7 @@ FocusScope {
                             smooth: true
                             mipmap: true
                             fillMode: Image.PreserveAspectFit
+                            verticalAlignment: Image.AlignBottom
                         }
                     }
                     // The centre album's play button, shown while the flow is

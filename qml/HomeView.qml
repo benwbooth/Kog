@@ -292,7 +292,7 @@ Item {
                         height: side
                         sourceSize.width: 256
                         sourceSize.height: 256
-                        fillMode: Image.PreserveAspectCrop
+                        fillMode: Image.PreserveAspectFit
                         asynchronous: true
                         smooth: true
                         mipmap: true
