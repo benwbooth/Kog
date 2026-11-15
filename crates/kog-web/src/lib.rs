@@ -976,6 +976,9 @@ fn styled_font(selector: &str, fallback: &str) -> String {
     format!("{} {} {}", weight.trim(), size.trim(), family.trim())
 }
 
+/// Two bars that take the text color.
+const PAUSE_GLYPH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 5h3.5v14H7zm6.5 0H17v14h-3.5z"/></svg>"#;
+
 /// A filled play triangle that takes the text color.
 const PLAY_GLYPH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>"#;
 
@@ -5841,6 +5844,23 @@ fn App() -> impl IntoView {
         playlist_workspace.send(kog_playback_policy::workspace::Command::Activate { index });
     };
 
+    // An album's play button: pauses or resumes while the playing song is
+    // one of its songs (by their positions in the shown rows), and plays it
+    // from its first song otherwise.
+    let album_has_current = move |positions: &[usize]| {
+        pane_current.get().is_some_and(|current| {
+            all_rows.with(|rows| positions.iter().any(|&position| rows.get(position).is_some_and(|(index, _)| *index == current)))
+        })
+    };
+    let album_playing = move |positions: &[usize]| playing.get() && !stopped.get() && album_has_current(positions);
+    let toggle_album = move |positions: &[usize]| {
+        if !stopped.get_untracked() && album_has_current(positions) {
+            toggle_play();
+        } else if let Some(index) = positions.first().and_then(|&first| all_rows.with_untracked(|rows| rows.get(first).map(|(index, _)| *index))) {
+            activate_row(index);
+        }
+    };
+
     // The cover grid's album page: opening it remembers where the grid was
     // scrolled, and Back, Escape, Backspace or the mouse's back button
     // return there.
@@ -8274,6 +8294,11 @@ fn App() -> impl IntoView {
                                                     let tags = Memo::new(move |_| metadata.with(|cache| cache.get(&key).cloned().flatten()));
                                                     thumbs::load_for_row(base(), token.get_untracked(), entry, tags, cover, true);
                                                 }
+                                                let flow_rows = tile_info.as_ref().map(|info| info.rows.clone()).unwrap_or_default();
+                                                let active_rows = flow_rows.clone();
+                                                let label_rows = flow_rows.clone();
+                                                let glyph_rows = flow_rows.clone();
+                                                let button_rows = flow_rows.clone();
                                                 let mark = first
                                                     .as_ref()
                                                     .map(|(_, entry)| match file_icon(&entry.path, &entry.entry) {
@@ -8308,12 +8333,25 @@ fn App() -> impl IntoView {
                                                         }
                                                         on:dblclick=move |_| {
                                                             if flow_target.get_untracked() == tile {
-                                                                if let Some((index, _)) = &first {
-                                                                    activate_row(*index);
-                                                                }
+                                                                toggle_album(&flow_rows);
                                                             }
                                                         }
                                                     >
+                                                        // The centre album's play button.
+                                                        <span
+                                                            class="cover-flow-play"
+                                                            class:active=move || !stopped.get() && album_has_current(&active_rows)
+                                                            role="button"
+                                                            tabindex="-1"
+                                                            aria-label=move || if album_playing(&label_rows) { "Pause" } else { "Play" }
+                                                            inner_html=move || if album_playing(&glyph_rows) { PAUSE_GLYPH } else { PLAY_GLYPH }
+                                                            on:pointerdown=move |ev: web_sys::PointerEvent| ev.stop_propagation()
+                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                ev.stop_propagation();
+                                                                toggle_album(&button_rows);
+                                                            }
+                                                            on:dblclick=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                                        ></span>
                                                         <div class="cover-flow-art" class:has-cover=move || cover.with(Option::is_some)>
                                                             <span class="cover-flow-mark" inner_html=mark></span>
                                                             {move || cover.get().map(|src| view! {
@@ -8582,6 +8620,7 @@ fn App() -> impl IntoView {
                                             thumbs::load_for_row(base(), token.get_untracked(), entry, tags, cover, true);
                                         }
                                         let first_index = first.map(|(index, _)| index);
+                                        let open_rows = move || open_tile.with(|tile| tile.as_ref().map(|tile| tile.rows.clone()));
                                         let title = move || open_tile.with(|tile| tile.as_ref().map(|tile| tile.album.clone()).unwrap_or_default());
                                         let details = move || open_tile.with(|tile| {
                                             tile.as_ref()
@@ -8623,11 +8662,13 @@ fn App() -> impl IntoView {
                                                         <button
                                                             class="album-page-play"
                                                             type="button"
-                                                            title="Play"
-                                                            aria-label="Play album"
-                                                            inner_html=PLAY_GLYPH
+                                                            title=move || if open_rows().is_some_and(|rows| album_playing(&rows)) { "Pause" } else { "Play" }
+                                                            aria-label=move || if open_rows().is_some_and(|rows| album_playing(&rows)) { "Pause" } else { "Play album" }
+                                                            inner_html=move || if open_rows().is_some_and(|rows| album_playing(&rows)) { PAUSE_GLYPH } else { PLAY_GLYPH }
                                                             on:click=move |_| {
-                                                                if let Some(index) = first_index {
+                                                                if let Some(rows) = open_rows() {
+                                                                    toggle_album(&rows);
+                                                                } else if let Some(index) = first_index {
                                                                     activate_row(index);
                                                                 }
                                                             }
@@ -9025,12 +9066,17 @@ fn App() -> impl IntoView {
                                                                     class="tile-play"
                                                                     role="button"
                                                                     tabindex="-1"
-                                                                    aria-label="Play"
-                                                                    title="Play"
-                                                                    inner_html=PLAY_GLYPH
+                                                                    aria-label=move || if row_current.get() && playing.get() { "Pause" } else { "Play" }
+                                                                    title=move || if row_current.get() && playing.get() { "Pause" } else { "Play" }
+                                                                    inner_html=move || if row_current.get() && playing.get() { PAUSE_GLYPH } else { PLAY_GLYPH }
                                                                     on:click=move |ev: web_sys::MouseEvent| {
                                                                         ev.stop_propagation();
-                                                                        activate_row(index);
+                                                                        // The playing album pauses and resumes.
+                                                                        if row_current.get_untracked() && !stopped.get_untracked() {
+                                                                            toggle_play();
+                                                                        } else {
+                                                                            activate_row(index);
+                                                                        }
                                                                     }
                                                                     on:dblclick=move |ev: web_sys::MouseEvent| ev.stop_propagation()
                                                                 ></span>

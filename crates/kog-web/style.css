@@ -6068,8 +6068,10 @@ button.primary:hover:not(:disabled) {
   transform: scale(1.06);
 }
 
-.rows.view-grid .track.current .tile-play {
-  display: none;
+/* On the playing tile, the play button (then pause) takes the pill's place
+ * while pointed at. */
+.rows.view-grid .track.current:hover .row-card-playing {
+  opacity: 0;
 }
 
 .tile-play svg {
@@ -6334,4 +6336,30 @@ button.primary:hover:not(:disabled) {
   border-radius: 2px;
   background: var(--muted);
   opacity: 0.6;
+}
+
+.cover-flow-play {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 2;
+  display: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--highlight);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.cover-flow-item.centre:hover .cover-flow-play,
+.cover-flow-item.centre .cover-flow-play.active {
+  display: grid;
+}
+
+.cover-flow-play svg {
+  width: 20px;
+  height: 20px;
 }
