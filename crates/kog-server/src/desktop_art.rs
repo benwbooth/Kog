@@ -126,10 +126,10 @@ pub fn is_rejected_file(cover_cache: &Path, path: &Path) -> bool {
     readable(cover_cache, path).is_none()
 }
 
-/// Coverage of the pixel at (x, y) by a square of `size` with rounded
-/// corners: 1 inside, 0 outside, anti-aliased along the curve.
-fn coverage(x: u32, y: u32, size: u32, radius: f32) -> f32 {
-    let centre = |value: u32| {
+/// Coverage of the pixel at (x, y) by a `width` by `height` rectangle with
+/// rounded corners: 1 inside, 0 outside, anti-aliased along the curve.
+fn coverage(x: u32, y: u32, width: u32, height: u32, radius: f32) -> f32 {
+    let centre = |value: u32, size: u32| {
         let value = value as f32 + 0.5;
         let far = size as f32 - radius;
         if value < radius {
@@ -140,7 +140,7 @@ fn coverage(x: u32, y: u32, size: u32, radius: f32) -> f32 {
             0.0
         }
     };
-    let (dx, dy) = (centre(x), centre(y));
+    let (dx, dy) = (centre(x, width), centre(y, height));
     if dx == 0.0 || dy == 0.0 {
         return 1.0;
     }
@@ -148,16 +148,24 @@ fn coverage(x: u32, y: u32, size: u32, radius: f32) -> f32 {
 }
 
 fn round_corners(image: &mut RgbaImage) {
-    let size = image.width();
-    let radius = radius_for(size);
+    let (width, height) = image.dimensions();
+    let radius = radius_for(width.max(height)).min(width.min(height) as f32 / 2.0);
     for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let alpha = coverage(x, y, size, radius);
+        let alpha = coverage(x, y, width, height, radius);
         if alpha < 1.0 {
             pixel.0[3] = (f32::from(pixel.0[3]) * alpha).round() as u8;
         }
     }
 }
 
+/// The whole cover, scaled to fit within `side` pixels either way: a tall
+/// game box stays tall rather than losing its top and bottom.
+fn fit(bytes: &[u8], side: u32) -> Option<RgbaImage> {
+    let image = image::load_from_memory(bytes).ok()?;
+    Some(image.resize(side, side, image::imageops::FilterType::Triangle).to_rgba8())
+}
+
+/// A square of the middle, for the playlist icons' tiles.
 fn square(bytes: &[u8], side: u32) -> Option<RgbaImage> {
     let image = image::load_from_memory(bytes).ok()?;
     Some(
@@ -211,13 +219,14 @@ pub fn song_icon(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> 
     song_image(cover_cache, file, artist, album, ICON_SIZE)
 }
 
-/// The song's cover as a rounded square of `side` pixels ([`ICON_SIZE`]
-/// for a row, [`TILE_SIZE`] for the cover grid), or `None` for a song
-/// without one on disk.
+/// The song's whole cover with rounded corners, fitted within `side` pixels
+/// ([`ICON_SIZE`] for a row, [`TILE_SIZE`] for the cover grid), or `None`
+/// for a song without one on disk. (Named "-f", fitted: the "-r" squares
+/// before cut tall covers off.)
 pub fn song_image(cover_cache: &Path, file: &Path, artist: &str, album: &str, side: u32) -> Option<SongIcon> {
     let (cover, provisional) = song_cover(cover_cache, file, artist, album)?;
-    let name = format!("{:016x}-r{side}.png", fnv(FNV_START, &cover));
-    let path = keep(&beside(cover_cache, THUMB_DIRECTORY), &name, || square(&cover, side))?;
+    let name = format!("{:016x}-f{side}.png", fnv(FNV_START, &cover));
+    let path = keep(&beside(cover_cache, THUMB_DIRECTORY), &name, || fit(&cover, side))?;
     Some(SongIcon { path, provisional })
 }
 
@@ -299,6 +308,26 @@ mod tests {
         assert_eq!(image.dimensions(), (ICON_SIZE, ICON_SIZE));
         assert_eq!(image.get_pixel(0, 0).0[3], 0);
         assert_eq!(image.get_pixel(ICON_SIZE / 2, ICON_SIZE / 2).0, [200, 30, 30, 255]);
+    }
+
+    #[test]
+    fn tall_covers_are_fitted_whole_not_cut_to_a_square() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("covers");
+        let album = root.path().join("game");
+        std::fs::create_dir_all(&album).unwrap();
+        let mut tall = Vec::new();
+        image::RgbImage::from_pixel(200, 300, image::Rgb([20, 40, 200]))
+            .write_to(&mut std::io::Cursor::new(&mut tall), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(album.join("folder.png"), tall).unwrap();
+        let song = album.join("01.vgz");
+        std::fs::write(&song, b"not really").unwrap();
+        let tile = song_image(&cache, &song, "", "Game", TILE_SIZE).unwrap();
+        let image = image::open(&tile.path).unwrap().to_rgba8();
+        assert_eq!(image.dimensions(), (TILE_SIZE * 2 / 3, TILE_SIZE));
+        assert_eq!(image.get_pixel(0, 0).0[3], 0);
+        assert_eq!(image.get_pixel(TILE_SIZE / 3, TILE_SIZE / 2).0, [20, 40, 200, 255]);
     }
 
     #[test]

@@ -72,11 +72,12 @@ fn valid_name(name: &str) -> bool {
     name.len() == 16 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// A square JPEG of the cover's middle, `side` pixels across.
+/// A JPEG of the whole cover, fitted within `side` pixels either way: a
+/// tall game box stays tall rather than losing its top and bottom.
 fn shrink(bytes: &[u8], side: u32) -> Option<Vec<u8>> {
     let image = image::load_from_memory(bytes).ok()?;
     let small = image
-        .resize_to_fill(side, side, image::imageops::FilterType::Triangle)
+        .resize(side, side, image::imageops::FilterType::Triangle)
         .to_rgb8();
     let mut out = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 82)
@@ -136,7 +137,10 @@ impl Thumbs {
     fn thumbnail(&self, cover: &[u8], large: bool) -> Option<String> {
         // The large image's name is told apart by a mark hashed in after
         // the cover, so both sizes share the directory and the image route.
-        let print = if large { fnv_more(fnv(cover), b"large") } else { fnv(cover) };
+        // Fitted thumbnails are named apart from the cropped squares before
+        // them, so none of those is shown again.
+        let print = fnv_more(fnv(cover), b"fit");
+        let print = if large { fnv_more(print, b"large") } else { print };
         let name = format!("{print:016x}");
         let path = self.dir.join(&name);
         if !path.is_file() {
@@ -291,7 +295,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn thumbnails_are_small_squares_named_by_their_cover() {
+    fn thumbnails_fit_the_whole_cover_named_by_it() {
         let directory = tempfile::tempdir().unwrap();
         let thumbs = Thumbs::beside(&directory.path().join("covers"));
         let mut cover = Vec::new();
@@ -302,7 +306,7 @@ mod tests {
         assert!(valid_name(&name));
         assert_eq!(thumbs.thumbnail(&cover, false).as_deref(), Some(name.as_str()));
         let small = image::load_from_memory(&std::fs::read(thumbs.dir.join(&name)).unwrap()).unwrap();
-        assert_eq!((small.width(), small.height()), (SIZE, SIZE));
+        assert_eq!((small.width(), small.height()), (SIZE, SIZE * 2 / 3));
         assert!(thumbs.thumbnail(b"not an image", false).is_none());
     }
 }
