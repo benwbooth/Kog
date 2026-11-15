@@ -9,7 +9,8 @@ import QtQuick.Controls.impl as ControlsImpl
 // and how many songs it has; a song with no album tag is a tile of its own.
 // Clicking an album opens its page (a big cover, its details, a play button
 // and its songs as rows); Back, Escape or Backspace returns to the grid where
-// it was. Reads the same row data as PlaylistRow (track_value_at,
+// it was. With flow set, the albums show instead as a cover flow over the
+// chosen album's songs. Reads the same row data as PlaylistRow (track_value_at,
 // track_tile_at, ...) plus the host's tiles (groupSource), and reports
 // presses and activations by row the same way, so the play queue and the
 // playlist tabs drive it like their lists.
@@ -28,6 +29,9 @@ FocusScope {
     // The tiles for the rows shown, as JSON from Rust:
     // [{key, album, artist, year, length, single, rows, numbers}].
     property var groupSource: function() { return "[]" }
+    // Show the albums as a cover flow, with the chosen album's songs below,
+    // instead of a grid.
+    property bool flow: false
     // What the album page's rows show, as the rows view's lines.
     property var rowLines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
 
@@ -110,7 +114,11 @@ FocusScope {
     // Shows a row's tile, as the lists show a row.
     function positionViewAtIndex(row, mode) {
         const tile = rowTile[row]
-        if (tile !== undefined && openTile < 0)
+        if (tile === undefined)
+            return
+        if (flow)
+            flowPane.moveTo(tile)
+        else if (openTile < 0)
             grid.positionViewAtIndex(tile, mode)
     }
 
@@ -154,7 +162,7 @@ FocusScope {
         id: grid
 
         anchors.fill: parent
-        visible: browser.openGroup === null
+        visible: !browser.flow && browser.openGroup === null
         focus: visible
 
         // The tile count. Assigning a new integer model resets the view to
@@ -562,7 +570,7 @@ FocusScope {
         id: albumList
 
         anchors.fill: parent
-        visible: browser.openGroup !== null
+        visible: !browser.flow && browser.openGroup !== null
         focus: visible
         clip: true
         model: browser.openGroup ? browser.openGroup.rows.length : 0
@@ -796,6 +804,500 @@ FocusScope {
                 browser.pressed(row, modifiers, button)
             }
             onActivated: row => browser.activated(row)
+        }
+    }
+
+    // The cover flow: the albums as covers in a row, the centre one facing
+    // forward and its neighbours turned and receding, each over its
+    // reflection. Arrows, the wheel and dragging move through them on a
+    // spring; clicking an album lists its songs in the pane below, under a
+    // splitter that can be dragged.
+    Item {
+        id: flowPane
+
+        anchors.fill: parent
+        visible: browser.flow
+        focus: visible
+
+        // The flow's share of the pane's height, kept with the preferences.
+        property real split: {
+            const saved = browser.app.load_ui_setting
+                ? Number(browser.app.load_ui_setting("coverFlowSplit", "0.5")) : 0.5
+            return saved > 0.15 && saved < 0.9 ? saved : 0.5
+        }
+        function saveSplit() {
+            if (browser.app.save_ui_setting)
+                browser.app.save_ui_setting("coverFlowSplit", String(split))
+        }
+
+        // The album the arrows move to, and the shown position, which
+        // springs after it (or follows the pointer while dragging).
+        property int target: 0
+        property real position: 0
+        property bool dragging: false
+        readonly property int count: browser.groups.length
+        readonly property int centre: Math.max(0, Math.min(count - 1, Math.round(position)))
+        onTargetChanged: if (!dragging) position = target
+        Behavior on position {
+            enabled: !flowPane.dragging
+            SpringAnimation {
+                spring: 3.2
+                damping: 0.32
+                mass: 1
+                epsilon: 0.0005
+            }
+        }
+        function moveTo(tile) {
+            target = Math.max(0, Math.min(count - 1, tile))
+        }
+        onCountChanged: if (target >= count) moveTo(count - 1)
+
+        // The album listed below, by its key so it stays put as tiles move;
+        // until one is clicked, the first.
+        property string chosenKey: ""
+        readonly property var chosenGroup: {
+            const groups = browser.groups
+            if (chosenKey.length > 0) {
+                const found = groups.find(group => (group.single ? "row:" + group.rows[0] : group.key) === chosenKey)
+                if (found)
+                    return found
+            }
+            return groups.length > 0 ? groups[0] : null
+        }
+        function choose(tile) {
+            const group = browser.groups[tile]
+            if (!group)
+                return
+            moveTo(tile)
+            chosenKey = group.single ? "row:" + group.rows[0] : group.key
+            browser.albumCursor = -1
+            if (group.rows.length > 0)
+                browser.pressed(group.rows[0], Qt.NoModifier, Qt.LeftButton)
+            flowSongs.positionViewAtBeginning()
+        }
+
+        Keys.onLeftPressed: event => { moveTo(target - 1); event.accepted = true }
+        Keys.onRightPressed: event => { moveTo(target + 1); event.accepted = true }
+        Keys.onPressed: event => {
+            if (event.key === Qt.Key_Home) {
+                moveTo(0)
+                event.accepted = true
+            } else if (event.key === Qt.Key_End) {
+                moveTo(count - 1)
+                event.accepted = true
+            } else if (event.key === Qt.Key_PageUp) {
+                moveTo(target - 5)
+                event.accepted = true
+            } else if (event.key === Qt.Key_PageDown) {
+                moveTo(target + 5)
+                event.accepted = true
+            }
+        }
+        Keys.onReturnPressed: event => { choose(target); event.accepted = true }
+        Keys.onEnterPressed: event => { choose(target); event.accepted = true }
+        Keys.onDownPressed: event => { flowSongs.forceActiveFocus(); event.accepted = true }
+
+        Item {
+            id: coverFlow
+
+            width: parent.width
+            height: Math.round(Math.max(150, Math.min(parent.height - 90,
+                parent.height * flowPane.split)))
+            clip: true
+
+            // The covers' size and spacing: the centre one fills most of the
+            // height above its reflection, its neighbours tuck in behind.
+            readonly property real coverSize: Math.max(60, Math.min((height - 46) / 1.3, width * 0.36))
+            readonly property real centreGap: coverSize * 0.72
+            readonly property real sideGap: coverSize * 0.26
+            readonly property int side: Math.max(2, Math.min(9,
+                Math.ceil((width / 2 - centreGap) / sideGap) + 1))
+            readonly property int slots: side * 2 + 1
+            readonly property real coverTop: 12
+
+            // Slot k shows the tile within reach of the centre whose index
+            // leaves k modulo the slot count, so moving one album changes
+            // only the slot that wraps around.
+            Repeater {
+                model: coverFlow.slots
+
+                Item {
+                    id: slot
+
+                    required property int index
+                    readonly property int first: Math.round(flowPane.position) - coverFlow.side
+                    readonly property int tile: first
+                        + (((index - first) % coverFlow.slots) + coverFlow.slots) % coverFlow.slots
+                    readonly property var group: tile >= 0 && tile < flowPane.count
+                        ? browser.groups[tile] : null
+                    readonly property real offset: tile - flowPane.position
+                    readonly property real distance: Math.abs(offset)
+                    readonly property real turn: Math.max(-1, Math.min(1, offset))
+                    readonly property string coverUrl: {
+                        if (!group)
+                            return ""
+                        browser.revision
+                        browser.app.desktop_art_revision
+                        return String(browser.app.track_tile_at(group.rows[0]))
+                    }
+
+                    visible: group !== null && distance <= coverFlow.side
+                    width: coverFlow.coverSize
+                    height: coverFlow.coverSize * 1.3
+                    x: coverFlow.width / 2 - width / 2 + (distance < 1
+                        ? offset * coverFlow.centreGap
+                        : Math.sign(offset) * (coverFlow.centreGap + (distance - 1) * coverFlow.sideGap))
+                    y: coverFlow.coverTop
+                    z: 1000 - Math.round(distance * 10)
+                    scale: distance < 1 ? 1 - 0.18 * distance : 0.82
+                    transform: Rotation {
+                        origin.x: slot.width / 2
+                        origin.y: coverFlow.coverSize / 2
+                        axis { x: 0; y: 1; z: 0 }
+                        angle: -58 * slot.turn
+                    }
+
+                    Item {
+                        id: coverBox
+                        width: coverFlow.coverSize
+                        height: width
+
+                        Rectangle {
+                            id: blank
+                            width: coverFlow.coverSize
+                            height: width
+                            radius: 6
+                            visible: !art.visible
+                            color: Qt.rgba(browser.theme.text.r, browser.theme.text.g, browser.theme.text.b,
+                                browser.darkTiles ? 0.1 : 0.08)
+                            border.width: 1
+                            border.color: Qt.rgba(browser.theme.text.r, browser.theme.text.g,
+                                browser.theme.text.b, 0.08)
+                            Image {
+                                anchors.centerIn: parent
+                                width: Math.round(parent.width * 0.32)
+                                height: width
+                                source: Qt.resolvedUrl("icons/kog-format-audio"
+                                    + (browser.darkTiles ? "-light" : "") + ".svg")
+                                sourceSize.width: 128
+                                sourceSize.height: 128
+                                opacity: 0.55
+                            }
+                        }
+                        Image {
+                            id: art
+                            width: coverFlow.coverSize
+                            height: width
+                            source: slot.coverUrl
+                            visible: status === Image.Ready
+                            asynchronous: true
+                            cache: true
+                            smooth: true
+                            mipmap: true
+                            fillMode: Image.PreserveAspectFit
+                        }
+                    }
+                    // The reflection: the cover (or its blank) upside down,
+                    // fading out.
+                    Item {
+                        y: coverFlow.coverSize + 2
+                        width: coverFlow.coverSize
+                        height: coverFlow.coverSize * 0.3 - 2
+                        clip: true
+                        opacity: 0.32
+                        ShaderEffectSource {
+                            width: coverFlow.coverSize
+                            height: width
+                            sourceItem: coverBox
+                            smooth: true
+                            transform: Scale {
+                                origin.y: coverFlow.coverSize / 2
+                                yScale: -1
+                            }
+                        }
+                        Rectangle {
+                            anchors.fill: parent
+                            gradient: Gradient {
+                                GradientStop {
+                                    position: 0
+                                    color: Qt.rgba(browser.theme.base.r, browser.theme.base.g,
+                                        browser.theme.base.b, 0.2)
+                                }
+                                GradientStop { position: 0.85; color: browser.theme.base }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // The centre album's name and artist under its reflection.
+            Column {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 6
+                width: Math.min(parent.width - 24, coverFlow.coverSize * 2.4)
+                z: 2000
+                readonly property var group: browser.groups[flowPane.centre] || null
+
+                Label {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    text: {
+                        const group = parent.group
+                        if (!group)
+                            return ""
+                        if (!group.single)
+                            return group.album
+                        browser.revision
+                        return String(browser.app.track_value_at(group.rows[0], "title"))
+                    }
+                    font.pixelSize: 14
+                    font.bold: true
+                    color: browser.theme.text
+                    elide: Text.ElideRight
+                }
+                Label {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    text: {
+                        const group = parent.group
+                        if (!group)
+                            return ""
+                        const count = group.rows.length
+                        return [group.artist, group.single ? ""
+                                : (count === 1 ? qsTr("1 song") : qsTr("%1 songs").arg(count))]
+                            .filter(part => part.length > 0).join("  ·  ")
+                    }
+                    font.pixelSize: 12
+                    color: browser.mutedText
+                    elide: Text.ElideRight
+                }
+            }
+
+            // Wheel, drag and click: the wheel steps an album per notch (or
+            // per 60 pixels of a touchpad's swipe), a drag follows the
+            // pointer and coasts to the nearest album, a click brings an
+            // album to the centre and lists its songs, and a double click on
+            // the centre plays it.
+            MouseArea {
+                id: flowPointer
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton
+                z: 3000
+                property real wheelRest: 0
+                property real pressX: 0
+                property real pressPosition: 0
+                property real lastX: 0
+                property real lastTime: 0
+                property real velocity: 0
+                property bool moved: false
+
+                onWheel: wheel => {
+                    const pixels = wheel.pixelDelta.x !== 0 || wheel.pixelDelta.y !== 0
+                    const delta = Math.abs(wheel.angleDelta.x) > Math.abs(wheel.angleDelta.y)
+                        ? -wheel.angleDelta.x : -wheel.angleDelta.y
+                    const pixelDelta = Math.abs(wheel.pixelDelta.x) > Math.abs(wheel.pixelDelta.y)
+                        ? -wheel.pixelDelta.x : -wheel.pixelDelta.y
+                    wheelRest += pixels ? pixelDelta / 60 : delta / 120
+                    const steps = wheelRest > 0 ? Math.floor(wheelRest) : Math.ceil(wheelRest)
+                    if (steps !== 0) {
+                        wheelRest -= steps
+                        flowPane.moveTo(flowPane.target + steps)
+                    }
+                    wheel.accepted = true
+                }
+                onPressed: mouse => {
+                    flowPane.forceActiveFocus()
+                    pressX = mouse.x
+                    lastX = mouse.x
+                    lastTime = Date.now()
+                    velocity = 0
+                    pressPosition = flowPane.position
+                    moved = false
+                }
+                onPositionChanged: mouse => {
+                    if (!pressed)
+                        return
+                    if (!moved && Math.abs(mouse.x - pressX) < 6)
+                        return
+                    if (!moved) {
+                        moved = true
+                        flowPane.dragging = true
+                    }
+                    const now = Date.now()
+                    const elapsed = Math.max(1, now - lastTime)
+                    velocity = 0.7 * velocity + 0.3 * (mouse.x - lastX) / elapsed
+                    lastX = mouse.x
+                    lastTime = now
+                    flowPane.position = Math.max(-0.4, Math.min(flowPane.count - 0.6,
+                        pressPosition - (mouse.x - pressX) / coverFlow.sideGap / 1.6))
+                }
+                onReleased: mouse => {
+                    if (!moved)
+                        return
+                    // Coast on: the release speed carries a few albums on.
+                    const coast = -velocity * 260 / coverFlow.sideGap / 1.6
+                    flowPane.dragging = false
+                    const landing = Math.max(0, Math.min(flowPane.count - 1,
+                        Math.round(flowPane.position + coast)))
+                    if (landing === flowPane.target)
+                        flowPane.position = landing
+                    flowPane.target = landing
+                }
+                onCanceled: {
+                    flowPane.dragging = false
+                    flowPane.position = flowPane.target
+                }
+                function tileAt(x, y) {
+                    // The nearest covers are on top: try them first.
+                    let best = -1
+                    let bestDistance = 1e9
+                    for (let i = 0; i < coverFlow.children.length; ++i) {
+                        const item = coverFlow.children[i]
+                        if (item.tile === undefined || !item.visible)
+                            continue
+                        const half = coverFlow.coverSize * item.scale
+                            * (item.distance < 1 ? 1 - 0.5 * item.distance : 0.5) / 2
+                        const centreX = item.x + item.width / 2
+                        if (Math.abs(x - centreX) <= half && y >= coverFlow.coverTop
+                                && y <= coverFlow.coverTop + coverFlow.coverSize
+                                && item.distance < bestDistance) {
+                            best = item.tile
+                            bestDistance = item.distance
+                        }
+                    }
+                    return best
+                }
+                onClicked: mouse => {
+                    if (moved)
+                        return
+                    const tile = tileAt(mouse.x, mouse.y)
+                    if (tile >= 0)
+                        flowPane.choose(tile)
+                }
+                onDoubleClicked: mouse => {
+                    const tile = tileAt(mouse.x, mouse.y)
+                    if (tile >= 0 && tile === flowPane.centre)
+                        browser.playTile(tile)
+                }
+            }
+        }
+
+        // The splitter between the flow and the songs.
+        Rectangle {
+            id: flowSplitter
+            y: coverFlow.height
+            width: parent.width
+            height: 7
+            color: splitDrag.containsMouse || splitDrag.pressed
+                ? Qt.rgba(browser.theme.highlight.r, browser.theme.highlight.g, browser.theme.highlight.b, 0.35)
+                : "transparent"
+            Rectangle {
+                anchors.centerIn: parent
+                width: 44
+                height: 3
+                radius: 1.5
+                color: browser.mutedText
+                opacity: 0.6
+            }
+            MouseArea {
+                id: splitDrag
+                anchors.fill: parent
+                anchors.topMargin: -3
+                anchors.bottomMargin: -3
+                hoverEnabled: true
+                cursorShape: Qt.SplitVCursor
+                onPositionChanged: mouse => {
+                    if (!pressed)
+                        return
+                    const y = mapToItem(flowPane, mouse.x, mouse.y).y
+                    flowPane.split = Math.max(0.2, Math.min(0.85, y / Math.max(1, flowPane.height)))
+                }
+                onReleased: flowPane.saveSplit()
+            }
+        }
+
+        // The chosen album's songs, as the rows view shows them.
+        ListView {
+            id: flowSongs
+
+            anchors.top: flowSplitter.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            clip: true
+            model: flowPane.chosenGroup ? flowPane.chosenGroup.rows.length : 0
+            boundsBehavior: Flickable.StopAtBounds
+            maximumFlickVelocity: 12000
+            flickDeceleration: 2200
+            reuseItems: true
+            cacheBuffer: Math.min(height, 800)
+
+            readonly property var group: flowPane.chosenGroup
+            readonly property real verticalScrollGutter: flowSongsBar.visible
+                ? flowSongsBar.implicitWidth + 4 : 0
+
+            function moveCursor(delta) {
+                const rows = group ? group.rows : []
+                if (rows.length === 0)
+                    return
+                browser.albumCursor = Math.max(0, Math.min(rows.length - 1,
+                    browser.albumCursor < 0 ? 0 : browser.albumCursor + delta))
+                browser.pressed(rows[browser.albumCursor], Qt.NoModifier, Qt.LeftButton)
+                positionViewAtIndex(browser.albumCursor, ListView.Contain)
+            }
+            Keys.onUpPressed: event => {
+                if (browser.albumCursor <= 0)
+                    flowPane.forceActiveFocus()
+                else
+                    moveCursor(-1)
+                event.accepted = true
+            }
+            Keys.onDownPressed: event => { moveCursor(1); event.accepted = true }
+            Keys.onReturnPressed: event => {
+                if (group && browser.albumCursor >= 0)
+                    browser.activated(group.rows[browser.albumCursor])
+                event.accepted = true
+            }
+            Keys.onEnterPressed: event => {
+                if (group && browser.albumCursor >= 0)
+                    browser.activated(group.rows[browser.albumCursor])
+                event.accepted = true
+            }
+
+            onContentYChanged: flowSongsBar.flash()
+            ScrollBar.vertical: FadingScrollBar {
+                id: flowSongsBar
+                edgeInset: 10
+                onPressedChanged: if (pressed) flowSongsWheel.stop()
+            }
+            KineticWheelHandler {
+                id: flowSongsWheel
+                view: flowSongs
+            }
+
+            delegate: PlaylistCardRow {
+                required property int index
+                width: flowSongs.width - flowSongs.verticalScrollGutter
+                app: browser.app
+                theme: browser.theme
+                searchModel: browser.searchModel
+                searchQuery: browser.searchQuery
+                lines: browser.rowLines
+                rowIndex: flowSongs.group && index < flowSongs.group.rows.length
+                    ? flowSongs.group.rows[index] : -1
+                selected: {
+                    browser.revision
+                    return rowIndex >= 0 && browser.selectionTest(rowIndex)
+                }
+                onOpenVisualizer: browser.openVisualizer()
+                onPressed: (row, modifiers, button) => {
+                    flowSongs.forceActiveFocus()
+                    browser.albumCursor = index
+                    browser.pressed(row, modifiers, button)
+                }
+                onActivated: row => browser.activated(row)
+            }
         }
     }
 

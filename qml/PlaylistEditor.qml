@@ -13,6 +13,8 @@ FocusScope {
     // "grid" (cover tiles); the compact skin always lists.
     property string viewMode: "list"
     readonly property string shownMode: compact ? "list" : viewMode
+    // The cover grid and cover flow both show album tiles.
+    readonly property bool tileMode: shownMode === "grid" || shownMode === "flow"
     // What each of the rows view's four lines shows; the window keeps it.
     property var rowLines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
     property var defaultRowLines: rowLines
@@ -34,7 +36,7 @@ FocusScope {
         }
         return Math.max(58, 12 + total + Math.max(0, shown - 1))
     }
-    readonly property Item focusView: shownMode === "grid" ? coverGrid : list
+    readonly property Item focusView: tileMode ? coverGrid : list
     property var searchModel: fallbackSearch
     property string searchQuery: ""
     property string sortColumn: "index"
@@ -79,7 +81,7 @@ FocusScope {
         if (!live || playingRow < 0)
             return
         const at = rows.indexOf(playingRow)
-        if (shownMode === "grid") {
+        if (tileMode) {
             revealPending = at < 0 || coverGrid.height <= 0
             if (!revealPending)
                 coverGrid.positionViewAtIndex(at, GridView.Contain)
@@ -195,7 +197,7 @@ FocusScope {
         if (!rows.length) return
         const next = Math.max(0, Math.min(rows.length - 1, list.currentIndex + delta))
         choose(rows[next], modifiers)
-        if (shownMode === "grid")
+        if (tileMode)
             coverGrid.positionViewAtIndex(next, GridView.Contain)
         else
             list.positionViewAtIndex(next, ListView.Contain)
@@ -287,7 +289,7 @@ FocusScope {
             Layout.preferredHeight: implicitHeight
             theme: editor.theme
             orderLabel: qsTr("Playlist Order")
-            showLines: editor.shownMode === "rows"
+            showLines: editor.shownMode === "rows" || editor.shownMode === "flow"
             rowLines: editor.rowLines
             defaultRowLines: editor.defaultRowLines
             onRowLinesRequested: lines => editor.rowLinesRequested(lines)
@@ -306,7 +308,7 @@ FocusScope {
         ListView {
             id: list
             objectName: "workspacePlaylistView"
-            visible: editor.shownMode !== "grid"
+            visible: !editor.tileMode
             onHeightChanged: if (editor.revealPending) Qt.callLater(editor.revealPlaying)
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -370,7 +372,7 @@ FocusScope {
         PlaylistCoverGrid {
             id: coverGrid
             objectName: "workspaceCoverGrid"
-            visible: editor.shownMode === "grid"
+            visible: editor.tileMode
             Layout.fillWidth: true
             Layout.fillHeight: true
             rowCount: visible ? editor.rows.length : 0
@@ -382,6 +384,7 @@ FocusScope {
             groupSource: () => editor.app.workspace_tab_album_groups(editor.activeKey,
                 JSON.stringify(editor.rows))
             rowLines: editor.rowLines
+            flow: editor.shownMode === "flow"
             onPressed: (row, modifiers, button) => {
                 if (button === Qt.RightButton) editor.openContext(editor.rows[row], modifiers)
                 else editor.choose(editor.rows[row], modifiers)

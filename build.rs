@@ -184,6 +184,8 @@ fn main() {
         "qml/icons/view-list-rows-light.svg",
         "qml/icons/view-grid.svg",
         "qml/icons/view-grid-light.svg",
+        "qml/icons/view-coverflow.svg",
+        "qml/icons/view-coverflow-light.svg",
         "qml/icons/view-list-tree.svg",
         "qml/icons/view-list-tree-light.svg",
         "qml/icons/view-restore.svg",

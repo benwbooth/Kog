@@ -45,6 +45,8 @@ ApplicationWindow {
     function setPlaylistViewMode(mode) {
         mainWindowSettings.playlistViewMode = mode
     }
+    // The cover grid and cover flow both show album tiles.
+    readonly property bool playlistTileMode: playlistViewMode === "grid" || playlistViewMode === "flow"
     readonly property real playlistRowHeight: playlistViewMode === "rows"
         ? cardRowHeight(playlistRowLines) : 24
     // The rows view's height: its lines' heights (13, 12, 11 and 10px
@@ -868,7 +870,7 @@ ApplicationWindow {
         const state = JSON.parse(appController.selection_json(JSON.stringify({indices:selectedRows, anchor:selectionAnchor >= 0 ? selectionAnchor : null}),
             JSON.stringify({op:"choose", index:row, gesture:range ? (toggle ? "add_range" : "range") : (toggle ? "toggle" : "replace")}), appController.playlist_count))
         setPlaylistSelection(state.indices, row, state.anchor === null ? -1 : state.anchor)
-        if (playlistViewMode === "grid")
+        if (playlistTileMode)
             queueCoverGrid.forceActiveFocus()
         else
             playlistView.forceActiveFocus()
@@ -1074,7 +1076,7 @@ ApplicationWindow {
         const target = Math.max(0, Math.min(start + delta,
             appController.playlist_count - 1))
         selectPlaylistRow(target, modifiers)
-        if (playlistViewMode === "grid")
+        if (playlistTileMode)
             queueCoverGrid.positionViewAtIndex(target, GridView.Contain)
         else
             playlistView.positionViewAtIndex(target, ListView.Contain)
@@ -1085,7 +1087,7 @@ ApplicationWindow {
         if (button !== Qt.RightButton || !isPlaylistRowSelected(row))
             selectPlaylistRow(row, modifiers)
         if (button === Qt.RightButton) {
-            if (playlistViewMode === "grid")
+            if (playlistTileMode)
                 queueCoverGrid.forceActiveFocus()
             else
                 playlistView.forceActiveFocus()
@@ -1131,7 +1133,7 @@ ApplicationWindow {
         for (let row = appController.playlist_count - 1; row >= 0; --row) {
             if (Number(appController.track_number_at(row))
                     === activeSourceIndex + 1) {
-                if (playlistViewMode === "grid")
+                if (playlistTileMode)
                     queueCoverGrid.positionViewAtIndex(row, GridView.Contain)
                 else
                     playlistView.revealRowFully(row)
@@ -1142,7 +1144,7 @@ ApplicationWindow {
 
     function playlistDropIndex(y) {
         // Tiles flow in rows of several: dropped songs go at the end.
-        if (playlistViewMode === "grid")
+        if (playlistTileMode)
             return appController.playlist_count
         const contentPosition = y + playlistView.contentY
         const row = playlistView.indexAt(1, contentPosition)
@@ -2828,7 +2830,8 @@ ApplicationWindow {
                         model: [
                             { mode: "list", icon: "view-list-details", tip: qsTr("Show as List") },
                             { mode: "rows", icon: "view-list-rows", tip: qsTr("Show as Rows") },
-                            { mode: "grid", icon: "view-grid", tip: qsTr("Show as Cover Grid") }
+                            { mode: "grid", icon: "view-grid", tip: qsTr("Show as Cover Grid") },
+                            { mode: "flow", icon: "view-coverflow", tip: qsTr("Show as Cover Flow") }
                         ]
                         ToolbarButton {
                             required property var modelData
@@ -4353,7 +4356,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.preferredHeight: implicitHeight
                     theme: root.themePalette
-                    showLines: root.playlistViewMode === "rows"
+                    showLines: root.playlistViewMode === "rows" || root.playlistViewMode === "flow"
                     rowLines: root.playlistRowLines
                     defaultRowLines: root.defaultPlaylistRowLines
                     onRowLinesRequested: lines => root.setPlaylistRowLines(lines)
@@ -4402,7 +4405,7 @@ ApplicationWindow {
                     id: playlistView
                     objectName: "queuePlaylistView"
                     visible: root.playlistWorkspace.active === "queue"
-                        && root.playlistViewMode !== "grid"
+                        && !root.playlistTileMode
                     onVisibleChanged: if (!visible) root.playlistDropTarget = -1
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -4561,7 +4564,7 @@ ApplicationWindow {
                     id: queueCoverGrid
                     objectName: "queueCoverGrid"
                     visible: root.playlistWorkspace.active === "queue"
-                        && root.playlistViewMode === "grid"
+                        && root.playlistTileMode
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     rowCount: visible ? appController.playlist_count : 0
@@ -4571,6 +4574,7 @@ ApplicationWindow {
                     searchQuery: root.playlistHighlightQuery
                     selectionTest: row => root.isPlaylistRowSelected(row)
                     groupSource: () => appController.album_groups()
+                    flow: root.playlistViewMode === "flow"
                     rowLines: root.playlistRowLines
                     onPressed: (row, modifiers, button) =>
                         root.queueRowPressed(row, modifiers, button)
@@ -4601,9 +4605,9 @@ ApplicationWindow {
             DropArea {
                 enabled: root.playlistWorkspace.active === "queue"
                 x: 0
-                y: root.playlistViewMode === "grid" ? queueCoverGrid.y : playlistView.y
+                y: root.playlistTileMode ? queueCoverGrid.y : playlistView.y
                 width: parent.width
-                height: root.playlistViewMode === "grid" ? queueCoverGrid.height
+                height: root.playlistTileMode ? queueCoverGrid.height
                     : playlistView.height
                 onEntered: drag => {
                     if (drag.hasUrls
