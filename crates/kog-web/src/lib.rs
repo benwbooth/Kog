@@ -3327,7 +3327,8 @@ fn App() -> impl IntoView {
                         }
                     }
                     let gaps = shown.max(1) - 1;
-                    top += (text + gaps as f64 + 14.0).max(64.0).ceil();
+                    // No shorter than the cover with the playing strip.
+                    top += (text + gaps as f64 + 14.0).max(78.0).ceil();
                     offsets.push(top);
                 }
                 Some(std::sync::Arc::new(offsets))
@@ -9294,6 +9295,32 @@ fn App() -> impl IntoView {
                                                                             }}
                                                                         </Show>
                                                                     </span>
+                                                                </Show>
+                                                            </span>
+                                                            // The rows view's playing mark under the cover: the
+                                                            // play or pause icon and the meter, in room every
+                                                            // row keeps so nothing moves with playback.
+                                                            <span
+                                                                class="row-art-mark"
+                                                                title="Open audio visualizer"
+                                                                on:click=move |ev: web_sys::MouseEvent| {
+                                                                    if row_current.get_untracked() && playing.get_untracked() {
+                                                                        ev.stop_propagation();
+                                                                        set_visualizer_spectrum_mode.set(false);
+                                                                        set_visualizer_open.set(true);
+                                                                    }
+                                                                }
+                                                                on:dblclick=move |ev: web_sys::MouseEvent| {
+                                                                    if row_current.get_untracked() && playing.get_untracked() {
+                                                                        ev.stop_propagation();
+                                                                    }
+                                                                }
+                                                            >
+                                                                <Show when=move || row_current.get() && !stopped.get() fallback=|| ()>
+                                                                    <span class="row-title-state">{move || if playing.get() { "▶" } else { "Ⅱ" }}</span>
+                                                                    <Show when=move || playing.get() fallback=|| ()>
+                                                                        <RowMeter levels=audio_levels pinned=false height=14.0/>
+                                                                    </Show>
                                                                 </Show>
                                                             </span>
                                                             <span class="row-card-copy">

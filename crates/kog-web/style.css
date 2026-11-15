@@ -6431,3 +6431,47 @@ button.primary:hover:not(:disabled) {
 .rows.view-grid .row-card-art:not(.has-cover) .row-card-mark {
   display: none;
 }
+
+/* The rows view's playing mark sits under the cover: the play or pause
+ * icon and the meter, in room every row keeps (rows are at least as tall as
+ * the cover and the strip) so nothing moves when a song starts or stops.
+ * The cover's pill is for the grid. */
+.row-art-mark {
+  display: none;
+}
+
+.rows.view-rows .row-card {
+  position: relative;
+  min-height: 78px;
+}
+
+.rows.view-rows .track {
+  min-height: 78px;
+}
+
+.rows.view-rows .row-card-art {
+  margin-bottom: 20px;
+}
+
+.rows.view-rows .row-art-mark {
+  position: absolute;
+  top: calc(50% + 14px);
+  left: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 44px;
+  height: 16px;
+  color: var(--highlight);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.track.selected .row-art-mark {
+  color: var(--highlight-text);
+}
+
+.rows.view-rows .row-card-playing {
+  display: none;
+}
