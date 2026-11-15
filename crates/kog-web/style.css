@@ -2862,9 +2862,12 @@ body.touch .track .index-cell {
     font-size: 12px;
   }
 
+  /* The playing mark's room is kept on every row, so a title never moves
+   * when its song starts or stops. */
   .mobile-track-status:empty,
   .mobile-track-status.idle {
-    display: none;
+    visibility: hidden;
+    pointer-events: none;
   }
 
   .mobile-track-title,
