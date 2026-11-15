@@ -8922,9 +8922,11 @@ impl Ui {
                     self.toggle_star();
                     return;
                 }
+                // The playing mark sits in the gutter under the format
+                // glyph (beside it on a one-line card).
                 if button & (3 | 4 | 8 | 16) == 0
-                    && line == 1
-                    && x + 9 >= right
+                    && line <= 1
+                    && x < layout.playlist_left() + 1 + CARD_GUTTER
                     && self.table_playing() == Some(index)
                     && self.player.state() == PlaybackState::Playing
                 {
@@ -9923,9 +9925,36 @@ impl Ui {
                         };
                         paint(&mut screen, top + row + 1, text_x, text, text_width, line_surface, *kind == 0);
                     }
+                    // The playing song's mark in the gutter under its format
+                    // glyph: its state, then a short meter. A one-line card
+                    // has it beside the glyph.
+                    let state = self.player.state();
+                    if playing_here && state != PlaybackState::Stopped {
+                        let mark_row = if height > 1 { top + 2 } else { top + 1 };
+                        let mark_x = if height > 1 { right_x } else { right_x + 2 };
+                        let mark = if state == PlaybackState::Playing { "▶" } else { "Ⅱ" };
+                        paint(&mut screen, mark_row, mark_x, mark, 1, accent, true);
+                        if state == PlaybackState::Playing {
+                            let glyphs = status_waveform.get_or_insert_with(|| {
+                                status_waveform_glyphs(self.player.audio_levels())
+                            });
+                            let (_, background) = surface_colors(surface);
+                            for (column, &(glyph, (red, green, blue))) in glyphs.iter().step_by(2).take(3).enumerate() {
+                                if mark_x + 1 + column >= text_x {
+                                    break;
+                                }
+                                screen.push_str(&format!(
+                                    "\x1b[{mark_row};{}H\x1b[38;2;{red};{green};{blue};48;2;{background}m{glyph}\x1b[0m",
+                                    mark_x + 1 + column,
+                                ));
+                            }
+                        }
+                    }
                     let ready = self.metadata_ready(track);
                     if ready {
-                        let status = self.table_column_value(index, track, "status");
+                        // The right end keeps the queue's marks and the star;
+                        // the playing state sits before the title.
+                        let status = if playing_here { String::new() } else { self.table_column_value(index, track, "status") };
                         let star = self.table_column_value(index, track, "star");
                         paint(
                             &mut screen,
@@ -9933,25 +9962,9 @@ impl Ui {
                             trailing_x,
                             &format!("{status:>6} {}", if star.is_empty() { " " } else { "★" }),
                             TRAILING,
-                            if playing_here { accent } else { surface },
+                            surface,
                             true,
                         );
-                        if playing_here && self.player.state() == PlaybackState::Playing && height > 1 {
-                            let glyphs = status_waveform.get_or_insert_with(|| {
-                                status_waveform_glyphs(self.player.audio_levels())
-                            });
-                            paint_playlist_waveform(
-                                &mut screen,
-                                top + 2,
-                                right_x,
-                                content_width,
-                                content_width.saturating_sub(TRAILING),
-                                TRAILING,
-                                0,
-                                glyphs,
-                                surface,
-                            );
-                        }
                     }
                     top += height;
                 }
