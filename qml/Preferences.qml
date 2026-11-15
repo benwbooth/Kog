@@ -297,7 +297,7 @@ Window {
                             try {
                                 const status = JSON.parse(root.app.discover_json()).status || {}
                                 modelState = status.embedding
-                                    ? qsTr("Sound model: %1. %2 songs measured.").arg(status.embedding)
+                                    ? qsTr("The sound model %1. %2 songs heard.").arg(status.embedding)
                                         .arg(Number(status.embedded || 0).toLocaleString(Qt.locale(), "f", 0))
                                     : ""
                             } catch (_) {

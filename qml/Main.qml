@@ -3285,6 +3285,11 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
+                    // What Kog is doing in the background, on a click.
+                    BackgroundActivity {
+                        app: appController
+                        colors: root.palette
+                    }
                     Label {
                         id: buildStampLabel
                         objectName: "buildStampFooter"

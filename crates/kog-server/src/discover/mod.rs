@@ -64,6 +64,12 @@ pub struct Status {
     pub embedded: i64,
     /// Folders the crawl has still to read (0 once the library is read).
     pub folders_left: i64,
+    /// What the crawl (and, apart, the sound model) is doing, in whichever
+    /// Kog runs it, and when it last said so (ms since the epoch).
+    pub crawl_activity: String,
+    pub crawl_at: i64,
+    pub embed_activity: String,
+    pub embed_at: i64,
     /// Where the sound model runs ("MIGraphX", "WebGPU", "CPU"), why it
     /// does not, or empty when another Kog runs it.
     pub embedding: String,
@@ -110,6 +116,36 @@ pub fn shared() -> Arc<Discover> {
             discover
         })
         .clone()
+}
+
+/// Say what a background job is doing, for the activity panel of every Kog
+/// sharing the index. Written at most every two seconds per job.
+fn note_activity(store: &Store, job: &str, last: &mut i64, text: &str) {
+    let now = now_ms();
+    if now - *last < 2000 {
+        return;
+    }
+    *last = now;
+    let _ = store.set_meta(&format!("activity.{job}"), &format!("{now}|{text}"));
+}
+
+fn read_activity(store: &Store, job: &str) -> (String, i64) {
+    store
+        .meta(&format!("activity.{job}"))
+        .and_then(|value| {
+            let (at, text) = value.split_once('|')?;
+            Some((text.to_owned(), at.parse().ok()?))
+        })
+        .unwrap_or_default()
+}
+
+/// A song as the activity panel names it.
+fn song_label(song: &Song) -> String {
+    if song.album.trim().is_empty() || song.album == song.title {
+        song.title.clone()
+    } else {
+        format!("{} ({})", song.title, song.album)
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -307,6 +343,7 @@ impl Discover {
         let root = settings.music_directory.clone().filter(|root| root.is_dir());
         let read_cue = settings.read_cue_sheets_in_folders;
         let mut crawler = Crawler {
+            noted: 0,
             decoders,
             decoder_settings,
             root,
@@ -317,6 +354,7 @@ impl Discover {
         let mut last_lease: Option<Instant> = None;
         let mut last_poll: Option<Instant> = None;
         let mut last_status: Option<Instant> = None;
+        let mut last_activity: Option<Instant> = None;
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let mut embedder = EmbedWorker::new(&store);
         self.seed_from_history();
@@ -327,13 +365,28 @@ impl Discover {
                 embedder.renew(&store, &owner);
                 last_lease = Some(Instant::now());
             }
+            if last_activity.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
+                let (crawl_activity, crawl_at) = read_activity(&store, "crawl");
+                let (embed_activity, embed_at) = read_activity(&store, "embed");
+                let mut inner = lock(&self.inner);
+                inner.status.crawl_activity = crawl_activity;
+                inner.status.crawl_at = crawl_at;
+                inner.status.embed_activity = embed_activity;
+                inner.status.embed_at = embed_at;
+                last_activity = Some(Instant::now());
+            }
             if last_status.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
                 let (songs, analysed, files) = store.counts();
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 let embedding = embedder.state();
                 #[cfg(any(target_os = "android", target_os = "ios"))]
                 let embedding = String::new();
+                let previous = lock(&self.inner).status.clone();
                 lock(&self.inner).status = Status {
+                    crawl_activity: previous.crawl_activity,
+                    crawl_at: previous.crawl_at,
+                    embed_activity: previous.embed_activity,
+                    embed_at: previous.embed_at,
                     songs,
                     analysed,
                     files,
@@ -440,6 +493,8 @@ impl Discover {
         }
         let plays = db.plays_since(0).unwrap_or_default();
         let stars = db.starred_entries().unwrap_or_default();
+        let mut noted = 0;
+        note_activity(store, "crawl", &mut noted, "Making new mixes");
         let home = mixes::make_home(&Inputs {
             store,
             plays: &plays,
@@ -509,6 +564,7 @@ struct EmbedWorker {
     error: String,
     tried: Option<Instant>,
     leased: bool,
+    noted: i64,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -522,16 +578,16 @@ impl EmbedWorker {
             store.clear_embeddings();
             let _ = store.set_meta("embedding_model", embedding::MODEL_ID);
         }
-        Self { backend: embedding::Backend::current(), model: None, error: String::new(), tried: None, leased: false }
+        Self { backend: embedding::Backend::current(), model: None, error: String::new(), tried: None, leased: false, noted: 0 }
     }
 
     fn state(&self) -> String {
         if self.backend == embedding::Backend::Off {
-            return "off".into();
+            return "is turned off".into();
         }
         match &self.model {
-            Some(model) => model.providers.join(", "),
-            None if !self.error.is_empty() => self.error.clone(),
+            Some(model) => format!("runs on {}", model.providers.join(", ")),
+            None if !self.error.is_empty() => format!("is not running: {}", self.error),
             None => String::new(),
         }
     }
@@ -594,6 +650,7 @@ impl EmbedWorker {
             })?
         });
         let Some(song) = song else { return false };
+        note_activity(store, "embed", &mut self.noted, &format!("Listening to {}", song_label(&song)));
         let decoders = Arc::clone(&crawler.decoders);
         let settings = crawler.decoder_settings.clone();
         let entry = song.stored_entry();
@@ -634,6 +691,8 @@ enum Step {
 }
 
 struct Crawler {
+    /// When the activity panel was last told what this does.
+    noted: i64,
     decoders: Arc<DecoderRegistry>,
     decoder_settings: DecoderSettings,
     root: Option<PathBuf>,
@@ -731,6 +790,8 @@ impl Crawler {
             store.finish_folder(node);
             return;
         };
+        self.noted = 0;
+        note_activity(store, "crawl", &mut self.noted, &format!("Reading {}", path.display()));
         let listing = with_timeout(UNIT_TIMEOUT, {
             let path = path.clone();
             move || std::fs::read_dir(&path).map(|entries| entries.filter_map(Result::ok).collect::<Vec<_>>())
@@ -818,6 +879,7 @@ impl Crawler {
     }
 
     fn analyse(&mut self, store: &mut Store, song: &Song) {
+        note_activity(store, "crawl", &mut self.noted, &format!("Measuring {}", song_label(song)));
         let decoders = Arc::clone(&self.decoders);
         let settings = self.decoder_settings.clone();
         let entry = song.stored_entry();

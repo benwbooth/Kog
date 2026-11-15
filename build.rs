@@ -60,6 +60,7 @@ fn main() {
         "qml/PlaylistHeader.qml",
         "qml/PlaylistWorkspaceBar.qml",
         "qml/HomeView.qml",
+        "qml/BackgroundActivity.qml",
         "qml/WaveformMeter.qml",
         "qml/PlaylistDropIndicator.qml",
         "qml/PlaylistEditor.qml",
