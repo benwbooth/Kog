@@ -232,7 +232,9 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: 14
         anchors.verticalCenter: parent.verticalCenter
-        width: (root.isActiveTrack ? 40 : 0) + 22
+        // Room for the playing icon and meter on every row, so the text never
+        // reflows when a song starts or stops.
+        width: 62
         height: 24
 
         Item {
