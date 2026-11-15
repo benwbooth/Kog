@@ -68,6 +68,10 @@ CREATE INDEX IF NOT EXISTS songs_by_added ON songs(added_at);
 CREATE INDEX IF NOT EXISTS songs_by_features ON songs(features_at);
 ";
 
+/// Which way of reading songs filled the index; bump it when what is read
+/// from a file changes, so every file is read again.
+const INDEX_VERSION: &str = "2";
+
 /// One indexed song. `locator` is the library's key for it (see
 /// `media_filter::locator_for`); `file_key` is the same without the
 /// subsong, shared by every song of a multi-song file.
@@ -209,7 +213,14 @@ impl Store {
             .map_err(|e| e.to_string())?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| format!("creating the library index: {e}"))?;
-        Ok(Self { conn })
+        let store = Self { conn };
+        // Songs read by an older way of reading are read again (their sound
+        // features are kept): forget the files' stamps and revisit folders.
+        if store.meta("index_version").as_deref() != Some(INDEX_VERSION) {
+            let _ = store.conn.execute_batch("DELETE FROM files; UPDATE folders SET done = 0;");
+            let _ = store.set_meta("index_version", INDEX_VERSION);
+        }
+        Ok(store)
     }
 
     pub fn meta(&self, key: &str) -> Option<String> {

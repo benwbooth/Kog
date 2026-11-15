@@ -8,6 +8,38 @@ pub const QUEUE_TAB: &str = "queue";
 /// (mobile) never enable it, so their tab strips are unchanged.
 pub const HOME_TAB: &str = "home";
 
+/// Mixes on the Home tab open as read-only playlist tabs. Their playlist ids
+/// are negative and name the mix's slot ("daily-2", "weekly"), so every host
+/// can load a mix tab from its id, whatever library scope it uses.
+const MIX_SERIES: [(&str, i64); 3] = [("daily-", 1_000), ("album-", 2_000), ("artist-", 3_000)];
+const MIX_SINGLES: [(&str, i64); 4] = [("weekly", 9_001), ("forgotten", 9_002), ("year", 9_003), ("new", 9_004)];
+
+pub fn mix_playlist_id(mix: &str) -> Option<i64> {
+    if let Some((_, id)) = MIX_SINGLES.iter().find(|(name, _)| *name == mix) {
+        return Some(-id);
+    }
+    MIX_SERIES.iter().find_map(|(prefix, base)| {
+        let number: i64 = mix.strip_prefix(prefix)?.parse().ok()?;
+        (1..1_000).contains(&number).then_some(-(base + number))
+    })
+}
+
+pub fn mix_from_playlist_id(id: i64) -> Option<String> {
+    let id = id.checked_neg()?;
+    if let Some((name, _)) = MIX_SINGLES.iter().find(|(_, single)| *single == id) {
+        return Some((*name).to_owned());
+    }
+    MIX_SERIES.iter().find_map(|(prefix, base)| {
+        let number = id - base;
+        (1..1_000).contains(&number).then(|| format!("{prefix}{number}"))
+    })
+}
+
+/// The tab key a mix opens under.
+pub fn mix_tab_key(mix: &str) -> String {
+    format!("mix:{mix}")
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueAction {

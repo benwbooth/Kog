@@ -46,6 +46,7 @@ impl Controller {
                 return Err(format!("Cannot restore the saved session: {error}"));
             }
         }
+        model.enable_home();
         if let Some(port) = self.output.get_value() { port.run(SessionEffect::Stop); }
         self.model.set_value(model);
         self.loaded_scope.set_value(Some(base));
@@ -76,13 +77,23 @@ impl Controller {
         });
         let updated = matches!(&command, SessionCommand::UpdateItem { .. });
         let tags_only = matches!(&command, SessionCommand::Metadata { .. });
-        let effects = {
+        let (effects, listens) = {
             let mut model = self.model.write_value();
             let _ = model.dispatch(SessionCommand::Scopes {
-                scopes: vec![scope],
+                scopes: vec![scope.clone()],
             });
-            model.dispatch(command)
+            let effects = model.dispatch(command);
+            (effects, model.take_listens())
         };
+        // Songs that stopped playing go into the server's listening history,
+        // which the Home mixes are made from.
+        if !listens.is_empty() {
+            let header = self.auth.run(());
+            leptos::task::spawn_local(async move {
+                let body = serde_json::to_value(&listens).unwrap_or_default();
+                let _ = post_json(format!("{scope}/api/history"), header, body).await;
+            });
+        }
         let changed = updated
             || effects
                 .iter()
@@ -128,8 +139,11 @@ impl Controller {
                     scope,
                     playlist_id,
                 } => {
+                    let mix = kog_playback_policy::workspace::mix_from_playlist_id(playlist_id);
                     let result = if scope != base {
                         Err("Connect to the original playlist server".into())
+                    } else if let Some(mix) = mix {
+                        request("GET", format!("{scope}/api/discover/mix?id={mix}"), header, None).await
                     } else {
                         request(
                             "GET",

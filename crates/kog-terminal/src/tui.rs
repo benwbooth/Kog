@@ -41,6 +41,7 @@ mod mml;
 mod session;
 mod table;
 mod workspace;
+mod home;
 use crate::columns::Columns;
 use crate::cover_preview::{self, COVER_HEIGHT, COVER_WIDTH, CoverPreview};
 use crate::remote::{
@@ -1346,6 +1347,12 @@ struct Ui {
     workspace_entries: Vec<serde_json::Value>,
     workspace_tracks: Vec<Track>,
     workspace_query: String,
+    /// The Home tab's lines, the mixes' generation they show, and its
+    /// cursor and scroll.
+    home_lines: Vec<home::HomeLine>,
+    home_generation: u64,
+    home_cursor: usize,
+    home_offset: usize,
     library: Arc<Library>,
     decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
@@ -1785,6 +1792,10 @@ impl Ui {
             workspace_entries: Vec::new(),
             workspace_tracks: Vec::new(),
             workspace_query: String::new(),
+            home_lines: Vec::new(),
+            home_generation: 0,
+            home_cursor: 0,
+            home_offset: 0,
             tracks: Vec::new(),
             selected_tracks: HashSet::new(),
             export: None,
@@ -1915,6 +1926,9 @@ impl Ui {
                 serde_json::from_str(text).map_err(|e| format!("Invalid saved session: {e}"))
             })
             .map(|value| value.and_then(|value| ui.session.restore(value, session::decode_track)));
+        // The pinned Home tab, and the background index and mixes behind it.
+        ui.session.enable_home();
+        let _ = kog_server::discover::shared();
         let restored = match restore {
             Some(Ok(_)) => true,
             Some(Err(error)) => {
@@ -7555,6 +7569,9 @@ impl Ui {
         if self.tab_bar_key(key, size) {
             return true;
         }
+        if self.home_key(key) {
+            return true;
+        }
         if self.workspace_key(key, size) {
             return true;
         }
@@ -10012,6 +10029,9 @@ impl Ui {
             }
         }
 
+        if self.home_active() && !show_lists && !show_tree {
+            self.draw_home(&mut screen, &layout, right_x, right_width);
+        }
         self.draw_workspace(&mut screen, size, &layout, &mut hover_labels);
         for y in layout.footer_top..height {
             paint(&mut screen, y + 1, 1, "", width, Surface::Toolbar, false);

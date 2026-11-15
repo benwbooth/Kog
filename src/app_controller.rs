@@ -228,6 +228,18 @@ pub mod qobject {
         #[qinvokable]
         fn workspace_command(self: Pin<&mut AppController>, command: QString);
         #[qinvokable]
+        fn discover_generation(self: &AppController) -> i32;
+        #[qinvokable]
+        fn discover_json(self: &AppController) -> QString;
+        #[qinvokable]
+        fn discover_refresh(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn open_mix(self: Pin<&mut AppController>, id: QString, name: QString);
+        #[qinvokable]
+        fn play_mix(self: Pin<&mut AppController>, id: QString, start: i32);
+        #[qinvokable]
+        fn mix_cover(self: &AppController, path: QString, album: QString, artist: QString) -> QString;
+        #[qinvokable]
         fn open_playlist_tab(self: Pin<&mut AppController>, id: i32, name: QString);
         #[qinvokable]
         fn append_playlists_to_tab(self: Pin<&mut AppController>, ids: QString, key: QString);
@@ -2423,6 +2435,9 @@ impl Default for AppControllerRust {
                 });
             }
         }
+        // The pinned Home tab, and the background index and mixes behind it.
+        controller.session.enable_home();
+        let _ = kog_server::discover::shared();
         let restored = match restore {
             Some(Ok(_)) => true,
             Some(Err(error)) => { controller.session_store.reject(error); true }
@@ -2880,6 +2895,10 @@ impl AppControllerRust {
     fn queue_session(&mut self, command: SessionCommand<Track>) {
         let update_item = matches!(&command, SessionCommand::UpdateItem { .. });
         let effects = self.session.dispatch(command);
+        let listens = self.session.take_listens();
+        if !listens.is_empty() {
+            kog_server::discover::shared().record_listens(&listens);
+        }
         if update_item
             || effects
                 .iter()
@@ -4264,6 +4283,66 @@ impl qobject::AppController {
         }
     }
 
+    /// Changes whenever the Home mixes do.
+    pub fn discover_generation(&self) -> i32 {
+        kog_server::discover::shared().generation() as i32
+    }
+
+    /// The Home tab's mixes and the library index's progress.
+    pub fn discover_json(&self) -> QString {
+        qstring(kog_server::discover::shared().home_json().to_string())
+    }
+
+    pub fn discover_refresh(self: Pin<&mut Self>) {
+        kog_server::discover::shared().refresh();
+    }
+
+    /// Open a Home mix as a read-only playlist tab.
+    pub fn open_mix(mut self: Pin<&mut Self>, id: QString, name: QString) {
+        let id = id.to_string();
+        let Some(playlist_id) = kog_audio::playback_order::workspace::mix_playlist_id(&id) else {
+            return;
+        };
+        self.as_mut().dispatch_workspace(WorkspaceCommand::Open {
+            key: kog_audio::playback_order::workspace::mix_tab_key(&id),
+            scope: "local".into(),
+            playlist_id,
+            name: name.to_string(),
+            readonly: true,
+        });
+    }
+
+    /// A Home card's cover for one of its songs (a music file, or the archive
+    /// holding it), or empty while it is looked up; `desktop_art_revision`
+    /// moves when it arrives.
+    pub fn mix_cover(&self, path: QString, album: QString, artist: QString) -> QString {
+        let file = PathBuf::from(path.to_string());
+        if file.as_os_str().is_empty() || path.to_string().contains("://") {
+            return QString::default();
+        }
+        qstring(self.rust().desktop_art.song_tile(
+            &file.to_string_lossy(),
+            &file,
+            &artist.to_string(),
+            &album.to_string(),
+        ))
+    }
+
+    /// Play a Home mix now, from its song at `start`.
+    pub fn play_mix(mut self: Pin<&mut Self>, id: QString, start: i32) {
+        let Some((_, mut entries)) = kog_server::discover::shared().mix_entries(&id.to_string()) else {
+            self.as_mut().set_status(qstring("That mix has been replaced by newer ones"));
+            return;
+        };
+        let start = usize::try_from(start).unwrap_or(0).min(entries.len().saturating_sub(1));
+        entries.rotate_left(start);
+        self.as_mut().session_command(SessionCommand::Expand {
+            scope: "local".into(),
+            entries,
+            action: QueueAction::PlayNow,
+        });
+    }
+
     pub fn workspace_add_queue_selection(mut self: Pin<&mut Self>, indices: QString) {
         let entries = {
             let pinned = self.as_ref();
@@ -4315,6 +4394,12 @@ impl qobject::AppController {
     fn playlist_stored_entries(&self, id: i64) -> Result<Vec<kog_core::db::StoredEntry>, String> {
         if id == 0 {
             return self.rust().library_db.starred_entries();
+        }
+        if let Some(mix) = kog_audio::playback_order::workspace::mix_from_playlist_id(id) {
+            return kog_server::discover::shared()
+                .mix_entries(&mix)
+                .map(|(_, entries)| kog_server::api::queue_entries_from_json(&entries))
+                .ok_or_else(|| "This mix has been replaced by newer ones".to_owned());
         }
         self.rust().library_db.playlist_entries(id)
     }

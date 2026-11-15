@@ -44,6 +44,7 @@ use drag::{clear_track_drop_marker, track_drop_target};
 mod selection;
 mod session;
 mod workspace;
+mod home;
 mod menu;
 mod row_window;
 mod albums;
@@ -3046,6 +3047,8 @@ fn App() -> impl IntoView {
             let _ = application.dispatch(SessionCommand::WorkspaceRestore { value });
         }
     }
+    // The pinned Home tab with the server's mixes.
+    application.enable_home();
     let session_model = StoredValue::new(application);
     let output_token = RwSignal::new(None::<Token>);
     let output_start = StoredValue::new(0.0_f64);
@@ -8269,7 +8272,7 @@ fn App() -> impl IntoView {
                         </section>
                     </aside>
 
-                    <main class="playlist">
+                    <main class="playlist" class:home-active=move || playlist_workspace.snapshot().active == "home">
                         <Show when=move || !backend.persistence.warning.get().is_empty() || !persist.warning.get().is_empty()>
                             <div class="persistence-warning" role="alert">
                                 {move || {
@@ -8282,6 +8285,10 @@ fn App() -> impl IntoView {
                             </div>
                         </Show>
                         <workspace::Tabs controller=playlist_workspace />
+                        <Show when=move || playlist_workspace.snapshot().active == "home">
+                            <home::HomeView controller=playlist_workspace token=token
+                                active=Signal::derive(move || playlist_workspace.snapshot().active == "home") />
+                        </Show>
                         <Show when=move || playlist_workspace.snapshot().error.is_some()>
                             <p class="empty" role="alert">{move || playlist_workspace.snapshot().error.clone().unwrap_or_default()}</p>
                         </Show>

@@ -109,7 +109,7 @@ ApplicationWindow {
     property ListModel editorTabs: ListModel { Component.onCompleted: root.syncEditorTabs() }
     onPlaylistWorkspaceChanged: syncEditorTabs()
     function syncEditorTabs() {
-        const keys = (playlistWorkspace.tabs || []).map(tab => tab.key)
+        const keys = (playlistWorkspace.tabs || []).map(tab => tab.key).filter(key => key !== "home")
         for (let i = editorTabs.count - 1; i >= 0; --i)
             if (keys.indexOf(editorTabs.get(i).key) < 0) editorTabs.remove(i)
         for (const key of keys) {
@@ -4313,6 +4313,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     visible: root.playlistWorkspace.active !== "queue"
+                        && root.playlistWorkspace.active !== "home"
                     function active() {
                         for (let i = 0; i < editorRepeater.count; ++i) {
                             const editor = editorRepeater.itemAt(i)
@@ -4341,6 +4342,16 @@ ApplicationWindow {
                             onOpenVisualizer: visualizerWindow.openWaveform()
                         }
                     }
+                }
+
+                // The pinned Home tab: mixes made for you.
+                HomeView {
+                    id: homeView
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: root.playlistWorkspace.active === "home"
+                    app: appController
+                    theme: root.themePalette
                 }
 
                 PlaylistSortBar {

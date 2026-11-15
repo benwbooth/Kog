@@ -891,6 +891,7 @@ pub async fn serve_with_shutdown(
         .map_err(|error| format!("binding {address}: {error}"))?;
     // Find the playlists' covers in the background while the server runs.
     crate::playlist_covers::PlaylistCovers::start(&state);
+    crate::discover::start_cover_prefetch(&state);
     let app = router(state);
     let scheme = if config.tls.mode == crate::TlsMode::Off {
         "http"

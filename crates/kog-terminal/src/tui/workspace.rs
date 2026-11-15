@@ -184,6 +184,9 @@ impl Ui {
     }
     pub(super) fn poll_workspace(&mut self) {
         self.poll_session_ports();
+        if self.home_active() {
+            self.refresh_home();
+        }
     }
     fn workspace_cycle(&mut self, delta: isize) {
         let state = self
@@ -277,10 +280,10 @@ impl Ui {
         let state = self.session.workspace_model().snapshot();
         let active = state.tabs.iter().position(|tab| tab.key == state.active).unwrap_or(0);
         match index {
-            0 if state.active != "queue" => self.workspace_command(Command::Close { key: state.active.clone() }),
+            0 if state.active != "queue" && state.active != "home" => self.workspace_command(Command::Close { key: state.active.clone() }),
             1 => {
                 for tab in &state.tabs {
-                    if tab.key != state.active && tab.key != "queue" {
+                    if tab.key != state.active && tab.key != "queue" && tab.key != "home" {
                         self.workspace_command(Command::Close { key: tab.key.clone() });
                     }
                 }
@@ -531,7 +534,7 @@ impl Ui {
                 "[ {}{}{} ]",
                 name,
                 if tab.dirty { "*" } else { "" },
-                if tab.key == "queue" { "" } else { " ×" }
+                if tab.key == "queue" || tab.key == "home" { "" } else { " ×" }
             );
             let len = cell_width(&label).min(width.saturating_sub(x));
             if len == 0 {

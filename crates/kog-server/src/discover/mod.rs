@@ -702,8 +702,8 @@ fn read_unit(decoders: &DecoderRegistry, unit: &Path, added_at: i64) -> Vec<Song
             composer: properties.composer.clone().unwrap_or_default(),
             genre: properties.genre.clone().unwrap_or_default(),
             year: properties.year.map(i64::from),
-            system: mixes::system_name(properties.codec.as_deref().unwrap_or_default()),
-            backend: decoders.selected_backend_name(&source).unwrap_or_default().to_owned(),
+            system: system_of(decoders, &source, &properties),
+            backend: decoders.selected_backend_id(&source).unwrap_or_default().to_owned(),
             duration_ms: properties.duration.map_or(0, |duration| duration.as_millis() as i64),
             added_at,
             kind: stored.kind,
@@ -714,6 +714,31 @@ fn read_unit(decoders: &DecoderRegistry, unit: &Path, added_at: i64) -> Vec<Song
         });
     }
     songs
+}
+
+/// The format or sound chip a song is grouped by: MIDI whichever synth
+/// renders it, else what its decoder reports, else its file's extension.
+fn system_of(
+    decoders: &DecoderRegistry,
+    source: &PlaybackSource,
+    properties: &kog_audio::decoder::StreamProperties,
+) -> String {
+    if decoders.selected_backend_id(source).is_some_and(|id| id.starts_with("midi-")) {
+        return "MIDI".to_owned();
+    }
+    let reported = mixes::system_name(properties.codec.as_deref().unwrap_or_default());
+    if !reported.is_empty() {
+        return reported;
+    }
+    let name = source
+        .archive_origin
+        .as_ref()
+        .map(|origin| PathBuf::from(&origin.entry_name))
+        .unwrap_or_else(|| source.path.clone());
+    name.extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_uppercase)
+        .unwrap_or_default()
 }
 
 /// A song's name when its file has no title tag: the file's name, with the
@@ -807,4 +832,56 @@ pub fn router() -> axum::Router<crate::routes::AppState> {
         .route("/api/discover/refresh", post(refresh_route))
         .route("/api/discover/mix", get(mix_route))
         .route("/api/history", post(history_route))
+}
+
+/// Look up the covers the Home cards show (the first songs of each mix from
+/// different albums) whenever the mixes change, so the cover cache has them
+/// before anyone looks. Runs in a serving process, beside the playlist
+/// covers' worker, with the same cover lookup and pace.
+pub(crate) fn start_cover_prefetch(state: &crate::routes::AppState) {
+    let covers = state.covers.clone();
+    let streams = state.streams.clone();
+    tokio::spawn(async move {
+        let discover = shared();
+        let mut seen = 0u64;
+        loop {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            let generation = discover.generation();
+            if generation == seen {
+                continue;
+            }
+            seen = generation;
+            let Some(home) = discover.home() else { continue };
+            let allow_download = kog_audio::settings::AppSettings::load().download_cover_art;
+            let mut files = Vec::new();
+            for mix in home.sections.iter().flat_map(|section| &section.mixes) {
+                let mut albums = std::collections::HashSet::new();
+                for song in &mix.songs {
+                    if albums.len() >= 4 {
+                        break;
+                    }
+                    if song.kind != "local" || !albums.insert(song.album.to_lowercase()) {
+                        continue;
+                    }
+                    let file = PathBuf::from(&song.path);
+                    if !files.contains(&file) {
+                        files.push(file);
+                    }
+                }
+            }
+            for file in files {
+                if discover.generation() != seen {
+                    break;
+                }
+                let exists = {
+                    let file = file.clone();
+                    tokio::task::spawn_blocking(move || file.is_file()).await.unwrap_or(false)
+                };
+                if exists {
+                    let _ = crate::covers::wait(covers.lookup(file, streams.clone(), allow_download)).await;
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                }
+            }
+        }
+    });
 }

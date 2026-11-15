@@ -69,7 +69,7 @@ pub fn Tabs(controller: Controller) -> impl IntoView {
         <div class="playlist-tabs-bar">
         <div class="playlist-tabs" role="tablist" aria-label="Open playlists" node_ref=strip>
             <For each=move || controller.snapshot().tabs.clone() key=|tab| (tab.key.clone(), tab.name.clone(), tab.dirty) let:tab>
-                { let focus = tab.key.clone(); let active = tab.key.clone(); let close = tab.key.clone(); let closable = tab.key != "queue";
+                { let focus = tab.key.clone(); let active = tab.key.clone(); let close = tab.key.clone(); let closable = tab.key != "queue" && tab.key != "home";
                   view! { <div class="playlist-tab" data-tab-key=tab.key.clone() class:active=move || controller.snapshot().active == active>
                     <button role="tab" aria-selected=move || controller.snapshot().active == focus
                         on:click={let key=tab.key.clone(); move |_| controller.send(Command::Focus { key:key.clone() })}>

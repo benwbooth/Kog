@@ -13,6 +13,7 @@ Item {
         return JSON.parse(app.workspace_json_for_selection(selectedRows.length))
     }
     readonly property bool queueActive: workspaceState.active === "queue"
+    readonly property bool homeActive: workspaceState.active === "home"
     readonly property var savedPlaylists: {
         app.playlists_revision
         return JSON.parse(app.playlists_json()).playlists || []
@@ -94,9 +95,14 @@ Item {
     PlaylistEditor {
         objectName: "classicPlaylistEditor"
         x: 12; y: 48 + workspaceTabs.implicitHeight; width: 243; height: root.height - y - 38
-        visible: !root.queueActive
+        visible: !root.queueActive && !root.homeActive
         app: root.app; workspaceState: root.workspaceState; theme: root.editorTheme
         queueSelection: root.selectedRows; compact: true
+    }
+    HomeView {
+        x: 12; y: 48 + workspaceTabs.implicitHeight; width: 243; height: root.height - y - 38
+        visible: root.homeActive
+        app: root.app; theme: root.editorTheme
     }
     ListView {
         id: list

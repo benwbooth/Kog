@@ -219,7 +219,8 @@ Item {
             width: implicitWidth
             implicitWidth: Math.ceil(implicitContentWidth) + leftPadding + rightPadding
             leftPadding: 12
-            rightPadding: tabKey !== "queue" ? closeButton.width + 12 : leftPadding
+            readonly property bool pinned: tabKey === "queue" || tabKey === "home"
+            rightPadding: !pinned ? closeButton.width + 12 : leftPadding
             // Flat, softly rounded tabs over the glow, as in Earshot: the
             // open tab is a raised pill with an accent underline, others
             // light up on hover.
@@ -304,7 +305,7 @@ Item {
             ToolButton {
                 id: closeButton
                 objectName: "closePlaylistTab"
-                visible: tab.tabKey !== "queue"
+                visible: !tab.pinned
                 anchors.right: parent.right
                 anchors.rightMargin: 6
                 anchors.verticalCenter: parent.verticalCenter

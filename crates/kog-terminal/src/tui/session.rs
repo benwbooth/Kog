@@ -92,6 +92,10 @@ impl Ui {
     pub(super) fn queue_session(&mut self, command: SessionCommand<Track>) {
         let update = matches!(&command, SessionCommand::UpdateItem { .. });
         let effects = self.session.dispatch(command);
+        let listens = self.session.take_listens();
+        if !listens.is_empty() {
+            kog_server::discover::shared().record_listens(&listens);
+        }
         if update
             || effects
                 .iter()
@@ -211,7 +215,13 @@ impl Ui {
                 SessionEffect::Load {
                     token, playlist_id, ..
                 } => {
-                    let result = if playlist_id == 0 {
+                    let mix = kog_audio::playback_order::workspace::mix_from_playlist_id(playlist_id);
+                    let result = if let Some(mix) = mix {
+                        kog_server::discover::shared()
+                            .mix_entries(&mix)
+                            .map(|(_, entries)| kog_server::api::queue_entries_from_json(&entries))
+                            .ok_or_else(|| "This mix has been replaced by newer ones".to_owned())
+                    } else if playlist_id == 0 {
                         self.library.db().starred_entries()
                     } else {
                         self.library.db().playlist_entries(playlist_id)

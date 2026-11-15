@@ -500,6 +500,15 @@ fn subtitle_for(songs: &[Song]) -> String {
     }
 }
 
+/// A subtitle that names the songs' composers after `lead`, when they
+/// have any.
+fn with_names(lead: &str, songs: &[Song]) -> String {
+    match subtitle_for(songs) {
+        names if names.is_empty() => lead.to_owned(),
+        names => format!("{lead} · {names}"),
+    }
+}
+
 /// The system most of the songs share, when one does.
 fn common_system(songs: &[Song]) -> Option<String> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
@@ -680,7 +689,10 @@ pub fn make_home(inputs: &Inputs<'_>) -> Home {
                     format!("daily-{}", index + 1),
                     "daily",
                     format!("Daily Mix {}", index + 1),
-                    format!("{system} · {}", subtitle_for(&blend.songs)),
+                    match subtitle_for(&blend.songs) {
+                        names if names.is_empty() => system.clone(),
+                        names => format!("{system} · {names}"),
+                    },
                     &blend.songs,
                 ));
             }
@@ -864,7 +876,7 @@ fn discover_weekly(
         "weekly".into(),
         "weekly",
         "Discover Weekly".into(),
-        format!("New to you · {}", subtitle_for(&songs)),
+        with_names("New to you", &songs),
         &songs,
     ))
 }
@@ -1001,7 +1013,7 @@ fn forgotten_favorites(store: &Store, taste: &Taste, now: i64, rng: &mut Rng) ->
             "forgotten".into(),
             "rediscover",
             "Forgotten favorites".into(),
-            format!("Not heard in a while · {}", subtitle_for(&blend.songs)),
+            with_names("Not heard in a while", &blend.songs),
             &blend.songs,
         )
     })
