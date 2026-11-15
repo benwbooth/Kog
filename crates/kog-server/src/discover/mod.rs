@@ -12,6 +12,7 @@
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod embedding;
 pub mod features;
+pub mod helper;
 pub mod mixes;
 pub mod store;
 
@@ -21,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource};
+use kog_audio::decoder::{DecoderRegistry, PlaybackSource};
 use kog_audio::playback_order::session::Listen;
 use kog_core::db::{LibraryDb, PlayRecord, StoredEntry};
 use serde::Serialize;
@@ -351,14 +352,15 @@ impl Discover {
             }
         };
         let settings = kog_audio::settings::AppSettings::load();
-        let decoder_settings = settings.decoder_settings();
-        let decoders = Arc::new(DecoderRegistry::new(decoder_settings.clone()));
+        let decoders = Arc::new(DecoderRegistry::new(settings.decoder_settings()));
         let root = settings.music_directory.clone().filter(|root| root.is_dir());
         let read_cue = settings.read_cue_sheets_in_folders;
         let mut crawler = Crawler {
             noted: 0,
+            helper: helper::Helper::default(),
+            owner: owner.clone(),
+            renewed: Instant::now(),
             decoders,
-            decoder_settings,
             root,
             read_cue,
             steps: 0,
@@ -584,6 +586,7 @@ struct EmbedWorker {
     tried: Option<Instant>,
     leased: bool,
     noted: i64,
+    helper: helper::Helper,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -597,7 +600,7 @@ impl EmbedWorker {
             store.clear_embeddings();
             let _ = store.set_meta("embedding_model", embedding::MODEL_ID);
         }
-        Self { backend: embedding::Backend::current(), model: None, error: String::new(), tried: None, leased: false, noted: 0 }
+        Self { backend: embedding::Backend::current(), model: None, error: String::new(), tried: None, leased: false, noted: 0, helper: helper::Helper::default() }
     }
 
     fn state(&self) -> String {
@@ -645,7 +648,7 @@ impl EmbedWorker {
     }
 
     /// Embed one song. Returns whether there was one to embed.
-    fn step(&mut self, discover: &Discover, store: &mut Store, crawler: &Crawler) -> bool {
+    fn step(&mut self, discover: &Discover, store: &mut Store, _crawler: &Crawler) -> bool {
         if !self.leased {
             return false;
         }
@@ -674,27 +677,7 @@ impl EmbedWorker {
             return false;
         };
         note_activity(store, "embed", &mut self.noted, &format!("Listening to {}", song_label(&song)));
-        let decoders = Arc::clone(&crawler.decoders);
-        let settings = crawler.decoder_settings.clone();
-        let entry = song.stored_entry();
-        let clip = with_timeout(ANALYSIS_TIMEOUT, move || {
-            let playlist_entry = kog_audio::playlist::PlaylistEntry::from_locator(
-                &entry.kind,
-                &entry.path,
-                &entry.entry,
-                entry.fragment.clone(),
-            )?;
-            let source = decoders
-                .expand_entry(&playlist_entry)?
-                .sources
-                .into_iter()
-                .next()
-                .ok_or_else(|| "nothing to play".to_owned())?;
-            let clip = embedding::read_clip(source, &settings);
-            drop(decoders);
-            clip
-        })
-        .and_then(Result::ok);
+        let clip = self.helper.clip(&song.stored_entry(), ANALYSIS_TIMEOUT);
         let vector = clip.and_then(|clip| match model.embed_clip(&clip) {
             Ok(vector) => Some(vector),
             Err(error) => {
@@ -716,8 +699,12 @@ enum Step {
 struct Crawler {
     /// When the activity panel was last told what this does.
     noted: i64,
+    /// The child process that reads and measures songs.
+    helper: helper::Helper,
+    /// This process's name in the lease, and when it last renewed it.
+    owner: String,
+    renewed: Instant,
     decoders: Arc<DecoderRegistry>,
-    decoder_settings: DecoderSettings,
     root: Option<PathBuf>,
     read_cue: bool,
     steps: u64,
@@ -844,6 +831,14 @@ impl Crawler {
         let _ = store.add_folders(&folders);
         files.sort();
         for file in files {
+            // A big folder takes minutes: keep the lease, and stop (leaving
+            // the folder for later) if another Kog took the crawl.
+            if self.renewed.elapsed() >= LEASE_RENEW {
+                self.renewed = Instant::now();
+                if !store.take_lease(&self.owner, LEASE_TTL) {
+                    return;
+                }
+            }
             // Songs played meanwhile come first.
             loop {
                 let played = lock(&discover.inner).priority_files.pop_front();
@@ -888,13 +883,7 @@ impl Crawler {
         if store.file_stamp(&unit_key).as_deref() == Some(stamp.as_str()) {
             return false;
         }
-        let decoders = Arc::clone(&self.decoders);
-        let path = unit.to_path_buf();
-        let songs = with_timeout(UNIT_TIMEOUT, move || read_unit(&decoders, &path, added_at))
-            .unwrap_or_else(|| {
-                eprintln!("kog: reading {} for the library index timed out", unit.display());
-                Vec::new()
-            });
+        let songs = self.helper.read(unit, added_at, UNIT_TIMEOUT);
         if let Err(error) = store.put_file(&unit_key, &stamp, &songs) {
             eprintln!("kog: indexing {}: {error}", unit.display());
         }
@@ -903,35 +892,13 @@ impl Crawler {
 
     fn analyse(&mut self, store: &mut Store, song: &Song) {
         note_activity(store, "crawl", &mut self.noted, &format!("Measuring {}", song_label(song)));
-        let decoders = Arc::clone(&self.decoders);
-        let settings = self.decoder_settings.clone();
-        let entry = song.stored_entry();
-        let vector = with_timeout(ANALYSIS_TIMEOUT, move || {
-            let playlist_entry = kog_audio::playlist::PlaylistEntry::from_locator(
-                &entry.kind,
-                &entry.path,
-                &entry.entry,
-                entry.fragment.clone(),
-            )?;
-            let source = decoders
-                .expand_entry(&playlist_entry)?
-                .sources
-                .into_iter()
-                .next()
-                .ok_or_else(|| "nothing to play".to_owned())?;
-            // `decoders` stays alive here, keeping an extracted archive
-            // member on disk while it is measured.
-            let result = features::analyze(source, &settings);
-            drop(decoders);
-            result
-        });
-        let features = vector.and_then(Result::ok);
+        let features = self.helper.measure(&song.stored_entry(), ANALYSIS_TIMEOUT);
         let _ = store.set_features(song.id, features.as_deref());
     }
 }
 
 /// Every song in one file (or archive), with its tags.
-fn read_unit(decoders: &DecoderRegistry, unit: &Path, added_at: i64) -> Vec<Song> {
+pub(crate) fn read_unit(decoders: &DecoderRegistry, unit: &Path, added_at: i64) -> Vec<Song> {
     let Ok(expansion) = decoders.expand_detailed(unit.to_path_buf()) else {
         return Vec::new();
     };

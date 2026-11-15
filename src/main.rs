@@ -108,6 +108,8 @@ fn select_mode(
 }
 
 fn main() {
+    // The library reader's helper process (see kog_server::discover::helper).
+    kog_server::discover::helper::run_if_requested();
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let tui_supported = cfg!(unix);
     let mode = match select_mode(std::env::args().skip(1), terminal, tui_supported) {

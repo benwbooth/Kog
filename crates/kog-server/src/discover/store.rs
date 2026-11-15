@@ -75,7 +75,8 @@ const INDEX_VERSION: &str = "2";
 /// One indexed song. `locator` is the library's key for it (see
 /// `media_filter::locator_for`); `file_key` is the same without the
 /// subsong, shared by every song of a multi-song file.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Song {
     pub id: i64,
     pub locator: String,
