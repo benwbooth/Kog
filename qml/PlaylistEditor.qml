@@ -13,11 +13,27 @@ FocusScope {
     // "grid" (cover tiles); the compact skin always lists.
     property string viewMode: "list"
     readonly property string shownMode: compact ? "list" : viewMode
-    // What each of the rows view's three lines shows; the window keeps it.
-    property var rowLines: [["title"], ["artist"], ["album", "format", "length"]]
+    // What each of the rows view's four lines shows; the window keeps it.
+    property var rowLines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
     property var defaultRowLines: rowLines
     signal rowLinesRequested(var lines)
-    readonly property real rowHeight: shownMode === "rows" ? 58 : 24
+    readonly property real rowHeight: shownMode === "rows"
+        ? cardRowHeight(rowLines) : 24
+    // The rows view's height: its lines' heights (13, 12, 11 and 10px
+    // text) with room around them, and no shorter than the old two-line
+    // rows. Lines with no fields take no room.
+    function cardRowHeight(lines) {
+        const heights = [17, 16, 15, 13]
+        let total = 0
+        let shown = 0
+        for (let line = 0; line < heights.length; ++line) {
+            if (lines && Array.isArray(lines[line]) && lines[line].length > 0) {
+                total += heights[line]
+                ++shown
+            }
+        }
+        return Math.max(58, 12 + total + Math.max(0, shown - 1))
+    }
     readonly property Item focusView: shownMode === "grid" ? coverGrid : list
     property var searchModel: fallbackSearch
     property string searchQuery: ""

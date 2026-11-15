@@ -12,7 +12,7 @@ SqliteSettings {
     // How songs are shown: "list" (the column table), "rows" (two-line
     // rows with album art) or "grid" (cover tiles).
     property string playlistViewMode: "list"
-    // The rows view's three lines as JSON: one list of field ids per line.
+    // The rows view's four lines as JSON: one list of field ids per line.
     // Empty means the default lines.
     property string playlistRowLines: ""
     values: ({playlistViewMode: settings.playlistViewMode, playlistRowLines: settings.playlistRowLines, sidebarVisible: settings.sidebarVisible, sidebarWidth: settings.sidebarWidth,

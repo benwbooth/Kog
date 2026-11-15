@@ -45,14 +45,35 @@ ApplicationWindow {
     function setPlaylistViewMode(mode) {
         mainWindowSettings.playlistViewMode = mode
     }
-    readonly property real playlistRowHeight: playlistViewMode === "rows" ? 58 : 24
-    // What each of the rows view's three lines shows.
-    readonly property var defaultPlaylistRowLines: [["title"], ["artist"], ["album", "format", "length"]]
+    readonly property real playlistRowHeight: playlistViewMode === "rows"
+        ? cardRowHeight(playlistRowLines) : 24
+    // The rows view's height: its lines' heights (13, 12, 11 and 10px
+    // text) with room around them, and no shorter than the old two-line
+    // rows. Lines with no fields take no room.
+    function cardRowHeight(lines) {
+        const heights = [17, 16, 15, 13]
+        let total = 0
+        let shown = 0
+        for (let line = 0; line < heights.length; ++line) {
+            if (lines && Array.isArray(lines[line]) && lines[line].length > 0) {
+                total += heights[line]
+                ++shown
+            }
+        }
+        return Math.max(58, 12 + total + Math.max(0, shown - 1))
+    }
+    // What each of the rows view's four lines shows. Lines saved before the
+    // fourth existed get the path there.
+    readonly property var defaultPlaylistRowLines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
     readonly property var playlistRowLines: {
         try {
             const lines = JSON.parse(mainWindowSettings.playlistRowLines)
-            if (Array.isArray(lines) && lines.length === 3 && lines.every(Array.isArray))
-                return lines
+            if (Array.isArray(lines) && lines.every(Array.isArray)) {
+                if (lines.length === 3)
+                    return lines.concat([["path"]])
+                if (lines.length === 4)
+                    return lines
+            }
         } catch (_) {}
         return defaultPlaylistRowLines
     }

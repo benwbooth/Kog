@@ -5,8 +5,9 @@ import QtQuick.Controls
 import QtQuick.Controls.impl as ControlsImpl
 
 // A song laid out like a message in a mail list: the album cover on the
-// left, the title in bold, the artist under it, and a quieter line with the
-// album, format and length. Takes the same data, selection and drag signals
+// left, then up to four lines of chosen fields: by default the title in
+// bold, the artist, a quieter line with the album, format and length, and
+// the full path in small text. Takes the same data, selection and drag signals
 // as PlaylistRow, so a list can swap one for the other.
 Item {
     id: root
@@ -55,7 +56,7 @@ Item {
     // middle dot. "format" is the codec, or the file's extension without
     // one; "artist" falls back to the album artist unless the line shows
     // that too. A line with no fields is left out.
-    property var lines: [["title"], ["artist"], ["album", "format", "length"]]
+    property var lines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
     readonly property string formatText: {
         const codec = value("codec")
         if (codec.length > 0)
@@ -76,6 +77,11 @@ Item {
         const fields = lines && lines[line]
         return Array.isArray(fields) ? fields : []
     }
+    // Lines showing a path or filename are cut at the edge, never "…".
+    function lineClips(line) {
+        const fields = lineFields(line)
+        return fields.indexOf("path") >= 0 || fields.indexOf("filename") >= 0
+    }
     function lineText(line) {
         const fields = lineFields(line)
         return fields.map(field => fieldText(field, fields))
@@ -83,7 +89,7 @@ Item {
     }
     readonly property var lineTexts: {
         revision
-        return [lineText(0), lineText(1), lineText(2)]
+        return [lineText(0), lineText(1), lineText(2), lineText(3)]
     }
     readonly property bool starred: value("star").length > 0
 
@@ -95,7 +101,19 @@ Item {
     signal dragFinished(real viewX, real viewY)
     signal dragCanceled()
 
-    implicitHeight: 58
+    // The list's row height for these lines: see Main.cardRowHeight.
+    implicitHeight: {
+        const heights = [17, 16, 15, 13]
+        let total = 0
+        let shown = 0
+        for (let line = 0; line < heights.length; ++line) {
+            if (lineFields(line).length > 0) {
+                total += heights[line]
+                ++shown
+            }
+        }
+        return Math.max(58, 12 + total + Math.max(0, shown - 1))
+    }
     height: implicitHeight
 
     ListView.onPooled: {
@@ -268,6 +286,7 @@ Item {
             visible: root.lineFields(0).length > 0
             width: copy.width
             sourceText: root.lineTexts[0]
+            clipText: root.lineClips(0)
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
@@ -281,6 +300,7 @@ Item {
             visible: root.lineFields(1).length > 0
             width: copy.width
             sourceText: root.lineTexts[1]
+            clipText: root.lineClips(1)
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
@@ -292,11 +312,26 @@ Item {
             visible: root.lineFields(2).length > 0
             width: copy.width
             sourceText: root.lineTexts[2]
+            clipText: root.lineClips(2)
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
             font.pixelSize: 11
             color: root.quietColor
+        }
+        // The full path by default, small and quiet.
+        SearchHighlightLabel {
+            id: pathLabel
+            visible: root.lineFields(3).length > 0
+            width: copy.width
+            sourceText: root.lineTexts[3]
+            clipText: root.lineClips(3)
+            query: root.searchQuery
+            searchModel: root.searchModel
+            wholeQuery: true
+            font.pixelSize: 10
+            color: root.quietColor
+            opacity: root.selected ? 1 : 0.85
         }
     }
 
@@ -304,7 +339,7 @@ Item {
     function lineTip(x, y) {
         if (x < 0)
             return ""
-        for (const line of [titleLabel, artistLabel, detailLabel]) {
+        for (const line of [titleLabel, artistLabel, detailLabel, pathLabel]) {
             if (!line.visible)
                 continue
             const point = line.mapFromItem(root, x, y)

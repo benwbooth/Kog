@@ -16,7 +16,7 @@ Item {
     property bool sortAscending: true
     property string orderLabel: qsTr("Queue Order")
 
-    // The rows view's lines: which fields each of the three shows, in the
+    // The rows view's lines: which fields each of the four shows, in the
     // order they were checked. Only the rows view offers the picker.
     property bool showLines: false
     property var rowLines: []
@@ -46,7 +46,7 @@ Item {
         return Array.isArray(fields) ? fields : []
     }
     function toggleField(line, field) {
-        const next = [0, 1, 2].map(index => lineFields(index).slice())
+        const next = [0, 1, 2, 3].map(index => lineFields(index).slice())
         const at = next[line].indexOf(field)
         if (at >= 0)
             next[line].splice(at, 1)
@@ -147,7 +147,7 @@ Item {
                 spacing: 14
 
                 Repeater {
-                    model: 3
+                    model: 4
 
                     delegate: Column {
                         id: lineColumn
