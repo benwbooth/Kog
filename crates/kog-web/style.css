@@ -6681,3 +6681,55 @@ button.primary:hover:not(:disabled) {
   color: var(--muted);
   font-size: 13px;
 }
+
+/* Covers show whole: a tall game box is fitted, never cut to a square. In
+ * the grid, the album page and the cover flow the image sits at the bottom
+ * centre of its square (so tall and square covers share a baseline, and the
+ * cover flow's reflection starts at the image), with its own rounded
+ * corners; elsewhere it is fitted inside its square. */
+.cell-cover,
+.mobile-track-cover,
+.transport .art img,
+.home-cover-tile {
+  object-fit: contain !important;
+}
+
+.row-card-art.has-cover,
+.album-page-cover.has-cover,
+.cover-flow-art.has-cover {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: transparent;
+  box-shadow: none;
+}
+
+.row-card-art.has-cover .row-card-mark,
+.album-page-cover.has-cover .album-page-mark {
+  display: none;
+}
+
+.row-card-art .row-card-cover,
+.album-page-cover img,
+.cover-flow-art img {
+  position: static;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+.album-page-cover img {
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.rows.view-grid .track.selected .row-card-art.has-cover {
+  box-shadow: none;
+}
+
+.rows.view-grid .track.selected .row-card-art.has-cover .row-card-cover {
+  box-shadow: 0 0 0 2px var(--highlight);
+}
