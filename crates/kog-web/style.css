@@ -5924,10 +5924,12 @@ button.primary:hover:not(:disabled) {
   .rows.view-grid .row-card-playing {
     right: 6px;
     bottom: 6px;
-    height: 26px;
-    padding: 0 6px 0 8px;
-    border-radius: 13px;
-    font-size: 10px;
+    gap: 4px;
+    height: 30px;
+    padding: 0 7px 0 10px;
+    border-radius: 15px;
+    background: rgba(0, 0, 0, 0.66);
+    font-size: 11px;
   }
 
   .rows.view-grid .row-card-copy {

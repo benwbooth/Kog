@@ -2476,6 +2476,9 @@ fn RowMeter(
     /// now-playing title.
     #[prop(default = 24.0)]
     height: f32,
+    /// White bars, for a dark pill on a cover.
+    #[prop(default = false)]
+    white: bool,
 ) -> impl IntoView {
     let style = if pinned {
         format!("position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: {height}px; box-sizing: border-box; border-radius: 4px; pointer-events: none;")
@@ -2498,7 +2501,11 @@ fn RowMeter(
                         // Violet when quiet, the blue accent when loud.
                         // Straight on the row: --meter-lightness keeps the bars
                         // bright on black rows and deep on light ones.
-                        let fill = format!("hsl({:.0}, 95%, var(--meter-lightness))", 262.0 - 50.0 * level);
+                        let fill = if white {
+                            "#ffffff".to_owned()
+                        } else {
+                            format!("hsl({:.0}, 95%, var(--meter-lightness))", 262.0 - 50.0 * level)
+                        };
                         // The bars' area, 20px wide and as tall as the meter
                         // (there is no box around them to inset), laid out as
                         // iOS does.
@@ -8411,7 +8418,13 @@ fn App() -> impl IntoView {
                                                                     >
                                                                         <span class="row-card-state">{move || if playing.get() { "▶" } else { "Ⅱ" }}</span>
                                                                         <Show when=move || playing.get() fallback=|| ()>
-                                                                            <RowMeter levels=audio_levels pinned=false height=18.0/>
+                                                                            // White bars, taller on a grid tile's
+                                                                            // bigger pill, so they read on any cover.
+                                                                            {move || if view_mode.get() == row_window::ViewMode::Grid {
+                                                                                view! { <RowMeter levels=audio_levels pinned=false height=22.0 white=true/> }.into_any()
+                                                                            } else {
+                                                                                view! { <RowMeter levels=audio_levels pinned=false height=18.0 white=true/> }.into_any()
+                                                                            }}
                                                                         </Show>
                                                                     </span>
                                                                 </Show>

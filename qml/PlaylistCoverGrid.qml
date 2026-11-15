@@ -228,14 +228,14 @@ GridView {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.margins: 6
-                width: tile.isPlaying ? 50 : 26
-                height: 26
-                radius: 13
+                width: tile.isPlaying ? 62 : 30
+                height: 30
+                radius: 15
                 visible: tile.isActiveTrack
-                color: Qt.rgba(0, 0, 0, 0.62)
+                color: Qt.rgba(0, 0, 0, 0.66)
 
                 ControlsImpl.IconImage {
-                    x: 8
+                    x: 10
                     anchors.verticalCenter: parent.verticalCenter
                     width: 11
                     height: 11
@@ -244,16 +244,20 @@ GridView {
                     name: tile.isPlaying ? "media-playback-start" : "media-playback-pause"
                     color: "white"
                 }
+                // White bars, as tall as the pill allows, so the meter reads
+                // on any cover.
                 Loader {
                     anchors.right: parent.right
-                    anchors.rightMargin: 4
+                    anchors.rightMargin: 6
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 22
-                    height: 20
+                    width: 28
+                    height: 22
                     active: tile.isPlaying
                     sourceComponent: WaveformMeter {
                         app: grid.app
                         dark: true
+                        highlighted: true
+                        highlightColor: "white"
                     }
                 }
             }
