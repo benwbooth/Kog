@@ -744,16 +744,124 @@ pub fn game_platforms(file: &Path) -> Vec<&'static str> {
         "hes" => vec!["NEC - PC Engine - TurboGrafx 16"],
         "sid" | "psid" | "rsid" => vec!["Commodore - 64"],
         "kss" => vec!["Microsoft - MSX", "Microsoft - MSX2"],
-        // A VGM can hold any Sega 8- or 16-bit console's music: all of
-        // them, the Mega Drive first, never guessed from folder names.
-        "vgm" | "vgz" => vec![
-            "Sega - Mega Drive - Genesis",
-            "Sega - Master System - Mark III",
-            "Sega - Game Gear",
-        ],
+        // A VGM can hold many consoles' music: its header's chip clocks say
+        // which, never the folder name.
+        "vgm" | "vgz" => vgm_platforms(file),
         _ => Vec::new(),
     }
 }
+
+/// Every Sega 8- and 16-bit console, the Mega Drive first: what a VGM whose
+/// header can't be read may be.
+const SEGA_PLATFORMS: [&str; 3] = [
+    "Sega - Mega Drive - Genesis",
+    "Sega - Master System - Mark III",
+    "Sega - Game Gear",
+];
+
+/// The consoles a VGM's music comes from, by the sound chips its header
+/// clocks: an NES APU is the NES, a YM2612 the Mega Drive, and so on.
+fn vgm_platforms(file: &Path) -> Vec<&'static str> {
+    // Asked again for every song of a list, so each file's header is read once.
+    static KNOWN: OnceLock<Mutex<std::collections::HashMap<PathBuf, Vec<&'static str>>>> = OnceLock::new();
+    let known = KNOWN.get_or_init(Default::default);
+    if let Some(platforms) = known.lock().ok().and_then(|known| known.get(file).cloned()) {
+        return platforms;
+    }
+    let platforms = read_vgm_header(file)
+        .and_then(|header| vgm_header_platforms(&header))
+        .unwrap_or_else(|| SEGA_PLATFORMS.to_vec());
+    if let Ok(mut known) = known.lock() {
+        known.insert(file.to_path_buf(), platforms.clone());
+    }
+    platforms
+}
+
+/// A VGM's header, its first 256 bytes, unzipped from a .vgz.
+fn read_vgm_header(file: &Path) -> Option<Vec<u8>> {
+    use std::io::{BufRead, Read};
+    let mut reader = std::io::BufReader::new(std::fs::File::open(file).ok()?);
+    let gzipped = reader.fill_buf().ok()?.starts_with(&[0x1f, 0x8b]);
+    let mut header = Vec::with_capacity(0x100);
+    if gzipped {
+        flate2::read::GzDecoder::new(reader).take(0x100).read_to_end(&mut header).ok()?;
+    } else {
+        reader.take(0x100).read_to_end(&mut header).ok()?;
+    }
+    Some(header)
+}
+
+/// [`vgm_platforms`] for a header already read: `None` when it isn't a VGM's.
+fn vgm_header_platforms(header: &[u8]) -> Option<Vec<&'static str>> {
+    if header.len() < 0x40 || &header[..4] != b"Vgm " {
+        return None;
+    }
+    let word = |offset: usize| {
+        header
+            .get(offset..offset + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .unwrap_or(0)
+    };
+    let version = word(0x08);
+    // The header ends where the music starts; fields past it aren't there.
+    let data_start = match word(0x34) {
+        0 => 0x40,
+        offset if version >= 0x150 => 0x34 + offset as usize,
+        _ => 0x40,
+    };
+    // The top bits of a clock flag a variant or a second chip.
+    let clock = |offset: usize| {
+        if offset + 4 <= data_start { word(offset) } else { 0 }
+    };
+    let clocked = |offset: usize| clock(offset) & 0x3fff_ffff != 0;
+    // Every chip clocked besides the SN76489 (0x0c) and YM2413 (0x10).
+    let others: Vec<usize> = VGM_CHIP_CLOCKS
+        .iter()
+        .copied()
+        .filter(|&offset| offset != 0x0c && offset != 0x10 && clocked(offset))
+        .collect();
+    let only = |allowed: &[usize]| others.iter().all(|offset| allowed.contains(offset));
+    let platforms = if clocked(0x84) {
+        vec!["Nintendo - Nintendo Entertainment System", "Nintendo - Family Computer Disk System"]
+    } else if clocked(0x80) {
+        vec!["Nintendo - Game Boy", "Nintendo - Game Boy Color"]
+    } else if clocked(0xa4) {
+        vec!["NEC - PC Engine - TurboGrafx 16", "NEC - PC Engine CD - TurboGrafx-CD"]
+    } else if clocked(0xc0) {
+        vec!["Bandai - WonderSwan", "Bandai - WonderSwan Color"]
+    } else if clocked(0xc4) {
+        vec!["Nintendo - Virtual Boy"]
+    } else if clocked(0x0c) && clock(0x0c) & 0x8000_0000 != 0 && others.is_empty() {
+        // The T6W28, the Neo Geo Pocket's take on the SN76489.
+        vec!["SNK - Neo Geo Pocket", "SNK - Neo Geo Pocket Color"]
+    } else if !others.is_empty() && only(&[0x2c, 0x6c, 0x70]) {
+        // The YM2612, the Mega-CD's RF5C164 or the 32X's PWM.
+        if clocked(0x70) {
+            vec!["Sega - 32X", "Sega - Mega Drive - Genesis"]
+        } else if clocked(0x6c) {
+            vec!["Sega - Mega-CD - Sega CD", "Sega - Mega Drive - Genesis"]
+        } else {
+            vec!["Sega - Mega Drive - Genesis"]
+        }
+    } else if clocked(0x0c) && others.is_empty() {
+        // The SN76489 alone, or with the Mark III's YM2413.
+        vec!["Sega - Master System - Mark III", "Sega - Game Gear", "Sega - SG-1000"]
+    } else if (clocked(0x74) || clocked(0x10)) && !clocked(0x0c) && only(&[0x74, 0x9c]) {
+        // The MSX's PSG, with its FM-PAC or Konami SCC.
+        vec!["Microsoft - MSX", "Microsoft - MSX2"]
+    } else {
+        // Arcade boards: MAME's flyers.
+        vec!["MAME"]
+    };
+    Some(platforms)
+}
+
+/// The VGM header offsets that hold a sound chip's clock.
+const VGM_CHIP_CLOCKS: [usize; 40] = [
+    0x0c, 0x10, 0x2c, 0x30, 0x38, 0x40, 0x44, 0x48, 0x4c, 0x50, 0x54, 0x58, 0x5c, 0x60, 0x64,
+    0x68, 0x6c, 0x70, 0x74, 0x80, 0x84, 0x88, 0x8c, 0x90, 0x98, 0x9c, 0xa0, 0xa4, 0xa8, 0xac,
+    0xb0, 0xb4, 0xc0, 0xc4, 0xc8, 0xcc, 0xd0, 0xd8, 0xdc, 0xe0,
+];
 
 
 /// Box-art URLs to try for a game on its platforms: its title as tagged, with
@@ -1465,6 +1573,35 @@ pub fn album_lookup_name(album: &str) -> &str {
 #[cfg(any(test, feature = "test-util"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vgms_chips_name_its_console() {
+        fn header(clocks: &[(usize, u32)]) -> Vec<u8> {
+            let mut header = vec![0u8; 0x100];
+            header[..4].copy_from_slice(b"Vgm ");
+            header[0x08..0x0c].copy_from_slice(&0x171u32.to_le_bytes());
+            header[0x34..0x38].copy_from_slice(&0xccu32.to_le_bytes());
+            for &(offset, clock) in clocks {
+                header[offset..offset + 4].copy_from_slice(&clock.to_le_bytes());
+            }
+            header
+        }
+        let first = |clocks: &[(usize, u32)]| vgm_header_platforms(&header(clocks)).unwrap()[0];
+        assert_eq!(first(&[(0x84, 1_789_772)]), "Nintendo - Nintendo Entertainment System");
+        assert_eq!(first(&[(0x80, 4_194_304)]), "Nintendo - Game Boy");
+        assert_eq!(first(&[(0xa4, 3_579_545)]), "NEC - PC Engine - TurboGrafx 16");
+        assert_eq!(first(&[(0x0c, 3_579_545), (0x2c, 7_670_453)]), "Sega - Mega Drive - Genesis");
+        assert_eq!(first(&[(0x0c, 3_579_545), (0x10, 3_579_545)]), "Sega - Master System - Mark III");
+        assert_eq!(first(&[(0x0c, 0x8000_0000 | 3_072_000)]), "SNK - Neo Geo Pocket");
+        assert_eq!(first(&[(0x74, 1_789_772), (0x9c, 1_789_772)]), "Microsoft - MSX");
+        assert_eq!(first(&[(0x30, 3_579_545), (0x98, 1_000_000)]), "MAME");
+        // An old header has no room for the later chips' clocks.
+        let mut old = header(&[(0x2c, 7_670_453)]);
+        old[0x08..0x0c].copy_from_slice(&0x110u32.to_le_bytes());
+        old[0x84..0x88].copy_from_slice(&1_789_772u32.to_le_bytes());
+        assert_eq!(vgm_header_platforms(&old).unwrap()[0], "Sega - Mega Drive - Genesis");
+        assert_eq!(vgm_header_platforms(b"not a vgm at all, just some text that runs past sixty-four bytes long"), None);
+    }
 
     #[test]
     fn game_music_tries_the_games_box_art_first() {
