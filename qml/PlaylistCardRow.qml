@@ -232,42 +232,8 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: 14
         anchors.verticalCenter: parent.verticalCenter
-        // Room for the playing icon and meter on every row, so the text never
-        // reflows when a song starts or stops.
-        width: 62
+        width: 22
         height: 24
-
-        Item {
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            width: 36
-            height: 22
-            visible: root.isActiveTrack
-
-            ControlsImpl.IconImage {
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                width: 12
-                height: 12
-                sourceSize.width: 12
-                sourceSize.height: 12
-                name: root.isPlaying ? "media-playback-start" : "media-playback-pause"
-                color: root.selected ? root.theme.highlightedText : root.theme.accent
-            }
-            Loader {
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                width: 22
-                height: 22
-                active: root.isPlaying
-                sourceComponent: WaveformMeter {
-                    app: root.app
-                    highlighted: root.selected
-                    highlightColor: root.theme.highlightedText
-                    dark: root.darkRows
-                }
-            }
-        }
 
         Image {
             id: star
@@ -306,8 +272,45 @@ Item {
             wholeQuery: true
             font.pixelSize: 13
             font.bold: true
+            // Room before the title for the playing song's icon and meter,
+            // kept on every row so no text moves when a song starts or stops.
+            leftPadding: 40
             // The playing song's title takes the accent, as in Earshot.
             color: root.isActiveTrack && !root.selected ? root.theme.accent : root.textColor
+
+            Item {
+                id: playingMark
+                x: 0
+                // Centred on the title's first line.
+                y: Math.round((titleLabel.fontInfo.pixelSize * 1.3 - height) / 2)
+                width: 36
+                height: 18
+                visible: root.isActiveTrack
+
+                ControlsImpl.IconImage {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 12
+                    height: 12
+                    sourceSize.width: 12
+                    sourceSize.height: 12
+                    name: root.isPlaying ? "media-playback-start" : "media-playback-pause"
+                    color: root.selected ? root.theme.highlightedText : root.theme.accent
+                }
+                Loader {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 20
+                    height: 18
+                    active: root.isPlaying
+                    sourceComponent: WaveformMeter {
+                        app: root.app
+                        highlighted: root.selected
+                        highlightColor: root.theme.highlightedText
+                        dark: root.darkRows
+                    }
+                }
+            }
         }
         SearchHighlightLabel {
             id: artistLabel
@@ -385,8 +388,13 @@ Item {
             return x >= trailing.x + star.x - 6
                 && x <= trailing.x + star.x + star.width + 6
         }
-        function meterHit(x) {
-            return root.isPlaying && x >= trailing.x && x < trailing.x + 40
+        // The playing song's mark before its title opens the visualizer.
+        function meterHit(x, y) {
+            if (!root.isPlaying)
+                return false
+            const point = playingMark.mapFromItem(root, x, y)
+            return point.x >= -4 && point.x < playingMark.width + 4
+                && point.y >= -4 && point.y < playingMark.height + 4
         }
 
         anchors.fill: parent
@@ -430,7 +438,7 @@ Item {
                 suppressNextClick = false
                 return
             }
-            if (mouse.button === Qt.LeftButton && meterHit(mouse.x)) {
+            if (mouse.button === Qt.LeftButton && meterHit(mouse.x, mouse.y)) {
                 root.openVisualizer()
                 return
             }
@@ -441,7 +449,7 @@ Item {
             root.pressed(root.rowIndex, mouse.modifiers, mouse.button)
         }
         onDoubleClicked: mouse => {
-            if (meterHit(mouse.x)) {
+            if (meterHit(mouse.x, mouse.y)) {
                 root.openVisualizer()
                 return
             }
