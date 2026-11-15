@@ -674,7 +674,7 @@ pub fn make_home(inputs: &Inputs<'_>) -> Home {
     if groups.is_empty() {
         // Nothing heard yet: one mix per system the library has most of.
         thin = true;
-        for (index, (system, _)) in store.systems().into_iter().take(MAX_DAILY_MIXES).enumerate() {
+        for (system, _) in store.systems().into_iter().take(MAX_DAILY_MIXES) {
             let max = store.max_id().max(1);
             let mut pool = Vec::new();
             for _ in 0..6 {
@@ -686,9 +686,9 @@ pub fn make_home(inputs: &Inputs<'_>) -> Home {
             blend.round_robin(vec![pool], DAILY_LENGTH);
             if blend.songs.len() >= 10 {
                 made_for_you.push(mix_from(
-                    format!("daily-{}", index + 1),
+                    format!("daily-{}", made_for_you.len() + 1),
                     "daily",
-                    format!("Daily Mix {}", index + 1),
+                    format!("Daily Mix {}", made_for_you.len() + 1),
                     match subtitle_for(&blend.songs) {
                         names if names.is_empty() => system.clone(),
                         names => format!("{system} · {names}"),

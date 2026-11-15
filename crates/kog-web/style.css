@@ -6512,8 +6512,10 @@ button.primary:hover:not(:disabled) {
   width: 20px;
   height: 20px;
 }
-.home-refresh svg path,
-.home-refresh svg circle {
+.home-refresh svg [stroke] {
+  stroke: currentColor;
+}
+.home-refresh svg [fill]:not([fill="none"]) {
   fill: currentColor;
 }
 .home-empty {
