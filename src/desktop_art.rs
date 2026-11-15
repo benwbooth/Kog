@@ -245,6 +245,24 @@ impl DesktopArt {
         self.song_image(song, file, artist, album, kog_server::desktop_art::TILE_SIZE)
     }
 
+    /// The song's cover, icon or tile sized, only when it is already known
+    /// (empty for one known to have none), without looking it up: None
+    /// while unknown. Lets a row show a known cover on its first frame.
+    pub fn known_song_image(&self, song: &str, file: &Path, album: &str, tile: bool) -> Option<String> {
+        let side = if tile {
+            kog_server::desktop_art::TILE_SIZE
+        } else {
+            kog_server::desktop_art::ICON_SIZE
+        };
+        let song = format!("{side}\0{song}");
+        let state = self.shared.lock();
+        if let Some(answer) = state.songs.get(&song) {
+            return Some(answer.url.clone());
+        }
+        let album_key = format!("{side}\0{}", kog_server::desktop_art::album_key(file, album));
+        state.albums.get(&album_key).cloned()
+    }
+
     fn song_image(&self, song: &str, file: &Path, artist: &str, album: &str, side: u32) -> String {
         // Each size is its own image: keyed apart, so a row's icon never
         // stands in for a tile.

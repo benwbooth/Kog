@@ -46,6 +46,53 @@ FocusScope {
         theme.base.g + (theme.text.g - theme.base.g) * 0.66,
         theme.base.b + (theme.text.b - theme.base.b) * 0.66, 1)
 
+    // A cover for an album (or song) without art: its title in bold and
+    // its artist under it, on a quiet tint picked from the title, so tiles
+    // tell apart at a glance without a generic icon.
+    function tintFor(text) {
+        let hash = 0
+        for (let i = 0; i < text.length; ++i)
+            hash = (hash * 31 + text.charCodeAt(i)) | 0
+        const hue = ((hash % 360) + 360) % 360 / 360
+        return darkTiles ? Qt.hsla(hue, 0.28, 0.2, 1) : Qt.hsla(hue, 0.32, 0.86, 1)
+    }
+    component TextCover: Rectangle {
+        id: textCover
+        property string title: ""
+        property string subtitle: ""
+        readonly property real size: Math.min(width, height)
+        radius: 7
+        color: browser.tintFor(title + "\u0001" + subtitle)
+        clip: true
+        Column {
+            x: Math.round(textCover.size * 0.09)
+            y: Math.round(textCover.size * 0.09)
+            width: textCover.width - 2 * x
+            spacing: Math.round(textCover.size * 0.03)
+            Label {
+                width: parent.width
+                text: textCover.title
+                font.pixelSize: Math.max(9, Math.round(textCover.size * 0.11))
+                font.bold: true
+                lineHeight: 0.95
+                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                maximumLineCount: 4
+                elide: Text.ElideRight
+                color: browser.theme.text
+            }
+            Label {
+                width: parent.width
+                visible: text.length > 0
+                text: textCover.subtitle
+                font.pixelSize: Math.max(8, Math.round(textCover.size * 0.08))
+                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                maximumLineCount: 2
+                elide: Text.ElideRight
+                color: browser.mutedText
+            }
+        }
+    }
+
     // The tiles, the tile each row is in, and the tile each song number
     // (what track_number_at gives) is in, for finding the playing song.
     property var groups: []
@@ -331,7 +378,18 @@ FocusScope {
                 interval: 150
                 onTriggered: tile.coverWanted = true
             }
+            // A cover already known shows on the tile's first frame, with
+            // no wait; only unknown ones wait for the tile to settle.
+            readonly property string knownCover: {
+                revision
+                browser.app.desktop_art_revision
+                return row >= 0 && browser.app.track_known_image_at
+                    ? String(browser.app.track_known_image_at(row, true)) : "?"
+            }
+            readonly property bool coverKnown: knownCover !== "?"
             readonly property string coverUrl: {
+                if (coverKnown)
+                    return knownCover
                 if (!coverWanted)
                     return ""
                 revision
@@ -357,25 +415,12 @@ FocusScope {
                 width: grid.coverSize
                 height: grid.coverSize
 
-                // No cover (yet): the format's icon on a quiet square.
-                Rectangle {
+                // No cover: the album's (or song's) name and artist.
+                TextCover {
                     anchors.fill: parent
-                    radius: 7
                     visible: !cover.visible
-                    color: Qt.rgba(browser.theme.text.r, browser.theme.text.g, browser.theme.text.b,
-                        browser.darkTiles ? 0.07 : 0.06)
-
-                    Image {
-                        anchors.centerIn: parent
-                        width: Math.round(parent.width * 0.36)
-                        height: width
-                        source: Qt.resolvedUrl("icons/" + tile.formatIcon
-                            + (browser.darkTiles ? "-light" : "") + ".svg")
-                        sourceSize.width: 128
-                        sourceSize.height: 128
-                        fillMode: Image.PreserveAspectFit
-                        opacity: 0.55
-                    }
+                    title: tile.titleText
+                    subtitle: tile.artistText
                 }
                 // The tile image already has its corners rounded.
                 Image {
@@ -383,7 +428,7 @@ FocusScope {
                     anchors.fill: parent
                     source: tile.coverUrl
                     visible: status === Image.Ready
-                    asynchronous: true
+                    asynchronous: !tile.coverKnown
                     cache: true
                     smooth: true
                     mipmap: true
@@ -597,6 +642,16 @@ FocusScope {
 
         readonly property var group: browser.openGroup
         readonly property int firstRow: group && group.rows.length > 0 ? group.rows[0] : -1
+        // The album's cover, which its rows show until they have their own.
+        readonly property string coverUrl: {
+            browser.revision
+            browser.app.desktop_art_revision
+            if (firstRow < 0)
+                return ""
+            const known = browser.app.track_known_image_at
+                ? String(browser.app.track_known_image_at(firstRow, true)) : "?"
+            return known !== "?" ? known : String(browser.app.track_tile_at(firstRow))
+        }
         readonly property real verticalScrollGutter: albumScrollBar.visible
             ? albumScrollBar.implicitWidth + 4 : 0
 
@@ -647,12 +702,7 @@ FocusScope {
             width: albumList.width - albumList.verticalScrollGutter
             height: Math.max(albumCover.height, details.implicitHeight) + 72
 
-            readonly property string coverUrl: {
-                browser.revision
-                browser.app.desktop_art_revision
-                return albumList.firstRow >= 0
-                    ? String(browser.app.track_tile_at(albumList.firstRow)) : ""
-            }
+            readonly property string coverUrl: albumList.coverUrl
 
             // Back to the grid, where it was.
             AbstractButton {
@@ -693,29 +743,19 @@ FocusScope {
                 width: Math.min(220, Math.max(120, albumHeader.width * 0.28))
                 height: width
 
-                Rectangle {
+                TextCover {
                     anchors.fill: parent
                     radius: 10
                     visible: !albumArt.visible
-                    color: Qt.rgba(browser.theme.text.r, browser.theme.text.g, browser.theme.text.b,
-                        browser.darkTiles ? 0.07 : 0.06)
-                    Image {
-                        anchors.centerIn: parent
-                        width: Math.round(parent.width * 0.32)
-                        height: width
-                        source: Qt.resolvedUrl("icons/kog-format-audio"
-                            + (browser.darkTiles ? "-light" : "") + ".svg")
-                        sourceSize.width: 128
-                        sourceSize.height: 128
-                        opacity: 0.55
-                    }
+                    title: albumList.group ? albumList.group.album : ""
+                    subtitle: albumList.group ? albumList.group.artist : ""
                 }
                 Image {
                     id: albumArt
                     anchors.fill: parent
                     source: albumHeader.coverUrl
                     visible: status === Image.Ready
-                    asynchronous: true
+                    asynchronous: false
                     smooth: true
                     mipmap: true
                     fillMode: Image.PreserveAspectFit
@@ -809,6 +849,7 @@ FocusScope {
             lines: browser.rowLines
             rowIndex: albumList.group && index < albumList.group.rows.length
                 ? albumList.group.rows[index] : -1
+            fallbackCover: albumList.coverUrl
             selected: {
                 browser.revision
                 return rowIndex >= 0 && browser.selectionTest(rowIndex)
@@ -954,7 +995,24 @@ FocusScope {
                             return ""
                         browser.revision
                         browser.app.desktop_art_revision
-                        return String(browser.app.track_tile_at(group.rows[0]))
+                        const known = browser.app.track_known_image_at
+                            ? String(browser.app.track_known_image_at(group.rows[0], true)) : "?"
+                        return known !== "?" ? known : String(browser.app.track_tile_at(group.rows[0]))
+                    }
+                    readonly property bool coverKnown: {
+                        if (!group)
+                            return false
+                        browser.app.desktop_art_revision
+                        return !!browser.app.track_known_image_at
+                            && String(browser.app.track_known_image_at(group.rows[0], true)) !== "?"
+                    }
+                    readonly property string titleText: {
+                        if (!group)
+                            return ""
+                        if (!group.single)
+                            return group.album
+                        browser.revision
+                        return String(browser.app.track_value_at(group.rows[0], "title"))
                     }
 
                     visible: group !== null && distance <= coverFlow.side
@@ -978,27 +1036,14 @@ FocusScope {
                         width: coverFlow.coverSize
                         height: width
 
-                        Rectangle {
+                        TextCover {
                             id: blank
                             width: coverFlow.coverSize
                             height: width
                             radius: 6
                             visible: !art.visible
-                            color: Qt.rgba(browser.theme.text.r, browser.theme.text.g, browser.theme.text.b,
-                                browser.darkTiles ? 0.1 : 0.08)
-                            border.width: 1
-                            border.color: Qt.rgba(browser.theme.text.r, browser.theme.text.g,
-                                browser.theme.text.b, 0.08)
-                            Image {
-                                anchors.centerIn: parent
-                                width: Math.round(parent.width * 0.32)
-                                height: width
-                                source: Qt.resolvedUrl("icons/kog-format-audio"
-                                    + (browser.darkTiles ? "-light" : "") + ".svg")
-                                sourceSize.width: 128
-                                sourceSize.height: 128
-                                opacity: 0.55
-                            }
+                            title: slot.titleText
+                            subtitle: slot.group ? slot.group.artist : ""
                         }
                         Image {
                             id: art
@@ -1006,7 +1051,7 @@ FocusScope {
                             height: width
                             source: slot.coverUrl
                             visible: status === Image.Ready
-                            asynchronous: true
+                            asynchronous: !slot.coverKnown
                             cache: true
                             smooth: true
                             mipmap: true
@@ -1285,6 +1330,16 @@ FocusScope {
             cacheBuffer: Math.min(height, 800)
 
             readonly property var group: flowPane.chosenGroup
+            // The album's cover, which its rows show until they have their own.
+            readonly property string coverUrl: {
+                browser.revision
+                browser.app.desktop_art_revision
+                if (!group || group.single)
+                    return ""
+                const known = browser.app.track_known_image_at
+                    ? String(browser.app.track_known_image_at(group.rows[0], true)) : "?"
+                return known !== "?" ? known : String(browser.app.track_tile_at(group.rows[0]))
+            }
             readonly property real verticalScrollGutter: flowSongsBar.visible
                 ? flowSongsBar.implicitWidth + 4 : 0
 
@@ -1337,6 +1392,7 @@ FocusScope {
                 lines: browser.rowLines
                 rowIndex: flowSongs.group && index < flowSongs.group.rows.length
                     ? flowSongs.group.rows[index] : -1
+                fallbackCover: flowSongs.coverUrl
                 selected: {
                     browser.revision
                     return rowIndex >= 0 && browser.selectionTest(rowIndex)

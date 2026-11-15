@@ -525,6 +525,10 @@ pub mod qobject {
         #[qinvokable]
         fn track_tile_at(self: &AppController, index: i32) -> QString;
         #[qinvokable]
+        fn track_known_image_at(self: &AppController, index: i32, tile: bool) -> QString;
+        #[qinvokable]
+        fn workspace_tab_known_image_at(self: &AppController, key: QString, index: i32, tile: bool) -> QString;
+        #[qinvokable]
         fn workspace_tab_tile_at(self: &AppController, key: QString, index: i32) -> QString;
         #[qinvokable]
         fn playlist_icon(self: &AppController, id: i32) -> QString;
@@ -7367,6 +7371,39 @@ impl qobject::AppController {
             .and_then(|row| row.track.as_ref())
             .map(|track| self.track_image(track, true))
             .unwrap_or_default()
+    }
+
+    /// The row's cover (icon or tile) only when already known, without
+    /// looking it up: its URL, empty for a song known to have none, or "?"
+    /// while unknown. Rows show known covers on their first frame and wait
+    /// to look up the rest until they settle on screen.
+    pub fn track_known_image_at(&self, index: i32, tile: bool) -> QString {
+        visible_source_index(self, index)
+            .and_then(|source_index| self.rust().tracks.get(source_index))
+            .map(|track| self.known_image(track, tile))
+            .unwrap_or_else(|| qstring("?"))
+    }
+
+    /// The same for a playlist tab's row.
+    pub fn workspace_tab_known_image_at(&self, key: QString, index: i32, tile: bool) -> QString {
+        self.tab_workspace_tracks(&key.to_string())
+            .and_then(|tracks| usize::try_from(index).ok().and_then(|index| tracks.rows.get(index)))
+            .and_then(|row| row.track.as_ref())
+            .map(|track| self.known_image(track, tile))
+            .unwrap_or_else(|| qstring("?"))
+    }
+
+    fn known_image(&self, track: &Track, tile: bool) -> QString {
+        if track.source.remote_url.is_some() {
+            return QString::default();
+        }
+        let file = &track.source.path;
+        qstring(
+            self.rust()
+                .desktop_art
+                .known_song_image(&file.to_string_lossy(), file, &track.album, tile)
+                .unwrap_or_else(|| "?".to_owned()),
+        )
     }
 
     fn track_image(&self, track: &Track, tile: bool) -> QString {

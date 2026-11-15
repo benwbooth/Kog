@@ -161,12 +161,25 @@ Item {
         interval: 150
         onTriggered: root.coverWanted = true
     }
-    readonly property string coverUrl: {
-        if (!coverWanted)
-            return ""
+    // A cover already known shows on the row's first frame, with no wait;
+    // only unknown ones wait to be looked up. An album's page hands its
+    // rows the album's cover to show meanwhile.
+    property string fallbackCover: ""
+    readonly property string knownCover: {
         revision
         app.desktop_art_revision
-        return String(app.track_cover_at(rowIndex))
+        return app.track_known_image_at ? String(app.track_known_image_at(rowIndex, false)) : "?"
+    }
+    readonly property bool coverKnown: knownCover !== "?"
+    readonly property string coverUrl: {
+        if (coverKnown)
+            return knownCover.length > 0 ? knownCover : fallbackCover
+        if (!coverWanted)
+            return fallbackCover
+        revision
+        app.desktop_art_revision
+        const url = String(app.track_cover_at(rowIndex))
+        return url.length > 0 ? url : fallbackCover
     }
 
     Item {
@@ -204,7 +217,9 @@ Item {
             anchors.fill: parent
             source: root.coverUrl
             visible: status === Image.Ready
-            asynchronous: true
+            // A known cover loads at once, so the row never shows its
+            // stand-in first.
+            asynchronous: !root.coverKnown
             cache: true
             smooth: true
             mipmap: true

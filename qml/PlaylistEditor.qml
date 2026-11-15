@@ -242,6 +242,7 @@ FocusScope {
         readonly property int desktop_art_revision: editor.app.desktop_art_revision
         function track_cover_at(row) { return editor.app.workspace_tab_cover_at(editor.activeKey, editor.rows[row]) }
         function track_tile_at(row) { return editor.app.workspace_tab_tile_at(editor.activeKey, editor.rows[row]) }
+        function track_known_image_at(row, tile) { return editor.app.workspace_tab_known_image_at(editor.activeKey, editor.rows[row], tile) }
     }
     QtObject {
         id: fallbackSearch
