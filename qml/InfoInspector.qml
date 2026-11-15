@@ -105,7 +105,8 @@ Window {
             text: root.app.current_file
             color: root.palette.placeholderText
             horizontalAlignment: Text.AlignHCenter
-            elide: Text.ElideMiddle
+            // A path: clipped at the edge, never "…".
+            clip: true
         }
     }
 }

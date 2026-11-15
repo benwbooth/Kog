@@ -9491,6 +9491,7 @@ impl Ui {
                             Surface::Header
                         },
                         true,
+                        false,
                     );
                 }
                 paint_playlist_separators(
@@ -9576,6 +9577,7 @@ impl Ui {
                                     marquee_tick,
                                     surface,
                                     focused && !selected,
+                                    matches!(self.columns.entries[column_index].id, "path" | "filename"),
                                 );
                                 if self.columns.entries[column_index].id == "status"
                                     && self.table_playing() == Some(index)
@@ -12410,11 +12412,10 @@ fn draw_hover_tooltip(
     }
 }
 
-fn marquee_prefixed(prefix: &str, value: &str, width: usize, tick: usize) -> String {
-    format!(
-        "{prefix}{}",
-        marquee_window(value, width.saturating_sub(cell_width(prefix)), tick)
-    )
+/// A file tree row: its prefix, then the file or folder name cut at the
+/// edge, never "…" (the hover label shows it whole).
+fn marquee_prefixed(prefix: &str, value: &str, width: usize, _tick: usize) -> String {
+    format!("{prefix}{}", clip(value, width.saturating_sub(cell_width(prefix))))
 }
 
 fn saved_list_marquee_label(
@@ -12468,6 +12469,8 @@ fn paint_playlist_cell(
     marquee_tick: usize,
     surface: Surface,
     bold: bool,
+    // Paths and filenames: cut at the edge, never "…".
+    clip_text: bool,
 ) {
     let visible_left = column_start.saturating_sub(scroll);
     let clipped_left = scroll.saturating_sub(column_start);
@@ -12492,7 +12495,9 @@ fn paint_playlist_cell(
         value,
         tooltip_available,
     );
-    let cell = if clipped {
+    let cell = if clipped && clip_text {
+        clip(value, content_width)
+    } else if clipped {
         marquee_window(value, content_width, marquee_tick)
     } else {
         value.to_owned()

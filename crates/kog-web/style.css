@@ -1117,6 +1117,14 @@ body.touch .track .index-cell {
   white-space: nowrap;
 }
 
+/* Paths and filenames run to the edge and are cut there, never "…"; the
+ * tooltip still shows them whole when they're cut. */
+.track .path-cell,
+.track .filename-cell,
+.tree-row .label {
+  text-overflow: clip;
+}
+
 /* The sort button already has 8px padding. A second inset on these compact
  * headers steals the space reserved for #, the star, and their sort arrow. */
 .columns .index-cell,

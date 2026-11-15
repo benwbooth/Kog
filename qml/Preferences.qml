@@ -378,7 +378,8 @@ Window {
                                                 ? qsTr("Song: %1 :: %2").arg(entryPath).arg(entryMember)
                                                 : qsTr("Song: %1").arg(entryPath))
                                         color: root.foregroundColor
-                                        elide: Text.ElideMiddle
+                                        // A path: clipped at the edge, never "…".
+                                        clip: true
                                     }
                                     Button {
                                         text: qsTr("Remove")
@@ -513,7 +514,8 @@ Window {
                                 // separate from the tree pane's root, which
                                 // lives in the tree header.
                                 text: root.app.music_directory_path
-                                elide: Text.ElideMiddle
+                                // A path: clipped at the edge, never "…".
+                                clip: true
                             }
                             RowLayout {
                                 Button {
@@ -661,7 +663,8 @@ Window {
                                 text: root.app.soundfont_path.length > 0
                                     ? root.app.soundfont_path
                                     : qsTr("No SoundFont selected")
-                                elide: Text.ElideMiddle
+                                // A path: clipped at the edge, never "…".
+                                clip: true
                                 color: root.app.soundfont_path.length > 0
                                     ? root.palette.text
                                     : root.palette.placeholderText
@@ -693,7 +696,8 @@ Window {
                                 text: root.app.sc55_rom_path.length > 0
                                     ? root.app.sc55_rom_path
                                     : qsTr("No ROM directory selected")
-                                elide: Text.ElideMiddle
+                                // A path: clipped at the edge, never "…".
+                                clip: true
                                 color: root.app.sc55_rom_path.length > 0
                                     ? root.palette.text
                                     : root.palette.placeholderText
@@ -730,7 +734,8 @@ Window {
                                 text: root.app.mt32_rom_path.length > 0
                                     ? root.app.mt32_rom_path
                                     : qsTr("No ROM directory selected")
-                                elide: Text.ElideMiddle
+                                // A path: clipped at the edge, never "…".
+                                clip: true
                                 color: root.app.mt32_rom_path.length > 0
                                     ? root.palette.text
                                     : root.palette.placeholderText
@@ -1109,7 +1114,8 @@ Window {
                                 PreferenceLabel {
                                     Layout.fillWidth: true
                                     text: serverState.musicDirectory
-                                    elide: Text.ElideMiddle
+                                    // A path: clipped at the edge, never "…".
+                                    clip: true
                                     color: palette.placeholderText
                                 }
                                 Button {
@@ -1360,7 +1366,8 @@ Window {
                                     Layout.fillWidth: true
                                     text: serverState.certificatePath.length > 0
                                         ? serverState.certificatePath : qsTr("No certificate chosen")
-                                    elide: Text.ElideMiddle
+                                    // A path: clipped at the edge, never "…".
+                                    clip: true
                                     color: root.palette.placeholderText
                                 }
                             }
@@ -1422,7 +1429,8 @@ Window {
                                     && serverState.status.certificatePath
                                 text: serverState.status && serverState.status.certificatePath
                                     ? qsTr("Certificate: %1").arg(serverState.status.certificatePath) : ""
-                                elide: Text.ElideMiddle
+                                // A path: clipped at the edge, never "…".
+                                clip: true
                                 color: root.palette.placeholderText
                             }
                             RowLayout {

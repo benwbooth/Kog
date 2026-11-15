@@ -270,6 +270,8 @@ Item {
             leftPadding: cell.column.id === "title" ? 26 : 6
             rightPadding: 6
             sourceText: cell.text
+            // Paths and filenames clip at the edge rather than ending in "…".
+            clipText: cell.column.id === "path" || cell.column.id === "filename"
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true

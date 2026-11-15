@@ -1504,7 +1504,8 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 text: appController.directory_scan_current_path
                 color: root.palette.placeholderText
-                elide: Text.ElideMiddle
+                // Paths clip at the edge rather than ending in "…".
+                clip: true
                 font.pixelSize: 11
             }
 
@@ -1560,7 +1561,8 @@ ApplicationWindow {
                         text: treeDeleteConfirmDialog.deletePaths[index]
                         color: root.palette.placeholderText
                         font.pixelSize: 11
-                        elide: Text.ElideMiddle
+                        // Paths clip at the edge rather than ending in "…".
+                        clip: true
                     }
                 }
                 Label {
@@ -1639,7 +1641,8 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 text: appController.tree_delete_current_path
                 color: root.palette.placeholderText
-                elide: Text.ElideMiddle
+                // Paths clip at the edge rather than ending in "…".
+                clip: true
                 font.pixelSize: 11
             }
             Label {
@@ -3428,7 +3431,8 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 text: root.homeRelative(appController.directory_path)
                                 font.bold: true
-                                elide: Text.ElideMiddle
+                                // Paths clip at the edge rather than ending in "…".
+                                clip: true
                                 Accessible.name: qsTr("Music folder: %1").arg(text)
 
                                 MouseArea {
@@ -3937,6 +3941,7 @@ ApplicationWindow {
                                 id: treeNameLabel
                                 Layout.fillWidth: true
                                 sourceText: treeDelegate.fileName
+                                clipText: true
                                 query: fileTreeModel.searchText
                                 searchModel: fileTreeModel
                                 color: treeDelegate.selected
