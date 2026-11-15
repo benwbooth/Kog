@@ -47,6 +47,21 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"
 
+# The sound model's runtime, loaded from ONNX Runtime's shared library at run
+# time (see discover/embedding.rs), so no build needs it installed.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = [
+  "std",
+  "load-dynamic",
+  "api-22",
+  "migraphx",
+  "rocm",
+  "cuda",
+  "webgpu",
+  "directml",
+  "coreml",
+] }
+
 [dev-dependencies]
 http-body-util = "0.1"
 tempfile = "3.27.0"

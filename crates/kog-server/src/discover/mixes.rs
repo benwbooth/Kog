@@ -443,14 +443,75 @@ fn record_song(store: &Store, record: &PlayRecord) -> Song {
     })
 }
 
+/// What a group of songs sounds like on average: their emulator-derived
+/// features and, where the sound model has run, their embeddings.
+#[derive(Clone, Debug, Default)]
+struct Target {
+    features: Option<Vec<f32>>,
+    embedding: Option<Vec<f32>>,
+}
+
+impl Target {
+    fn of(songs: &[Song]) -> Option<Self> {
+        let target = Self {
+            features: features::centroid(songs.iter().filter_map(|song| song.features.as_deref())),
+            embedding: embedding_centroid(songs.iter().filter_map(|song| song.embedding.as_deref())),
+        };
+        (target.features.is_some() || target.embedding.is_some()).then_some(target)
+    }
+
+    /// How far a song sounds from this, or none when nothing compares.
+    fn distance(&self, song: &Song) -> Option<f32> {
+        sound_distance(self.features.as_deref(), self.embedding.as_deref(), song)
+    }
+}
+
+/// How unlike two sounds are: the sound model's view weighs most where
+/// both have embeddings, the emulator features fill in (and are all there
+/// is without the model). About 1 for unrelated songs.
+fn sound_distance(features: Option<&[f32]>, embedding: Option<&[f32]>, song: &Song) -> Option<f32> {
+    let by_features = features
+        .zip(song.features.as_deref())
+        .map(|(a, b)| features::distance(a, b));
+    let by_model = embedding
+        .zip(song.embedding.as_deref())
+        .map(|(a, b)| embedding_distance(a, b) / 0.5);
+    match (by_features, by_model) {
+        (Some(features), Some(model)) => Some(0.65 * model + 0.35 * features),
+        (features, model) => features.or(model),
+    }
+}
+
+/// Cosine distance between unit embeddings: 0 alike, 1 unrelated.
+fn embedding_distance(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 2.0;
+    }
+    1.0 - a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>()
+}
+
+fn embedding_centroid<'a>(vectors: impl IntoIterator<Item = &'a [f32]>) -> Option<Vec<f32>> {
+    let mut sum: Vec<f32> = Vec::new();
+    for vector in vectors {
+        if sum.is_empty() {
+            sum = vec![0.0; vector.len()];
+        }
+        if vector.len() != sum.len() {
+            continue;
+        }
+        for (total, value) in sum.iter_mut().zip(vector) {
+            *total += value;
+        }
+    }
+    let norm = sum.iter().map(|value| value * value).sum::<f32>().sqrt();
+    (norm > 0.0).then(|| sum.into_iter().map(|value| value / norm).collect())
+}
+
 /// Songs closest in sound to `target`, best first.
-fn nearest(target: &[f32], candidates: &[Song], limit: usize) -> Vec<Song> {
+fn nearest(target: &Target, candidates: &[Song], limit: usize) -> Vec<Song> {
     let mut scored: Vec<(f32, &Song)> = candidates
         .iter()
-        .filter_map(|song| {
-            let features = song.features.as_ref()?;
-            Some((features::distance(target, features), song))
-        })
+        .filter_map(|song| Some((target.distance(song)?, song)))
         .collect();
     scored.sort_by(|a, b| a.0.total_cmp(&b.0));
     scored.into_iter().take(limit).map(|(_, song)| song.clone()).collect()
@@ -569,8 +630,7 @@ fn new_songs_for(store: &Store, seeds: &[Song], sample: &[Song], taste: &Taste, 
     rng.shuffle(&mut by_album);
     rng.shuffle(&mut beside);
     let mut sounds_like = Vec::new();
-    let vectors: Vec<&[f32]> = seeds.iter().filter_map(|seed| seed.features.as_deref()).collect();
-    if let Some(center) = features::centroid(vectors) {
+    if let Some(center) = Target::of(seeds) {
         let system = common_system(seeds);
         let mut pool: Vec<Song> = fresh(sample.to_vec());
         if let Some(system) = &system {
@@ -591,10 +651,7 @@ fn clusters(liked: &[Song], rng: &mut Rng) -> Vec<Vec<Song>> {
     }
     let count = (liked.len() / 10).clamp(1, MAX_DAILY_MIXES);
     let apart = |a: &Song, b: &Song| -> f32 {
-        let mut distance = match (&a.features, &b.features) {
-            (Some(x), Some(y)) => features::distance(x, y),
-            _ => 1.0,
-        };
+        let mut distance = sound_distance(a.features.as_deref(), a.embedding.as_deref(), b).unwrap_or(1.0);
         if !a.credit().is_empty() && a.credit().eq_ignore_ascii_case(b.credit()) {
             distance *= 0.4;
         }
@@ -823,8 +880,7 @@ fn discover_weekly(
     let mut sources: Vec<Vec<Song>> = Vec::new();
     // Sounds like each style the listener likes.
     for group in groups {
-        let vectors: Vec<&[f32]> = group.iter().filter_map(|song| song.features.as_deref()).collect();
-        if let Some(center) = features::centroid(vectors) {
+        if let Some(center) = Target::of(group) {
             let pool: Vec<Song> = sample.iter().filter(|song| fresh(song)).cloned().collect();
             sources.push(nearest(&center, &pool, 60));
         }
@@ -888,8 +944,7 @@ fn unplayed_albums(store: &Store, taste: &Taste, liked: &[Song], sample: &[Song]
     for (_, name, _) in taste.credits.iter().take(15) {
         candidates.extend(store.songs_by_credit(name, 100));
     }
-    let vectors: Vec<&[f32]> = liked.iter().filter_map(|song| song.features.as_deref()).collect();
-    let center = features::centroid(vectors);
+    let center = Target::of(liked);
     if let Some(center) = &center {
         candidates.extend(nearest(center, sample, 300));
     }
@@ -908,8 +963,8 @@ fn unplayed_albums(store: &Store, taste: &Taste, liked: &[Song], sample: &[Song]
         }
         let mut score = taste.credit_score(song.credit()).min(10.0) * 0.3;
         score += taste.systems.get(&song.system).copied().unwrap_or(0.0).min(10.0) * 0.05;
-        if let (Some(center), Some(features)) = (&center, &song.features) {
-            score += (1.5 - f64::from(features::distance(center, features))).max(0.0);
+        if let Some(distance) = center.as_ref().and_then(|center| center.distance(&song)) {
+            score += (1.5 - f64::from(distance)).max(0.0);
         }
         score += (rng.below(1000) as f64) / 4000.0;
         let entry = scores.entry(album).or_insert((0.0, song.clone()));

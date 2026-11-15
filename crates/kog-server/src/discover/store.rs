@@ -245,6 +245,11 @@ impl Store {
     /// Take or renew the crawling lease for `owner`, held until `ttl` passes
     /// without a renewal. Another live owner keeps it.
     pub fn take_lease(&self, owner: &str, ttl: Duration) -> bool {
+        self.take_named_lease("lease", owner, ttl)
+    }
+
+    /// Like [`Self::take_lease`] for another job (`name` is its key).
+    pub fn take_named_lease(&self, name: &str, owner: &str, ttl: Duration) -> bool {
         let now = now_ms();
         let Ok(transaction) = rusqlite::Transaction::new_unchecked(
             &self.conn,
@@ -252,7 +257,7 @@ impl Store {
         ) else {
             return false;
         };
-        let current = self.meta("lease");
+        let current = self.meta(name);
         let free = match current.as_deref().and_then(|value| value.split_once('|')) {
             Some((holder, expires)) => {
                 holder == owner || expires.parse::<i64>().map_or(true, |expires| expires < now)
@@ -261,7 +266,7 @@ impl Store {
         };
         if free {
             let value = format!("{owner}|{}", now + ttl.as_millis() as i64);
-            if self.set_meta("lease", &value).is_err() {
+            if self.set_meta(name, &value).is_err() {
                 return false;
             }
         }
@@ -534,7 +539,7 @@ impl Store {
     pub fn sample_with_features(&self, start: i64, limit: usize) -> Vec<Song> {
         let mut songs = self.query(
             &format!(
-                "SELECT {SONG_COLUMNS} FROM songs WHERE id >= ?1 AND length(features) > 0
+                "SELECT {SONG_COLUMNS} FROM songs WHERE id >= ?1 AND (length(features) > 0 OR length(embedding) > 0)
                  ORDER BY id LIMIT ?2"
             ),
             params![start, limit as i64],
@@ -542,7 +547,7 @@ impl Store {
         if songs.len() < limit {
             songs.extend(self.query(
                 &format!(
-                    "SELECT {SONG_COLUMNS} FROM songs WHERE id < ?1 AND length(features) > 0
+                    "SELECT {SONG_COLUMNS} FROM songs WHERE id < ?1 AND (length(features) > 0 OR length(embedding) > 0)
                      ORDER BY id LIMIT ?2"
                 ),
                 params![start, (limit - songs.len()) as i64],
@@ -584,6 +589,49 @@ impl Store {
             ),
             params![start, limit as i64],
         )
+    }
+
+    /// Songs without an embedding, among `locators` first.
+    pub fn unembedded(&self, locators: &[String], limit: usize) -> Vec<Song> {
+        let mut found = Vec::new();
+        for locator in locators {
+            if found.len() >= limit {
+                break;
+            }
+            found.extend(self.query(
+                &format!("SELECT {SONG_COLUMNS} FROM songs WHERE locator = ?1 AND embedding_at = 0"),
+                [locator],
+            ));
+        }
+        found
+    }
+
+    /// Any songs without an embedding, from a random point.
+    pub fn unembedded_from(&self, start: i64, limit: usize) -> Vec<Song> {
+        let mut songs = self.query(
+            &format!(
+                "SELECT {SONG_COLUMNS} FROM songs WHERE embedding_at = 0 AND id >= ?1 ORDER BY id LIMIT ?2"
+            ),
+            params![start, limit as i64],
+        );
+        if songs.is_empty() {
+            songs = self.query(
+                &format!("SELECT {SONG_COLUMNS} FROM songs WHERE embedding_at = 0 ORDER BY id LIMIT ?1"),
+                [limit as i64],
+            );
+        }
+        songs
+    }
+
+    /// Forget every embedding, when another model makes them.
+    pub fn clear_embeddings(&self) {
+        let _ = self.conn.execute("UPDATE songs SET embedding = NULL, embedding_at = 0", []);
+    }
+
+    pub fn embedded_count(&self) -> i64 {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM songs WHERE length(embedding) > 0", [], |row| row.get(0))
+            .unwrap_or(0)
     }
 
     pub fn max_id(&self) -> i64 {

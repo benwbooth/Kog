@@ -9,6 +9,8 @@
 //! The desktop app and the server share the index; whichever holds the
 //! lease does the crawling and makes the mixes, and the others read them.
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod embedding;
 pub mod features;
 pub mod mixes;
 pub mod store;
@@ -57,6 +59,11 @@ pub struct Status {
     pub files: i64,
     /// This process holds the lease and is crawling.
     pub crawling: bool,
+    /// Songs with a sound-model embedding.
+    pub embedded: i64,
+    /// Where the sound model runs ("MIGraphX", "WebGPU", "CPU"), why it
+    /// does not, or empty when another Kog runs it.
+    pub embedding: String,
 }
 
 #[derive(Default)]
@@ -68,6 +75,8 @@ struct Inner {
     priority_folders: VecDeque<String>,
     /// Songs to analyse before the rest.
     analyse_first: VecDeque<String>,
+    /// Songs to embed before the rest.
+    embed_first: VecDeque<String>,
     refresh: bool,
     status: Status,
 }
@@ -245,6 +254,10 @@ impl Discover {
                 continue;
             }
             if let Ok(locator) = crate::media_filter::locator_for(&entry) {
+                if !inner.embed_first.contains(&locator) {
+                    inner.embed_first.push_front(locator.clone());
+                    inner.embed_first.truncate(500);
+                }
                 if !inner.analyse_first.contains(&locator) {
                     inner.analyse_first.push_front(locator);
                 }
@@ -290,23 +303,48 @@ impl Discover {
         let mut last_lease: Option<Instant> = None;
         let mut last_poll: Option<Instant> = None;
         let mut last_status: Option<Instant> = None;
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        let mut embedder = EmbedWorker::new(&store);
         self.seed_from_history();
         loop {
             if last_lease.is_none_or(|at| at.elapsed() >= LEASE_RENEW) {
                 leased = store.take_lease(&owner, LEASE_TTL);
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                embedder.renew(&store, &owner);
                 last_lease = Some(Instant::now());
             }
             if last_status.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
                 let (songs, analysed, files) = store.counts();
-                lock(&self.inner).status = Status { songs, analysed, files, crawling: leased };
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                let embedding = embedder.state();
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                let embedding = String::new();
+                lock(&self.inner).status = Status {
+                    songs,
+                    analysed,
+                    files,
+                    crawling: leased,
+                    embedded: store.embedded_count(),
+                    embedding,
+                };
                 last_status = Some(Instant::now());
             }
             if last_poll.is_none_or(|at| at.elapsed() >= HOME_POLL) || lock(&self.inner).refresh {
                 self.maintain_home(&store, leased);
                 last_poll = Some(Instant::now());
             }
+            // Embedding runs in whichever Kog can run the sound model, beside
+            // (or instead of) the crawl.
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            let embedded = embedder.step(&self, &mut store, &crawler);
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            let embedded = false;
             if !leased {
-                self.sleep(HOME_POLL);
+                if embedded {
+                    std::thread::sleep(ANALYSIS_PAUSE);
+                } else {
+                    self.sleep(HOME_POLL);
+                }
                 continue;
             }
             match crawler.step(&self, &mut store) {
@@ -434,6 +472,134 @@ fn play_from_listen(listen: &Listen) -> Option<PlayRecord> {
         codec: metadata.codec.clone(),
         year: metadata.year.map(|year| year as i64),
     })
+}
+
+/// The sound model's worker: loads the model where the preference says,
+/// holds its own lease (so one Kog embeds at a time, whichever crawls), and
+/// embeds one song per step, songs just played first.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+struct EmbedWorker {
+    backend: embedding::Backend,
+    model: Option<embedding::Embedder>,
+    error: String,
+    tried: Option<Instant>,
+    leased: bool,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl EmbedWorker {
+    /// How long a failed model load waits before trying again.
+    const RETRY: Duration = Duration::from_secs(15 * 60);
+
+    fn new(store: &Store) -> Self {
+        // Vectors from another model mean nothing to this one.
+        if store.meta("embedding_model").as_deref() != Some(embedding::MODEL_ID) {
+            store.clear_embeddings();
+            let _ = store.set_meta("embedding_model", embedding::MODEL_ID);
+        }
+        Self { backend: embedding::Backend::current(), model: None, error: String::new(), tried: None, leased: false }
+    }
+
+    fn state(&self) -> String {
+        if self.backend == embedding::Backend::Off {
+            return "off".into();
+        }
+        match &self.model {
+            Some(model) => model.providers.join(", "),
+            None if !self.error.is_empty() => self.error.clone(),
+            None => String::new(),
+        }
+    }
+
+    /// Follow the preference, load the model when needed, and take or keep
+    /// the embedding lease while it is loaded.
+    fn renew(&mut self, store: &Store, owner: &str) {
+        let backend = embedding::Backend::current();
+        if backend != self.backend {
+            // ONNX Runtime keeps its first environment; a new session on it
+            // picks the new providers.
+            self.backend = backend;
+            self.model = None;
+            self.error.clear();
+            self.tried = None;
+        }
+        if backend == embedding::Backend::Off {
+            self.leased = false;
+            return;
+        }
+        if self.model.is_none() && self.tried.is_none_or(|at| at.elapsed() >= Self::RETRY) {
+            self.tried = Some(Instant::now());
+            match embedding::Embedder::load(backend) {
+                Ok(model) => {
+                    eprintln!("kog: the sound model runs on {}", model.providers.join(", "));
+                    self.model = Some(model);
+                    self.error.clear();
+                }
+                Err(error) => {
+                    eprintln!("kog: sound embeddings are unavailable: {error}");
+                    self.error = error;
+                }
+            }
+        }
+        self.leased = self.model.is_some() && store.take_named_lease("embed_lease", owner, LEASE_TTL);
+    }
+
+    /// Embed one song. Returns whether there was one to embed.
+    fn step(&mut self, discover: &Discover, store: &mut Store, crawler: &Crawler) -> bool {
+        if !self.leased {
+            return false;
+        }
+        let Some(model) = self.model.as_mut() else { return false };
+        let first = {
+            let mut inner = lock(&discover.inner);
+            let mut found = None;
+            while let Some(locator) = inner.embed_first.pop_front() {
+                if let Some(song) = store.unembedded(&[locator], 1).into_iter().next() {
+                    found = Some(song);
+                    break;
+                }
+            }
+            found
+        };
+        let song = first.or_else(|| {
+            let max = store.max_id();
+            (max > 0).then(|| {
+                let start = 1 + (kog_audio::radio::random_seed().wrapping_mul(0x5851_F42D) % max as u64) as i64;
+                store.unembedded_from(start, 1).into_iter().next()
+            })?
+        });
+        let Some(song) = song else { return false };
+        let decoders = Arc::clone(&crawler.decoders);
+        let settings = crawler.decoder_settings.clone();
+        let entry = song.stored_entry();
+        let clip = with_timeout(ANALYSIS_TIMEOUT, move || {
+            let playlist_entry = kog_audio::playlist::PlaylistEntry::from_locator(
+                &entry.kind,
+                &entry.path,
+                &entry.entry,
+                entry.fragment.clone(),
+            )?;
+            let source = decoders
+                .expand_entry(&playlist_entry)?
+                .sources
+                .into_iter()
+                .next()
+                .ok_or_else(|| "nothing to play".to_owned())?;
+            let clip = embedding::read_clip(source, &settings);
+            drop(decoders);
+            clip
+        })
+        .and_then(Result::ok);
+        let vector = clip.and_then(|clip| match model.embed_clip(&clip) {
+            Ok(vector) => Some(vector),
+            Err(error) => {
+                eprintln!("kog: embedding {}: {error}", song.locator);
+                None
+            }
+        });
+        let _ = store.set_embedding(song.id, vector.as_deref());
+        true
+    }
 }
 
 enum Step {
