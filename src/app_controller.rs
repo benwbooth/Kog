@@ -534,6 +534,10 @@ pub mod qobject {
         #[qinvokable]
         fn update_download_cover_art(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
+        fn embedding_backend(self: &AppController) -> QString;
+        #[qinvokable]
+        fn set_embedding_backend(self: Pin<&mut AppController>, backend: QString);
+        #[qinvokable]
         fn poll_cover_art(self: Pin<&mut AppController>);
         #[qinvokable]
         fn reject_current_cover(self: Pin<&mut AppController>);
@@ -7249,6 +7253,21 @@ impl qobject::AppController {
                 MidiEngine::Opl3Windows | MidiEngine::Mt32 => {}
             });
         let _ = spawned;
+    }
+
+    /// Where the Home mixes' sound model runs: auto, rocm, webgpu, cpu or off.
+    pub fn embedding_backend(&self) -> QString {
+        qstring(kog_server::discover::embedding::Backend::current().setting_value())
+    }
+
+    pub fn set_embedding_backend(mut self: Pin<&mut Self>, backend: QString) {
+        let backend = kog_server::discover::embedding::Backend::from_setting(Some(&backend.to_string()));
+        if let Err(error) = kog_audio::settings::save_text(
+            kog_server::discover::embedding::BACKEND_SETTING,
+            backend.setting_value(),
+        ) {
+            self.as_mut().set_status(qstring(error));
+        }
     }
 
     pub fn update_download_cover_art(mut self: Pin<&mut Self>, enabled: bool) {

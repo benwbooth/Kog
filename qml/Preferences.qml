@@ -289,6 +289,59 @@ Window {
                     }
 
                     PreferenceGroup {
+                        id: soundModelGroup
+                        title: qsTr("Home mixes")
+                        Layout.fillWidth: true
+                        property string modelState: ""
+                        function refreshState() {
+                            try {
+                                const status = JSON.parse(root.app.discover_json()).status || {}
+                                modelState = status.embedding
+                                    ? qsTr("Sound model: %1. %2 songs measured.").arg(status.embedding)
+                                        .arg(Number(status.embedded || 0).toLocaleString(Qt.locale(), "f", 0))
+                                    : ""
+                            } catch (_) {
+                                modelState = ""
+                            }
+                        }
+                        Timer {
+                            interval: 5000
+                            repeat: true
+                            running: soundModelGroup.visible
+                            triggeredOnStart: true
+                            onTriggered: soundModelGroup.refreshState()
+                        }
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PreferenceLabel { text: qsTr("Run the sound model on:") }
+                                ComboBox {
+                                    readonly property var choices: ["auto", "rocm", "webgpu", "cpu", "off"]
+                                    Layout.fillWidth: true
+                                    model: [
+                                        qsTr("Automatic (GPU when available)"),
+                                        qsTr("AMD GPU (ROCm)"),
+                                        qsTr("Any GPU (WebGPU: Vulkan, DirectX, Metal)"),
+                                        qsTr("CPU"),
+                                        qsTr("Off")
+                                    ]
+                                    currentIndex: Math.max(0, choices.indexOf(String(root.app.embedding_backend())))
+                                    onActivated: root.app.set_embedding_backend(choices[currentIndex])
+                                }
+                            }
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                text: qsTr("A neural network (LAION's CLAP) listens to ten seconds of each song so mixes can bring songs that sound alike. It uses ONNX Runtime and downloads its model (about 120 MB) once.")
+                                    + (soundModelGroup.modelState.length > 0 ? "\n" + soundModelGroup.modelState : "")
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
+                            }
+                        }
+                    }
+
+                    PreferenceGroup {
                         title: qsTr("Looping songs")
                         Layout.fillWidth: true
 

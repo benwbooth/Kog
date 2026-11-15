@@ -82,7 +82,8 @@ impl Backend {
 }
 
 /// The ONNX Runtime library to load: the preference, the environment
-/// (`KOG_ONNXRUNTIME`, or `ORT_DYLIB_PATH` as ort documents it), then the
+/// (`KOG_ONNXRUNTIME`, or `ORT_DYLIB_PATH` as ort documents it), the build
+/// `scripts/onnxruntime-rocm.sh` links into Kog's data folder, then the
 /// platform's name for it on the library path.
 fn library_path() -> PathBuf {
     if let Some(path) = kog_audio::settings::load_text(LIBRARY_SETTING) {
@@ -92,6 +93,14 @@ fn library_path() -> PathBuf {
         if let Some(path) = std::env::var_os(variable).filter(|path| !path.is_empty()) {
             return PathBuf::from(path);
         }
+    }
+    if let Some(linked) = kog_core::db::LibraryDb::open()
+        .ok()
+        .and_then(|db| db.path())
+        .and_then(|db| Some(db.parent()?.join("onnxruntime").join("lib").join("libonnxruntime.so")))
+        .filter(|path| cfg!(target_os = "linux") && path.is_file())
+    {
+        return linked;
     }
     PathBuf::from(if cfg!(windows) {
         "onnxruntime.dll"
