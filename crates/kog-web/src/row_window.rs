@@ -33,6 +33,9 @@ pub enum ViewMode {
     List,
     Rows,
     Grid,
+    /// The albums as a 3D cover flow over the chosen album's songs, which
+    /// are laid out as rows.
+    Flow,
 }
 
 impl ViewMode {
@@ -41,6 +44,7 @@ impl ViewMode {
             Self::List => "list",
             Self::Rows => "rows",
             Self::Grid => "grid",
+            Self::Flow => "flow",
         }
     }
 
@@ -48,6 +52,7 @@ impl ViewMode {
         match key {
             "rows" => Self::Rows,
             "grid" => Self::Grid,
+            "flow" => Self::Flow,
             _ => Self::List,
         }
     }
@@ -124,7 +129,7 @@ impl RowWindow {
             // Phones: room for a title on two lines over its detail line.
             ViewMode::List if compact => (68.0, 1),
             ViewMode::List => (26.0, 1),
-            ViewMode::Rows => (self.card_row.get_untracked(), 1),
+            ViewMode::Rows | ViewMode::Flow => (self.card_row.get_untracked(), 1),
             ViewMode::Grid => {
                 let width = f64::from(node.client_width()).max(TILE_WIDTH);
                 let columns = ((width / TILE_WIDTH).floor() as usize).max(1);

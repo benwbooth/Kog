@@ -82,6 +82,7 @@ mod icons {
     pub const VIEW_LIST_DETAILS: &str = include_str!("../../../qml/icons/view-list-details.svg");
     pub const VIEW_LIST_ROWS: &str = include_str!("../../../qml/icons/view-list-rows.svg");
     pub const VIEW_GRID: &str = include_str!("../../../qml/icons/view-grid.svg");
+    pub const VIEW_COVERFLOW: &str = include_str!("../../../qml/icons/view-coverflow.svg");
     pub const CLEAR_LIST: &str = include_str!("../../../qml/icons/edit-clear-list.svg");
     pub const SORT: &str = include_str!("../../../qml/icons/view-sort.svg");
     pub const CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>"#;
@@ -1021,6 +1022,7 @@ fn load_row_lines() -> Vec<Vec<String>> {
         })
         .unwrap_or_else(default_row_lines)
 }
+
 
 /// One line of a song in the rows view: its fields' text joined by a middle
 /// dot, skipping empty ones. Format is the codec, or the file's extension
@@ -3080,7 +3082,7 @@ fn App() -> impl IntoView {
     // album artist (or artist). Regrouped only when the rows or their tags
     // change, and only for the grid.
     let album_tiles = Memo::new(move |_| {
-        if view_mode.get() != row_window::ViewMode::Grid {
+        if !matches!(view_mode.get(), row_window::ViewMode::Grid | row_window::ViewMode::Flow) {
             return Vec::new();
         }
         all_rows.with(|rows| {
@@ -3115,13 +3117,58 @@ fn App() -> impl IntoView {
     let album_open = Memo::new(move |_| {
         view_mode.get() == row_window::ViewMode::Grid && open_tile.with(Option::is_some)
     });
-    // The layout shown: an album's page lists its songs as rows.
+    // The cover flow: the album the arrows move to, the shown position that
+    // springs after it (or follows a drag), and the album whose songs are
+    // listed below it, by key ("row:N" for a lone song); the first album
+    // until one is clicked.
+    let flow_target = RwSignal::new(0_i64);
+    let flow_position = RwSignal::new(0.0_f64);
+    let flow_velocity = StoredValue::new(0.0_f64);
+    let flow_animating = StoredValue::new(false);
+    let flow_dragging = StoredValue::new(false);
+    let flow_chosen = RwSignal::new(None::<String>);
+    let flow_split = RwSignal::new(
+        load("kog.flow-split")
+            .and_then(|text| text.parse::<f64>().ok())
+            .filter(|split| (0.15..0.9).contains(split))
+            .unwrap_or(0.45),
+    );
+    let tile_flow_key = |tile: &albums::AlbumTile| {
+        if tile.single() { format!("row:{}", tile.rows[0]) } else { tile.key.clone() }
+    };
+    let flow_tile = Memo::new(move |_| {
+        if view_mode.get() != row_window::ViewMode::Flow {
+            return None;
+        }
+        album_tiles.with(|tiles| {
+            flow_chosen
+                .get()
+                .and_then(|key| tiles.iter().find(|tile| tile_flow_key(tile) == key))
+                .or_else(|| tiles.first())
+                .cloned()
+        })
+    });
+    // The layout shown: an album's page, and the cover flow's song pane,
+    // list their songs as rows.
     let shown_mode = Memo::new(move |_| {
-        if album_open.get() { row_window::ViewMode::Rows } else { view_mode.get() }
+        if album_open.get() || view_mode.get() == row_window::ViewMode::Flow {
+            row_window::ViewMode::Rows
+        } else {
+            view_mode.get()
+        }
     });
     // The rows the pane lays out: every row, an open album's songs, or each
     // tile's first song standing for its tile.
     let shown_rows = Memo::new(move |_| {
+        if view_mode.get() == row_window::ViewMode::Flow {
+            return all_rows.with(|rows| {
+                flow_tile.with(|tile| {
+                    tile.iter()
+                        .flat_map(|tile| tile.rows.iter().filter_map(|&position| rows.get(position).cloned()))
+                        .collect()
+                })
+            });
+        }
         if view_mode.get() != row_window::ViewMode::Grid {
             return all_rows.get();
         }
@@ -5856,6 +5903,77 @@ fn App() -> impl IntoView {
         album_back_button.remove();
     });
 
+    // The cover flow's spring: the position chases the target each frame,
+    // overshooting a little, until it settles.
+    fn flow_step(
+        target: RwSignal<i64>,
+        position: RwSignal<f64>,
+        velocity: StoredValue<f64>,
+        animating: StoredValue<bool>,
+        dragging: StoredValue<bool>,
+        last: f64,
+    ) {
+        if dragging.get_value() {
+            animating.set_value(false);
+            return;
+        }
+        let now = js_sys::Date::now();
+        let dt = ((now - last) / 1000.0).clamp(0.001, 0.05);
+        let goal = target.get_untracked() as f64;
+        let mut at = position.get_untracked();
+        let mut speed = velocity.get_value();
+        // Two half steps keep the spring steady on slow frames.
+        for _ in 0..2 {
+            let step = dt / 2.0;
+            speed += (170.0 * (goal - at) - 22.0 * speed) * step;
+            at += speed * step;
+        }
+        if (goal - at).abs() < 0.0008 && speed.abs() < 0.002 {
+            velocity.set_value(0.0);
+            position.set(goal);
+            animating.set_value(false);
+            return;
+        }
+        velocity.set_value(speed);
+        position.set(at);
+        request_animation_frame(move || flow_step(target, position, velocity, animating, dragging, now));
+    }
+    let flow_kick = move || {
+        if flow_animating.get_value() || flow_dragging.get_value() {
+            return;
+        }
+        flow_animating.set_value(true);
+        let now = js_sys::Date::now();
+        request_animation_frame(move || {
+            flow_step(flow_target, flow_position, flow_velocity, flow_animating, flow_dragging, now)
+        });
+    };
+    let flow_move_to = move |tile: i64| {
+        let last = album_tiles.with_untracked(Vec::len) as i64 - 1;
+        flow_target.set(tile.clamp(0, last.max(0)));
+        flow_kick();
+    };
+    let flow_choose = move |tile: i64| {
+        let Some(chosen) = album_tiles.with_untracked(|tiles| tiles.get(tile.max(0) as usize).cloned()) else {
+            return;
+        };
+        flow_move_to(tile);
+        flow_chosen.set(Some(tile_flow_key(&chosen)));
+        if let Some(index) = all_rows.with_untracked(|rows| rows.get(chosen.rows[0]).map(|(index, _)| *index)) {
+            select_row(index, false, false);
+        }
+        if let Some(node) = row_window.node.get_untracked() {
+            node.set_scroll_top(0);
+        }
+    };
+    // Fewer albums than before: back within reach.
+    Effect::new(move |_| {
+        let count = album_tiles.with(Vec::len) as i64;
+        if flow_target.get_untracked() >= count {
+            flow_move_to(count - 1);
+        }
+    });
+
 
     // The transport's status line, as on the desktop: the decoder playing the
     // current song.
@@ -7081,6 +7199,7 @@ fn App() -> impl IntoView {
                             (row_window::ViewMode::List, "Show as List", icons::VIEW_LIST_DETAILS),
                             (row_window::ViewMode::Rows, "Show as Rows", icons::VIEW_LIST_ROWS),
                             (row_window::ViewMode::Grid, "Show as Cover Grid", icons::VIEW_GRID),
+                            (row_window::ViewMode::Flow, "Show as Cover Flow", icons::VIEW_COVERFLOW),
                         ]
                             .into_iter()
                             .map(|(mode, label, icon)| view! {
@@ -8006,6 +8125,262 @@ fn App() -> impl IntoView {
                                     </button>
                                 </Show>
                             </div>
+                        </Show>
+                        <Show
+                            when=move || view_mode.get() == row_window::ViewMode::Flow && !row_window::RowWindow::compact()
+                            fallback=|| ()
+                        >
+                            {
+                                // The cover flow: the albums in a row, the centre one
+                                // facing forward and its neighbours turned and receding
+                                // over their reflections. Arrows, the wheel and dragging
+                                // move through them on a spring; clicking one lists its
+                                // songs below, under a splitter that can be dragged.
+                                const SIDE: i64 = 8;
+                                let flow_node = NodeRef::<leptos::html::Div>::new();
+                                let wheel_rest = StoredValue::new(0.0_f64);
+                                // A press: where it started, the position then, the
+                                // last move (for the release's speed) and whether
+                                // it became a drag.
+                                let press = StoredValue::new(None::<(f64, f64)>);
+                                let last_move = StoredValue::new((0.0_f64, 0.0_f64, 0.0_f64));
+                                let dragged = StoredValue::new(false);
+                                let cover_size = move || {
+                                    let height = flow_node
+                                        .get()
+                                        .and_then(|node| node.parent_element())
+                                        .map(|pane| f64::from(pane.client_height()))
+                                        .unwrap_or(600.0);
+                                    let _ = flow_split.get();
+                                    ((height * flow_split.get() - 64.0) / 1.3).clamp(60.0, 340.0)
+                                };
+                                let side_gap = move || cover_size() * 0.26;
+                                let window = move || {
+                                    let centre = flow_position.get().round() as i64;
+                                    let count = album_tiles.with(Vec::len) as i64;
+                                    // Keyed by the album too: tiles regroup as tags
+                                    // arrive, and a cover must follow its album.
+                                    album_tiles.with(|tiles| {
+                                        ((centre - SIDE).max(0)..=(centre + SIDE).min(count - 1))
+                                            .map(|tile| (tile, tiles.get(tile as usize).map(tile_flow_key).unwrap_or_default()))
+                                            .collect::<Vec<_>>()
+                                    })
+                                };
+                                let centre_tile = Memo::new(move |_| {
+                                    let at = flow_position.get().round().max(0.0) as usize;
+                                    album_tiles.with(|tiles| tiles.get(at).cloned())
+                                });
+                                view! {
+                                    <div
+                                        class="cover-flow"
+                                        node_ref=flow_node
+                                        tabindex="0"
+                                        style=move || format!(
+                                            "height:{:.0}%; --cover:{:.0}px",
+                                            flow_split.get() * 100.0,
+                                            cover_size()
+                                        )
+                                        on:wheel=move |ev: web_sys::WheelEvent| {
+                                            ev.prevent_default();
+                                            let delta = if ev.delta_x().abs() > ev.delta_y().abs() { ev.delta_x() } else { ev.delta_y() };
+                                            // Lines and pages: a notch each.
+                                            let delta = if ev.delta_mode() == 0 { delta } else { delta.signum() * 100.0 };
+                                            let rest = wheel_rest.get_value() + delta / 80.0;
+                                            let steps = rest.trunc();
+                                            wheel_rest.set_value(rest - steps);
+                                            if steps != 0.0 {
+                                                flow_move_to(flow_target.get_untracked() + steps as i64);
+                                            }
+                                        }
+                                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                            let target = flow_target.get_untracked();
+                                            let next = match ev.key().as_str() {
+                                                "ArrowLeft" => Some(target - 1),
+                                                "ArrowRight" => Some(target + 1),
+                                                "Home" => Some(0),
+                                                "End" => Some(i64::MAX / 2),
+                                                "PageUp" => Some(target - 5),
+                                                "PageDown" => Some(target + 5),
+                                                "Enter" => {
+                                                    flow_choose(target);
+                                                    None
+                                                }
+                                                _ => return,
+                                            };
+                                            ev.prevent_default();
+                                            ev.stop_propagation();
+                                            if let Some(next) = next {
+                                                flow_move_to(next);
+                                            }
+                                        }
+                                        on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                            if ev.button() != 0 {
+                                                return;
+                                            }
+                                            press.set_value(Some((f64::from(ev.client_x()), flow_position.get_untracked())));
+                                            last_move.set_value((f64::from(ev.client_x()), js_sys::Date::now(), 0.0));
+                                            dragged.set_value(false);
+                                        }
+                                        on:pointermove=move |ev: web_sys::PointerEvent| {
+                                            let Some((start_x, start_position)) = press.get_value() else { return };
+                                            let x = f64::from(ev.client_x());
+                                            if !dragged.get_value() {
+                                                if (x - start_x).abs() < 6.0 {
+                                                    return;
+                                                }
+                                                dragged.set_value(true);
+                                                flow_dragging.set_value(true);
+                                                if let Some(target) = ev.current_target().and_then(|target| target.dyn_into::<web_sys::Element>().ok()) {
+                                                    let _ = target.set_pointer_capture(ev.pointer_id());
+                                                }
+                                            }
+                                            let now = js_sys::Date::now();
+                                            let (last_x, last_time, speed) = last_move.get_value();
+                                            let speed = 0.7 * speed + 0.3 * (x - last_x) / (now - last_time).max(1.0);
+                                            last_move.set_value((x, now, speed));
+                                            let count = album_tiles.with_untracked(Vec::len) as f64;
+                                            flow_position.set(
+                                                (start_position - (x - start_x) / (side_gap() * 1.6)).clamp(-0.4, count - 0.6),
+                                            );
+                                        }
+                                        on:pointerup=move |_| {
+                                            press.set_value(None);
+                                            if !dragged.get_value() {
+                                                return;
+                                            }
+                                            // Coast on with the release's speed.
+                                            let (_, _, speed) = last_move.get_value();
+                                            let coast = -speed * 260.0 / (side_gap() * 1.6);
+                                            flow_dragging.set_value(false);
+                                            flow_velocity.set_value(0.0);
+                                            flow_move_to((flow_position.get_untracked() + coast).round() as i64);
+                                        }
+                                        on:pointercancel=move |_| {
+                                            press.set_value(None);
+                                            flow_dragging.set_value(false);
+                                            flow_move_to(flow_target.get_untracked());
+                                        }
+                                    >
+                                        <For each=window key=|(tile, key)| format!("{tile}:{key}") let:item>
+                                            {
+                                                let tile = item.0;
+                                                let tile_info = album_tiles.with_untracked(|tiles| tiles.get(tile as usize).cloned());
+                                                let first = tile_info.as_ref().and_then(|info| {
+                                                    all_rows.with_untracked(|rows| rows.get(info.rows[0]).cloned())
+                                                });
+                                                let cover = RwSignal::new(None::<String>);
+                                                if let Some((_, entry)) = &first {
+                                                    let key = meta_key(entry);
+                                                    let tags = Memo::new(move |_| metadata.with(|cache| cache.get(&key).cloned().flatten()));
+                                                    thumbs::load_for_row(base(), token.get_untracked(), entry, tags, cover, true);
+                                                }
+                                                let mark = first
+                                                    .as_ref()
+                                                    .map(|(_, entry)| match file_icon(&entry.path, &entry.entry) {
+                                                        FileIcon::Svg(svg) => svg.to_owned(),
+                                                        FileIcon::Badge(_) | FileIcon::None => icons::FMT_AUDIO.to_owned(),
+                                                    })
+                                                    .unwrap_or_else(|| icons::FMT_AUDIO.to_owned());
+                                                let style = move || {
+                                                    let offset = tile as f64 - flow_position.get();
+                                                    let distance = offset.abs();
+                                                    let shift = if distance < 1.0 {
+                                                        offset * 0.72
+                                                    } else {
+                                                        offset.signum() * (0.72 + (distance - 1.0) * 0.26)
+                                                    };
+                                                    let turn = offset.clamp(-1.0, 1.0) * -58.0;
+                                                    let scale = if distance < 1.0 { 1.0 - 0.18 * distance } else { 0.82 };
+                                                    format!(
+                                                        "transform: translateX(-50%) translateX(calc(var(--cover) * {shift:.4})) rotateY({turn:.2}deg) scale({scale:.4}); z-index: {};",
+                                                        1000 - (distance * 10.0).round() as i64
+                                                    )
+                                                };
+                                                view! {
+                                                    <div
+                                                        class="cover-flow-item"
+                                                        class:centre=move || (tile as f64 - flow_position.get()).abs() < 0.5
+                                                        style=style
+                                                        on:click=move |_| {
+                                                            if !dragged.get_value() {
+                                                                flow_choose(tile);
+                                                            }
+                                                        }
+                                                        on:dblclick=move |_| {
+                                                            if flow_target.get_untracked() == tile {
+                                                                if let Some((index, _)) = &first {
+                                                                    activate_row(*index);
+                                                                }
+                                                            }
+                                                        }
+                                                    >
+                                                        <div class="cover-flow-art" class:has-cover=move || cover.with(Option::is_some)>
+                                                            <span class="cover-flow-mark" inner_html=mark></span>
+                                                            {move || cover.get().map(|src| view! {
+                                                                <img src=src alt="" draggable="false" on:error=move |_| cover.set(None)/>
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                }
+                                            }
+                                        </For>
+                                        <div class="cover-flow-caption">
+                                            <span class="cover-flow-title">
+                                                {move || centre_tile.with(|tile| tile.as_ref().map(|tile| {
+                                                    if tile.single() {
+                                                        all_rows.with(|rows| {
+                                                            rows.get(tile.rows[0])
+                                                                .map(|(_, entry)| {
+                                                                    metadata.with(|cache| meta_for(cache, entry))
+                                                                        .and_then(|meta| meta.title)
+                                                                        .filter(|title| !title.trim().is_empty())
+                                                                        .unwrap_or_else(|| entry.name.clone())
+                                                                })
+                                                                .unwrap_or_default()
+                                                        })
+                                                    } else {
+                                                        tile.album.clone()
+                                                    }
+                                                }).unwrap_or_default())}
+                                            </span>
+                                            <span class="cover-flow-artist">
+                                                {move || centre_tile.with(|tile| tile.as_ref().map(|tile| {
+                                                    let count = if tile.single() { String::new() } else { tile.count_label() };
+                                                    [tile.artist.clone(), count]
+                                                        .into_iter()
+                                                        .filter(|part| !part.is_empty())
+                                                        .collect::<Vec<_>>()
+                                                        .join("  ·  ")
+                                                }).unwrap_or_default())}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div
+                                        class="cover-flow-splitter"
+                                        role="separator"
+                                        aria-orientation="horizontal"
+                                        on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                            if let Some(target) = ev.current_target().and_then(|target| target.dyn_into::<web_sys::Element>().ok()) {
+                                                let _ = target.set_pointer_capture(ev.pointer_id());
+                                            }
+                                        }
+                                        on:pointermove=move |ev: web_sys::PointerEvent| {
+                                            if ev.buttons() & 1 == 0 {
+                                                return;
+                                            }
+                                            let Some(pane) = flow_node.get_untracked().and_then(|node| node.parent_element()) else { return };
+                                            let rect = pane.get_bounding_client_rect();
+                                            let split = (f64::from(ev.client_y()) - rect.top() - 4.0)
+                                                / rect.height().max(1.0);
+                                            flow_split.set(split.clamp(0.2, 0.85));
+                                        }
+                                        on:pointerup=move |_| {
+                                            store("kog.flow-split", &format!("{:.3}", flow_split.get_untracked()));
+                                            row_window.refresh();
+                                        }
+                                    ><span></span></div>
+                                }
+                            }
                         </Show>
                         <div
                             class="rows"
