@@ -52,11 +52,17 @@ Item {
         return String(app.track_value_at(rowIndex, column))
     }
     readonly property string trackPath: value("path")
-    // The fields each of the three lines shows, in order, joined by a
-    // middle dot. "format" is the codec, or the file's extension without
-    // one; "artist" falls back to the album artist unless the line shows
-    // that too. A line with no fields is left out.
-    property var lines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
+    // The fields to show, as a flat list; the row places each by its role:
+    // the title (always) in bold, then the artist (falling back to the
+    // album artist, and the album artist beside it when it is shown and
+    // differs), then a quiet line of album, year, track number, genre,
+    // format, length and play count, then the path (or the filename) in
+    // small text. A line with nothing to show is left out, and every line
+    // wraps rather than cutting its text off.
+    property var lines: ["title", "artist", "album", "format", "length", "path"]
+    function shows(field) {
+        return field === "title" || (Array.isArray(lines) && lines.indexOf(field) >= 0)
+    }
     readonly property string formatText: {
         const codec = value("codec")
         if (codec.length > 0)
@@ -65,31 +71,33 @@ Item {
         const dot = name.lastIndexOf(".")
         return dot > 0 ? name.slice(dot + 1).toUpperCase() : ""
     }
-    function fieldText(field, fields) {
-        if (field === "format")
-            return formatText
-        const text = value(field)
-        if (field === "artist" && text.length === 0 && fields.indexOf("albumartist") < 0)
-            return value("albumartist")
-        return text
-    }
-    function lineFields(line) {
-        const fields = lines && lines[line]
-        return Array.isArray(fields) ? fields : []
-    }
-    // Lines showing a path or filename are cut at the edge, never "…".
-    function lineClips(line) {
-        const fields = lineFields(line)
-        return fields.indexOf("path") >= 0 || fields.indexOf("filename") >= 0
-    }
-    function lineText(line) {
-        const fields = lineFields(line)
-        return fields.map(field => fieldText(field, fields))
-            .filter(part => part.length > 0).join("  ·  ")
-    }
     readonly property var lineTexts: {
         revision
-        return [lineText(0), lineText(1), lineText(2), lineText(3)]
+        const artist = value("artist")
+        const albumArtist = value("albumartist")
+        const people = []
+        if (shows("artist"))
+            people.push(artist.length > 0 ? artist : albumArtist)
+        if (shows("albumartist") && albumArtist.length > 0 && people.indexOf(albumArtist) < 0)
+            people.push(albumArtist)
+        const track = value("track")
+        const details = [
+            shows("album") ? value("album") : "",
+            shows("date") ? value("date") : "",
+            shows("track") && track.length > 0 ? "#" + track : "",
+            shows("genre") ? value("genre") : "",
+            shows("format") ? formatText : "",
+            shows("length") ? value("length") : "",
+            shows("playcount") ? value("playcount") : ""
+        ]
+        // The path holds the filename: it shows alone when both are on.
+        const file = shows("path") ? trackPath : (shows("filename") ? value("filename") : "")
+        return [
+            value("title"),
+            people.filter(part => part.length > 0).join("  ·  "),
+            details.filter(part => part.length > 0).join("  ·  "),
+            file
+        ]
     }
     readonly property bool starred: value("star").length > 0
 
@@ -101,19 +109,8 @@ Item {
     signal dragFinished(real viewX, real viewY)
     signal dragCanceled()
 
-    // The list's row height for these lines: see Main.cardRowHeight.
-    implicitHeight: {
-        const heights = [17, 16, 15, 13]
-        let total = 0
-        let shown = 0
-        for (let line = 0; line < heights.length; ++line) {
-            if (lineFields(line).length > 0) {
-                total += heights[line]
-                ++shown
-            }
-        }
-        return Math.max(58, 12 + total + Math.max(0, shown - 1))
-    }
+    // As tall as the wrapped lines, and no shorter than the cover.
+    implicitHeight: Math.max(58, Math.ceil(copy.implicitHeight) + 14)
     height: implicitHeight
 
     ListView.onPooled: {
@@ -283,10 +280,10 @@ Item {
 
         SearchHighlightLabel {
             id: titleLabel
-            visible: root.lineFields(0).length > 0
+            visible: root.lineTexts[0].length > 0
             width: copy.width
             sourceText: root.lineTexts[0]
-            clipText: root.lineClips(0)
+            wrap: true
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
@@ -297,10 +294,10 @@ Item {
         }
         SearchHighlightLabel {
             id: artistLabel
-            visible: root.lineFields(1).length > 0
+            visible: root.lineTexts[1].length > 0
             width: copy.width
             sourceText: root.lineTexts[1]
-            clipText: root.lineClips(1)
+            wrap: true
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
@@ -309,23 +306,23 @@ Item {
         }
         SearchHighlightLabel {
             id: detailLabel
-            visible: root.lineFields(2).length > 0
+            visible: root.lineTexts[2].length > 0
             width: copy.width
             sourceText: root.lineTexts[2]
-            clipText: root.lineClips(2)
+            wrap: true
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
             font.pixelSize: 11
             color: root.quietColor
         }
-        // The full path by default, small and quiet.
+        // The path (or the filename), small and quiet.
         SearchHighlightLabel {
             id: pathLabel
-            visible: root.lineFields(3).length > 0
+            visible: root.lineTexts[3].length > 0
             width: copy.width
             sourceText: root.lineTexts[3]
-            clipText: root.lineClips(3)
+            wrap: true
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
@@ -335,7 +332,8 @@ Item {
         }
     }
 
-    // The full text of a line, only when the line cuts it off.
+    // The full text of a line, only when the line cuts it off (lines wrap,
+    // so only while a search highlight is laid out).
     function lineTip(x, y) {
         if (x < 0)
             return ""

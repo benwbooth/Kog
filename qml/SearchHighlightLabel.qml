@@ -9,20 +9,22 @@ Label {
     property bool wholeQuery: false
     // Paths and filenames run to the edge and are cut there, never "…".
     property bool clipText: false
+    // Wraps onto as many lines as the text needs, so none is cut off.
+    property bool wrap: false
     readonly property bool highlighting: query.trim().length > 0
     // Only highlighted search results need pre-elision for rich text. Plain
     // browsing lets Text render and elide the filename in one pass.
-    readonly property bool elided: clipText
+    readonly property bool elided: wrap ? false : clipText
         ? metrics.advanceWidth > width - leftPadding - rightPadding + 0.5
         : highlighting ? metrics.elidedText !== sourceText : truncated
 
     text: highlighting ? searchModel.highlightedName(sourceText, query,
-                             clipText ? sourceText : metrics.elidedText, wholeQuery)
+                             clipText || wrap ? sourceText : metrics.elidedText, wholeQuery)
                        : sourceText
     textFormat: highlighting ? Text.RichText : Text.PlainText
-    elide: highlighting || clipText ? Text.ElideNone : Text.ElideRight
+    elide: highlighting || clipText || wrap ? Text.ElideNone : Text.ElideRight
     clip: clipText
-    wrapMode: Text.NoWrap
+    wrapMode: wrap ? Text.WrapAtWordBoundaryOrAnywhere : Text.NoWrap
     // No clip: plain text elides itself and highlighted text is elided above
     // before it is set. A clip per label made each of a list's hundreds of
     // cells its own draw call, which slowed every frame while scrolling.

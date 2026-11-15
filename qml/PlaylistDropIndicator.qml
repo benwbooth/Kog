@@ -20,9 +20,18 @@ Item {
     Rectangle {
         objectName: "insertionLine"
         x: 4
-        y: Math.max(0, Math.min(indicator.height - height,
-            indicator.target * indicator.rowHeight + indicator.view.originY
-                - indicator.view.contentY - height / 2))
+        // Rows can vary in height: the gap is at the laid out row's edge
+        // when there is one, else estimated from rowHeight.
+        y: {
+            const view = indicator.view
+            const count = view.count
+            const item = count > 0 && view.itemAtIndex
+                ? view.itemAtIndex(Math.min(indicator.target, count - 1)) : null
+            const edge = item ? (indicator.target < count ? item.y : item.y + item.height)
+                : indicator.target * indicator.rowHeight + view.originY
+            return Math.max(0, Math.min(indicator.height - height,
+                edge - view.contentY - height / 2))
+        }
         width: Math.max(0, indicator.width - indicator.rightInset - 8)
         height: 3
         radius: 1

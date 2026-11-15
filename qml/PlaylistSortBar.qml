@@ -16,8 +16,8 @@ Item {
     property bool sortAscending: true
     property string orderLabel: qsTr("Queue Order")
 
-    // The rows view's lines: which fields each of the four shows, in the
-    // order they were checked. Only the rows view offers the picker.
+    // The fields the rows view shows, as a flat list: the row places each by
+    // its role. Only the rows views offer the picker.
     property bool showLines: false
     property var rowLines: []
     property var defaultRowLines: []
@@ -41,24 +41,16 @@ Item {
     ]
     readonly property var rowFields: sortColumns.filter(column => column.id !== "index")
         .concat([{ id: "format", label: qsTr("Format") }])
-    function lineFields(line) {
-        const fields = rowLines && rowLines[line]
-        return Array.isArray(fields) ? fields : []
+    function shows(field) {
+        return field === "title" || (Array.isArray(rowLines) && rowLines.indexOf(field) >= 0)
     }
-    function toggleField(line, field) {
-        const next = [0, 1, 2, 3].map(index => lineFields(index).slice())
-        const at = next[line].indexOf(field)
-        if (at >= 0) {
-            next[line].splice(at, 1)
-        } else {
-            // A field shows on one line only.
-            for (const other of next) {
-                const there = other.indexOf(field)
-                if (there >= 0)
-                    other.splice(there, 1)
-            }
-            next[line].push(field)
-        }
+    // Title always shows.
+    function toggleField(field) {
+        if (field === "title")
+            return
+        const next = (Array.isArray(rowLines) ? rowLines : []).filter(shown => shown !== field)
+        if (!shows(field))
+            next.push(field)
         rowLinesRequested(next)
     }
     readonly property string sortLabel: {
@@ -131,102 +123,83 @@ Item {
             id: linesButton
             visible: root.showLines
             anchors.verticalCenter: parent.verticalCenter
-            label: qsTr("Lines") + "  ▾"
-            Accessible.name: qsTr("Choose what each line shows")
+            label: qsTr("Show") + "  ▾"
+            Accessible.name: qsTr("Choose what the rows show")
             onClicked: linesPopup.opened ? linesPopup.close() : linesPopup.open()
         }
     }
 
-    // One checkable field list per line. A field joins the end of its line
-    // when checked, so the order checked is the order shown.
+    // The fields to show, one checklist; the row lays them out.
     Popup {
         id: linesPopup
         parent: linesButton
         y: linesButton.height + 2
-        padding: 10
+        padding: 8
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
 
         contentItem: Column {
-            spacing: 8
+            spacing: 0
+            width: 170
 
-            Row {
-                spacing: 14
+            Repeater {
+                model: root.rowFields
 
-                Repeater {
-                    model: 4
-
-                    delegate: Column {
-                        id: lineColumn
-                        required property int index
-                        readonly property var fields: root.lineFields(index)
-                        spacing: 0
-                        width: 132
-
-                        Label {
-                            text: qsTr("Line %1").arg(lineColumn.index + 1)
-                            font.pixelSize: 11
-                            font.bold: true
-                            color: root.theme.text
-                            bottomPadding: 4
-                        }
-                        Repeater {
-                            model: root.rowFields
-
-                            delegate: AbstractButton {
-                                id: fieldButton
-                                required property var modelData
-                                readonly property int order: lineColumn.fields.indexOf(modelData.id)
-                                width: lineColumn.width
-                                implicitHeight: 22
-                                hoverEnabled: true
-                                checkable: true
-                                checked: order >= 0
-                                Accessible.role: Accessible.CheckBox
-                                Accessible.name: qsTr("Line %1: %2")
-                                    .arg(lineColumn.index + 1).arg(modelData.label)
-                                onClicked: root.toggleField(lineColumn.index, modelData.id)
-                                background: Rectangle {
-                                    radius: 4
-                                    color: Qt.rgba(root.theme.text.r, root.theme.text.g,
-                                        root.theme.text.b, fieldButton.hovered ? 0.08 : 0)
-                                }
-                                contentItem: Item {
-                                    Rectangle {
-                                        id: box
-                                        x: 4
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        width: 16
-                                        height: 16
-                                        radius: 4
-                                        color: fieldButton.checked ? root.theme.accent : "transparent"
-                                        border.width: fieldButton.checked ? 0 : 1
-                                        border.color: root.theme.mid
-                                        // The field's place on its line.
-                                        Label {
-                                            anchors.centerIn: parent
-                                            visible: fieldButton.checked
-                                            text: String(fieldButton.order + 1)
-                                            font.pixelSize: 10
-                                            font.bold: true
-                                            color: root.theme.highlightedText
-                                        }
-                                    }
-                                    Label {
-                                        anchors.left: box.right
-                                        anchors.leftMargin: 8
-                                        anchors.right: parent.right
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: fieldButton.modelData.label
-                                        font.pixelSize: 12
-                                        elide: Text.ElideRight
-                                        color: root.theme.text
-                                    }
-                                }
+                delegate: AbstractButton {
+                    id: fieldButton
+                    required property var modelData
+                    readonly property bool always: modelData.id === "title"
+                    width: 170
+                    implicitHeight: 24
+                    hoverEnabled: true
+                    enabled: !always
+                    checkable: true
+                    checked: root.shows(modelData.id)
+                    Accessible.role: Accessible.CheckBox
+                    Accessible.name: modelData.label
+                    onClicked: root.toggleField(modelData.id)
+                    background: Rectangle {
+                        radius: 4
+                        color: Qt.rgba(root.theme.text.r, root.theme.text.g,
+                            root.theme.text.b, fieldButton.hovered ? 0.08 : 0)
+                    }
+                    contentItem: Item {
+                        opacity: fieldButton.always ? 0.6 : 1
+                        Rectangle {
+                            id: box
+                            x: 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 16
+                            height: 16
+                            radius: 4
+                            color: fieldButton.checked ? root.theme.accent : "transparent"
+                            border.width: fieldButton.checked ? 0 : 1
+                            border.color: root.theme.mid
+                            Label {
+                                anchors.centerIn: parent
+                                visible: fieldButton.checked
+                                text: "✓"
+                                font.pixelSize: 11
+                                font.bold: true
+                                color: root.theme.highlightedText
                             }
+                        }
+                        Label {
+                            anchors.left: box.right
+                            anchors.leftMargin: 8
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: fieldButton.modelData.label
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                            color: root.theme.text
                         }
                     }
                 }
+            }
+            Item {
+                width: 1
+                height: 6
             }
             SortButton {
                 label: qsTr("Reset to Default")

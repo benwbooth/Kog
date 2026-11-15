@@ -33,7 +33,7 @@ FocusScope {
     // instead of a grid.
     property bool flow: false
     // What the album page's rows show, as the rows view's lines.
-    property var rowLines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
+    property var rowLines: ["title", "artist", "album", "format", "length", "path"]
 
     signal pressed(int rowIndex, int modifiers, int button)
     signal activated(int rowIndex)

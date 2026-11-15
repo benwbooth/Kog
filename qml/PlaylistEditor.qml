@@ -15,27 +15,13 @@ FocusScope {
     readonly property string shownMode: compact ? "list" : viewMode
     // The cover grid and cover flow both show album tiles.
     readonly property bool tileMode: shownMode === "grid" || shownMode === "flow"
-    // What each of the rows view's four lines shows; the window keeps it.
-    property var rowLines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
+    // The fields the rows view shows, as a flat list; the window keeps it.
+    property var rowLines: ["title", "artist", "album", "format", "length", "path"]
     property var defaultRowLines: rowLines
     signal rowLinesRequested(var lines)
-    readonly property real rowHeight: shownMode === "rows"
-        ? cardRowHeight(rowLines) : 24
-    // The rows view's height: its lines' heights (13, 12, 11 and 10px
-    // text) with room around them, and no shorter than the old two-line
-    // rows. Lines with no fields take no room.
-    function cardRowHeight(lines) {
-        const heights = [17, 16, 15, 13]
-        let total = 0
-        let shown = 0
-        for (let line = 0; line < heights.length; ++line) {
-            if (lines && Array.isArray(lines[line]) && lines[line].length > 0) {
-                total += heights[line]
-                ++shown
-            }
-        }
-        return Math.max(58, 12 + total + Math.max(0, shown - 1))
-    }
+    // Rows view rows are as tall as their wrapped text; this is only an
+    // estimate where no row is laid out to measure.
+    readonly property real rowHeight: shownMode === "rows" ? 74 : 24
     readonly property Item focusView: tileMode ? coverGrid : list
     property var searchModel: fallbackSearch
     property string searchQuery: ""
@@ -176,8 +162,14 @@ FocusScope {
         if (!actions.append || x < 0 || x >= list.width - list.verticalScrollGutter
                 || y < 0 || y >= list.height - list.horizontalScrollGutter)
             return -1
+        // Rows view rows vary in height: find the row under the point.
+        const contentPosition = y + list.contentY
+        const row = list.indexAt(1, contentPosition)
+        if (row < 0)
+            return contentPosition <= list.originY ? 0 : rows.length
+        const item = list.itemAtIndex(row)
         return Math.max(0, Math.min(rows.length,
-            Math.floor((y + list.contentY - list.originY + rowHeight / 2) / rowHeight)))
+            item && contentPosition >= item.y + item.height / 2 ? row + 1 : row))
     }
     function choose(index, modifiers) {
         const range = !!(modifiers & Qt.ShiftModifier)

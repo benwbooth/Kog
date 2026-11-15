@@ -47,54 +47,34 @@ ApplicationWindow {
     }
     // The cover grid and cover flow both show album tiles.
     readonly property bool playlistTileMode: playlistViewMode === "grid" || playlistViewMode === "flow"
-    readonly property real playlistRowHeight: playlistViewMode === "rows"
-        ? cardRowHeight(playlistRowLines) : 24
-    // The rows view's height: its lines' heights (13, 12, 11 and 10px
-    // text) with room around them, and no shorter than the old two-line
-    // rows. Lines with no fields take no room.
-    function cardRowHeight(lines) {
-        const heights = [17, 16, 15, 13]
-        let total = 0
-        let shown = 0
-        for (let line = 0; line < heights.length; ++line) {
-            if (lines && Array.isArray(lines[line]) && lines[line].length > 0) {
-                total += heights[line]
-                ++shown
-            }
-        }
-        return Math.max(58, 12 + total + Math.max(0, shown - 1))
-    }
-    // What each of the rows view's four lines shows. Lines saved before the
-    // fourth existed get the path there.
-    readonly property var defaultPlaylistRowLines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
+    // Rows view rows are as tall as their wrapped text; this is only an
+    // estimate where no row is laid out to measure.
+    readonly property real playlistRowHeight: playlistViewMode === "rows" ? 74 : 24
+    // The fields the rows view shows, as a flat list; each row lays them out
+    // by role. Lines saved per line by an earlier picker become the fields
+    // they named.
+    readonly property var defaultPlaylistRowLines: ["title", "artist", "album", "format", "length", "path"]
     readonly property var playlistRowLines: {
         try {
-            const lines = JSON.parse(mainWindowSettings.playlistRowLines)
-            if (Array.isArray(lines) && lines.every(Array.isArray)) {
-                if (lines.length === 3)
-                    return uniqueRowFields(lines.concat([["path"]]))
-                if (lines.length === 4)
-                    return uniqueRowFields(lines)
+            const saved = JSON.parse(mainWindowSettings.playlistRowLines)
+            if (Array.isArray(saved)) {
+                const fields = []
+                for (const item of saved) {
+                    for (const field of Array.isArray(item) ? item : [item]) {
+                        if (typeof field === "string" && fields.indexOf(field) < 0)
+                            fields.push(field)
+                    }
+                }
+                if (fields.indexOf("title") < 0)
+                    fields.unshift("title")
+                return fields
             }
         } catch (_) {}
         return defaultPlaylistRowLines
     }
-    // Each field on one line only: one saved on several (the path, when lines
-    // from before the fourth had it and the fourth was added) stays on the
-    // lowest.
-    function uniqueRowFields(lines) {
-        const below = new Set()
-        const unique = []
-        for (let line = lines.length - 1; line >= 0; --line) {
-            unique.unshift(lines[line].filter(field => !below.has(field)))
-            for (const field of lines[line])
-                below.add(field)
-        }
-        return unique
-    }
-    function setPlaylistRowLines(lines) {
-        mainWindowSettings.playlistRowLines = JSON.stringify(lines) === JSON.stringify(defaultPlaylistRowLines)
-            ? "" : JSON.stringify(lines)
+    function setPlaylistRowLines(fields) {
+        mainWindowSettings.playlistRowLines = JSON.stringify(fields) === JSON.stringify(defaultPlaylistRowLines)
+            ? "" : JSON.stringify(fields)
     }
     // A track can outlive the pane: clearing the playlist detaches what is
     // playing, so transport that acts on the loaded track must not be gated
