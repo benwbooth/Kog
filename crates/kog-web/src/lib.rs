@@ -974,6 +974,76 @@ fn styled_font(selector: &str, fallback: &str) -> String {
     format!("{} {} {}", weight.trim(), size.trim(), family.trim())
 }
 
+/// The fields the rows view's lines can show, with their menu labels: the
+/// sort menu's columns plus the format.
+const ROW_LINE_FIELDS: [(&str, &str); 12] = [
+    ("title", "Title"),
+    ("artist", "Artist"),
+    ("album", "Album"),
+    ("albumartist", "Album Artist"),
+    ("length", "Length"),
+    ("year", "Year"),
+    ("track", "Track"),
+    ("genre", "Genre"),
+    ("playcount", "Play Count"),
+    ("filename", "Filename"),
+    ("path", "Path"),
+    ("format", "Format"),
+];
+
+/// The rows view's lines unless changed: title, artist, then album, format
+/// and length.
+fn default_row_lines() -> Vec<Vec<String>> {
+    vec![
+        vec!["title".to_owned()],
+        vec!["artist".to_owned()],
+        vec!["album".to_owned(), "format".to_owned(), "length".to_owned()],
+    ]
+}
+
+fn load_row_lines() -> Vec<Vec<String>> {
+    load("kog.row-lines")
+        .and_then(|text| serde_json::from_str::<Vec<Vec<String>>>(&text).ok())
+        .filter(|lines| lines.len() == 3)
+        .unwrap_or_else(default_row_lines)
+}
+
+/// One line of a song in the rows view: its fields' text joined by a middle
+/// dot, skipping empty ones. Format is the codec, or the file's extension
+/// without one; artist falls back to the album artist unless the line shows
+/// that too.
+fn row_line_text(fields: &[String], index: usize, entry: &Entry, meta: Option<&MetaRow>) -> String {
+    fields
+        .iter()
+        .map(|field| match field.as_str() {
+            "format" => meta
+                .and_then(|meta| meta.codec.clone())
+                .filter(|codec| !codec.is_empty())
+                .unwrap_or_else(|| suffix_of(&entry.name).to_uppercase()),
+            "title" => meta
+                .and_then(|meta| meta.title.clone())
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| entry.name.clone()),
+            "artist" => meta
+                .and_then(|meta| meta.artist.clone())
+                .filter(|artist| !artist.is_empty())
+                .or_else(|| {
+                    if fields.iter().any(|field| field == "albumartist") {
+                        None
+                    } else {
+                        meta.and_then(|meta| meta.album_artist.clone())
+                    }
+                })
+                .unwrap_or_default(),
+            other => ColumnId::from_key(other)
+                .map(|id| column_text(id, index, entry, meta, None, false, ""))
+                .unwrap_or_default(),
+        })
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("  ·  ")
+}
+
 /// The text a column shows for one queue row, shared by the cell and auto-fit.
 fn column_text(
     id: ColumnId,
@@ -2976,6 +3046,14 @@ fn App() -> impl IntoView {
     };
     // The rows and grid views' "Sort by" menu, at its button.
     let (sort_menu_at, set_sort_menu_at) = signal(None::<(f64, f64)>);
+    // What each of the rows view's three lines shows, as field keys in
+    // order, and the menu that picks them, at its button.
+    let row_lines = RwSignal::new(load_row_lines());
+    let set_row_lines = move |lines: Vec<Vec<String>>| {
+        store("kog.row-lines", &serde_json::to_string(&lines).unwrap_or_default());
+        row_lines.set(lines);
+    };
+    let (lines_menu_at, set_lines_menu_at) = signal(None::<(f64, f64)>);
     let row_window = row_window::RowWindow::new(view_mode);
     let row_range = Memo::new(move |_| row_window.range(all_rows.with(Vec::len)));
     let mounted_rows = move || {
@@ -7751,6 +7829,28 @@ fn App() -> impl IntoView {
                                     aria-label=move || if pane_sort.get().1 { "Ascending" } else { "Descending" }
                                     on:click=move |_| toggle_sort(pane_sort.get_untracked().0)
                                 >{move || if pane_sort.get().1 { "▲" } else { "▼" }}</button>
+                                <Show when=move || view_mode.get() == row_window::ViewMode::Rows fallback=|| ()>
+                                    <button
+                                        class="flat sort-bar-button sort-bar-lines"
+                                        type="button"
+                                        aria-haspopup="menu"
+                                        title="Choose what each line shows"
+                                        on:click=move |ev: web_sys::MouseEvent| {
+                                            let place = ev
+                                                .current_target()
+                                                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                                                .map(|element| {
+                                                    let rect = element.get_bounding_client_rect();
+                                                    (rect.left(), rect.bottom() + 4.0)
+                                                })
+                                                .unwrap_or((ev.client_x() as f64, ev.client_y() as f64));
+                                            set_lines_menu_at.set(Some(place));
+                                        }
+                                    >
+                                        "Lines"
+                                        <span class="sort-bar-caret" aria-hidden="true">"▾"</span>
+                                    </button>
+                                </Show>
                             </div>
                         </Show>
                         <div
@@ -8233,41 +8333,35 @@ fn App() -> impl IntoView {
                                                         FileIcon::Badge(ext) => format!("{}<span class=\"ext\">{ext}</span>", icons::FMT_PAPER),
                                                         FileIcon::None => icons::FMT_AUDIO.to_owned(),
                                                     };
-                                                    let card_name = card_entry.name.clone();
-                                                    let card_title = move || {
-                                                        row_meta
-                                                            .get()
-                                                            .and_then(|meta| meta.title)
-                                                            .filter(|title| !title.trim().is_empty())
-                                                            .unwrap_or_else(|| card_name.clone())
+                                                    // The rows view shows the lines chosen in its Lines
+                                                    // menu; the grid's tiles keep the default two.
+                                                    let card_fields = move |line: usize| {
+                                                        if view_mode.get() == row_window::ViewMode::Rows {
+                                                            row_lines.with(|lines| lines.get(line).cloned().unwrap_or_default())
+                                                        } else {
+                                                            default_row_lines().swap_remove(line)
+                                                        }
                                                     };
-                                                    let card_artist = move || {
-                                                        row_meta
-                                                            .get()
-                                                            .and_then(|meta| meta.artist.or(meta.album_artist))
-                                                            .unwrap_or_default()
+                                                    let card_line_entry = card_entry.clone();
+                                                    let card_line = move |line: usize| {
+                                                        let fields = card_fields(line);
+                                                        row_meta.with(|meta| row_line_text(&fields, index, &card_line_entry, meta.as_ref()))
                                                     };
-                                                    let card_format_name = card_entry.name.clone();
-                                                    let card_detail = move || {
-                                                        let meta = row_meta.get();
-                                                        let album = meta.as_ref().and_then(|meta| meta.album.clone()).unwrap_or_default();
-                                                        let format = meta
-                                                            .as_ref()
-                                                            .and_then(|meta| meta.codec.clone())
-                                                            .filter(|codec| !codec.is_empty())
-                                                            .unwrap_or_else(|| suffix_of(&card_format_name).to_uppercase());
-                                                        let length = meta.as_ref().and_then(|meta| meta.duration).map(clock).unwrap_or_default();
-                                                        [album, format, length]
-                                                            .into_iter()
-                                                            .filter(|part| !part.is_empty())
-                                                            .collect::<Vec<_>>()
-                                                            .join(" · ")
+                                                    let card_line_view = move |line: usize, class: &'static str| {
+                                                        let text = card_line.clone();
+                                                        let tip = card_line.clone();
+                                                        view! {
+                                                            <span
+                                                                class=format!("row-card-line {class}")
+                                                                class:row-card-empty=move || card_fields(line).is_empty()
+                                                                title=move || tip(line)
+                                                            >
+                                                                {move || highlight_label(text(line), row_filter.get())}
+                                                            </span>
+                                                        }
                                                     };
                                                     let card_star_entry = card_entry.clone();
                                                     let card_star_toggle = toggle_star.clone();
-                                                    let card_title_tip = card_title.clone();
-                                                    let card_artist_tip = card_artist.clone();
-                                                    let card_detail_tip = card_detail.clone();
                                                     view! {
                                                         <span class="row-card">
                                                             <span
@@ -8308,15 +8402,9 @@ fn App() -> impl IntoView {
                                                                 </Show>
                                                             </span>
                                                             <span class="row-card-copy">
-                                                                <span class="row-card-line row-card-title" title=move || card_title_tip()>
-                                                                    {move || highlight_label(card_title(), row_filter.get())}
-                                                                </span>
-                                                                <span class="row-card-line row-card-artist" title=move || card_artist_tip()>
-                                                                    {move || highlight_label(card_artist(), row_filter.get())}
-                                                                </span>
-                                                                <span class="row-card-line row-card-detail" title=move || card_detail_tip()>
-                                                                    {card_detail}
-                                                                </span>
+                                                                {card_line_view(0, "row-card-title")}
+                                                                {card_line_view(1, "row-card-artist")}
+                                                                {card_line_view(2, "row-card-detail")}
                                                             </span>
                                                             <span
                                                                 class="row-card-star"
@@ -10031,6 +10119,65 @@ fn App() -> impl IntoView {
                                 {move || sort_bar_label(id.sort_key(), pane_key.get() == "queue")}
                             </button>
                         </For>
+                    </div>
+                </Show>
+
+                <Show when=move || lines_menu_at.get().is_some() fallback=|| ()>
+                    <div class="menu-scrim" on:click=move |_| set_lines_menu_at.set(None)></div>
+                    <div
+                        class="context-menu row-lines-menu"
+                        role="dialog"
+                        aria-label="Choose what each line shows"
+                        style=move || match lines_menu_at.get() {
+                            Some((x, y)) => format!("left:{x:.0}px; top:{y:.0}px;"),
+                            None => String::new(),
+                        }
+                    >
+                        <div class="row-lines-columns">
+                            <For each=|| 0..3usize key=|line| *line let:line>
+                                <div class="row-lines-column" role="group" aria-label=format!("Line {}", line + 1)>
+                                    <span class="row-lines-heading">{format!("Line {}", line + 1)}</span>
+                                    // Checking a field adds it to the end of its line;
+                                    // the number is its place there.
+                                    <For each=|| ROW_LINE_FIELDS key=|(key, _)| *key let:field>
+                                        {
+                                            let (key, label) = field;
+                                            let order = move || row_lines.with(|lines| {
+                                                lines.get(line).and_then(|fields| fields.iter().position(|field| field == key))
+                                            });
+                                            view! {
+                                                <button
+                                                    class="menu-item row-lines-field"
+                                                    type="button"
+                                                    role="menuitemcheckbox"
+                                                    aria-checked=move || order().is_some().to_string()
+                                                    class:checked=move || order().is_some()
+                                                    on:click=move |_| {
+                                                        let mut lines = row_lines.get_untracked();
+                                                        lines.resize(3, Vec::new());
+                                                        let fields = &mut lines[line];
+                                                        match fields.iter().position(|field| field == key) {
+                                                            Some(at) => { fields.remove(at); }
+                                                            None => fields.push(key.to_owned()),
+                                                        }
+                                                        set_row_lines(lines);
+                                                    }
+                                                >
+                                                    <span class="row-lines-box">{move || order().map(|at| (at + 1).to_string()).unwrap_or_default()}</span>
+                                                    {label}
+                                                </button>
+                                            }
+                                        }
+                                    </For>
+                                </div>
+                            </For>
+                        </div>
+                        <div class="menu-separator"></div>
+                        <button
+                            class="menu-item"
+                            type="button"
+                            on:click=move |_| set_row_lines(default_row_lines())
+                        >"Reset to Default"</button>
                     </div>
                 </Show>
 

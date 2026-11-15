@@ -5951,4 +5951,58 @@ button.primary:hover:not(:disabled) {
   .sort-bar-menu {
     min-width: 200px;
   }
+
+  .sort-bar-lines {
+    margin-left: 10px;
+  }
+
+  .row-card-line.row-card-empty {
+    display: none;
+  }
+
+  /* One checkable field list per line of the rows view. */
+  .row-lines-menu {
+    max-height: min(80vh, 560px);
+  }
+
+  .row-lines-columns {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(128px, 1fr));
+    gap: 10px;
+    padding: 4px 4px 2px;
+  }
+
+  .row-lines-heading {
+    display: block;
+    padding: 2px 8px 6px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .context-menu .row-lines-field {
+    gap: 8px;
+    height: 24px;
+  }
+
+  .row-lines-box {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .row-lines-field.checked .row-lines-box {
+    border-color: var(--highlight);
+    background: var(--highlight);
+    color: var(--highlight-text);
+  }
+
+  .context-menu .row-lines-field.checked:hover .row-lines-box {
+    border-color: var(--highlight-text);
+  }
 }
