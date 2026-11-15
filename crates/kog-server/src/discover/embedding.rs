@@ -152,22 +152,22 @@ pub struct Embedder {
     fft: Fft,
 }
 
-/// ONNX Runtime allows one environment per process; it is made once.
-static ENVIRONMENT: std::sync::OnceLock<Result<ort::environment::Environment, String>> =
-    std::sync::OnceLock::new();
+/// ONNX Runtime allows one environment per process; it is made once it
+/// loads, and tried again later while it does not (the library may be
+/// installed while Kog runs).
+static ENVIRONMENT: std::sync::OnceLock<ort::environment::Environment> = std::sync::OnceLock::new();
 
 fn environment() -> Result<&'static ort::environment::Environment, String> {
-    ENVIRONMENT
-        .get_or_init(|| {
-            let library = library_path();
-            ort::init_from(&library)
-                .map_err(|error| format!("ONNX Runtime ({}) could not be loaded: {error}", library.display()))?
-                .with_name("kog")
-                .build()
-                .map_err(|error| error.to_string())
-        })
-        .as_ref()
-        .map_err(Clone::clone)
+    if let Some(environment) = ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+    let library = library_path();
+    let environment = ort::init_from(&library)
+        .map_err(|error| format!("ONNX Runtime ({}) could not be loaded: {error}", library.display()))?
+        .with_name("kog")
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok(ENVIRONMENT.get_or_init(|| environment))
 }
 
 impl Embedder {
