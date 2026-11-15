@@ -688,7 +688,7 @@ fn entries_from_pick(decoders: &DecoderRegistry, pick: &Path, root: &Path) -> Ve
 
 /// Map one played-back source to a streamable entry, shaped like every other
 /// API entry so the web pane can render it with the existing row code.
-fn entry_from_source(
+pub(crate) fn entry_from_source(
     decoders: &DecoderRegistry,
     source: &PlaybackSource,
     properties: &StreamProperties,

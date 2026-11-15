@@ -62,6 +62,33 @@ CREATE TABLE IF NOT EXISTS app_state (
 
 const SCHEMA_VERSION: &str = "2";
 
+/// Tables added without a schema version bump, so an older Kog sharing the
+/// database keeps opening it. Created on every open.
+const ADDED_TABLES: &str = "
+CREATE TABLE IF NOT EXISTS plays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    locator TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    entry TEXT NOT NULL DEFAULT '',
+    fragment TEXT,
+    played_at INTEGER NOT NULL,
+    listened_ms INTEGER NOT NULL DEFAULT 0,
+    length_ms INTEGER NOT NULL DEFAULT 0,
+    finished INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    artist TEXT NOT NULL DEFAULT '',
+    album TEXT NOT NULL DEFAULT '',
+    album_artist TEXT NOT NULL DEFAULT '',
+    composer TEXT NOT NULL DEFAULT '',
+    genre TEXT NOT NULL DEFAULT '',
+    codec TEXT NOT NULL DEFAULT '',
+    year INTEGER
+);
+CREATE INDEX IF NOT EXISTS plays_by_locator ON plays(locator);
+CREATE INDEX IF NOT EXISTS plays_by_time ON plays(played_at);
+";
+
 /// Entry kinds stored in `kind` columns. Archive members keep outer path +
 /// member name; remote tracks keep the URL in `path`.
 pub const KIND_LOCAL: &str = "local";
@@ -79,6 +106,42 @@ pub struct BlacklistEntry {
     pub kind: String,
     pub path: String,
     pub entry: String,
+}
+
+/// One song's playback in the listening history: how long it was heard
+/// and whether it played to its end, with the song's tags at the time so
+/// the history means something before the library index reaches it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayRecord {
+    pub locator: String,
+    pub kind: String,
+    pub path: String,
+    pub entry: String,
+    pub fragment: Option<String>,
+    /// Milliseconds since the Unix epoch.
+    pub played_at: i64,
+    pub listened_ms: i64,
+    pub length_ms: i64,
+    pub finished: bool,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_artist: String,
+    pub composer: String,
+    pub genre: String,
+    pub codec: String,
+    pub year: Option<i64>,
+}
+
+impl PlayRecord {
+    pub fn stored_entry(&self) -> StoredEntry {
+        StoredEntry {
+            kind: self.kind.clone(),
+            path: self.path.clone(),
+            entry: self.entry.clone(),
+            fragment: self.fragment.clone(),
+        }
+    }
 }
 
 pub struct StoredPlaylist {
@@ -271,6 +334,23 @@ impl LibraryDb {
     }
 
     fn migrate(&self) -> Result<(), String> {
+        let exists: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'plays'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|hit| hit.is_some())
+            .unwrap_or(false);
+        if !exists {
+            self.write_transaction(|db| {
+                db.conn
+                    .execute_batch(ADDED_TABLES)
+                    .map_err(|error| format!("creating the listening history: {error}"))
+            })?;
+        }
         let version = self
             .conn
             .query_row(
@@ -498,6 +578,85 @@ impl LibraryDb {
             .map_err(|error| format!("reading stars: {error}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("reading stars: {error}"))
+    }
+
+    // ---- listening history ----
+
+    pub fn record_play(&self, play: &PlayRecord) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO plays (locator, kind, path, entry, fragment, played_at,
+                    listened_ms, length_ms, finished, title, artist, album,
+                    album_artist, composer, genre, codec, year)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                rusqlite::params![
+                    play.locator,
+                    play.kind,
+                    play.path,
+                    play.entry,
+                    play.fragment,
+                    if play.played_at > 0 { play.played_at } else { now_millis() },
+                    play.listened_ms,
+                    play.length_ms,
+                    play.finished,
+                    play.title,
+                    play.artist,
+                    play.album,
+                    play.album_artist,
+                    play.composer,
+                    play.genre,
+                    play.codec,
+                    play.year,
+                ],
+            )
+            .map_err(|error| format!("recording a play: {error}"))?;
+        Ok(())
+    }
+
+    /// Every play since `since_ms` (0 for all of them), oldest first.
+    pub fn plays_since(&self, since_ms: i64) -> Result<Vec<PlayRecord>, String> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT locator, kind, path, entry, fragment, played_at, listened_ms,
+                    length_ms, finished, title, artist, album, album_artist, composer,
+                    genre, codec, year
+                 FROM plays WHERE played_at >= ?1 ORDER BY played_at, id",
+            )
+            .map_err(|error| format!("reading plays: {error}"))?;
+        statement
+            .query_map([since_ms], |row| {
+                Ok(PlayRecord {
+                    locator: row.get(0)?,
+                    kind: row.get(1)?,
+                    path: row.get(2)?,
+                    entry: row.get(3)?,
+                    fragment: row.get(4)?,
+                    played_at: row.get(5)?,
+                    listened_ms: row.get(6)?,
+                    length_ms: row.get(7)?,
+                    finished: row.get(8)?,
+                    title: row.get(9)?,
+                    artist: row.get(10)?,
+                    album: row.get(11)?,
+                    album_artist: row.get(12)?,
+                    composer: row.get(13)?,
+                    genre: row.get(14)?,
+                    codec: row.get(15)?,
+                    year: row.get(16)?,
+                })
+            })
+            .map_err(|error| format!("reading plays: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("reading plays: {error}"))
+    }
+
+    /// Changes whenever a play is recorded, so caches built from the
+    /// history know when to look again.
+    pub fn plays_stamp(&self) -> i64 {
+        self.conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM plays", [], |row| row.get(0))
+            .unwrap_or(0)
     }
 
     // ---- playlists ----

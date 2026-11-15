@@ -42,6 +42,10 @@ include_dir = "0.7"
 directories = "6.0"
 ureq = { version = "3.4.0", features = ["rustls"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.175"
 
 [dev-dependencies]
 http-body-util = "0.1"

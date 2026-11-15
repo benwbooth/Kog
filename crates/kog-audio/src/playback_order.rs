@@ -3,7 +3,7 @@
 pub use kog_playback_policy::{
     NavigationEvent, PlaybackDecision, PlaybackOrder, SelectionState, TrackOrderInfo,
 };
-pub use kog_playback_policy::{bridge, ffi, radio, selection, session, sort, workspace};
+pub use kog_playback_policy::{bridge, ffi, radio, selection, session, sort, waveform, workspace};
 
 impl TrackOrderInfo for crate::track::Track {
     fn album(&self) -> &str {

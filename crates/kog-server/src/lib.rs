@@ -13,6 +13,7 @@ mod cover_network;
 mod covers;
 pub mod desktop_art;
 pub mod devices;
+pub mod discover;
 pub mod media_filter;
 pub mod mml;
 pub mod persistence;

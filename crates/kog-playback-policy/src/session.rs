@@ -569,7 +569,41 @@ pub struct Session<T> {
     radio_root: String,
     scopes: Vec<String>,
     error: Option<String>,
+    /// How much of the song now playing has been heard. Not persisted: a
+    /// restart starts counting again.
+    #[serde(skip)]
+    listen: Option<ListenState>,
+    /// Songs whose playback ended, for the listening history.
+    #[serde(skip)]
+    listens: Vec<Listen>,
 }
+
+#[derive(Clone, Debug, Default)]
+struct ListenState {
+    row: u64,
+    entry: Value,
+    metadata: SortRow,
+    listened: f64,
+    last: Option<f64>,
+    duration: f64,
+    finished: bool,
+}
+
+/// One song's playback, from start until it ended, was skipped or stopped:
+/// what the listening history records. `listened` counts the seconds heard,
+/// so seeking ahead does not count as listening.
+#[derive(Clone, Debug, Serialize)]
+pub struct Listen {
+    pub entry: Value,
+    pub metadata: SortRow,
+    pub listened: f64,
+    pub duration: f64,
+    /// The song played to its end.
+    pub finished: bool,
+}
+
+/// Progress updates further apart than this are a seek, not listening.
+const LISTEN_STEP_LIMIT: f64 = 3.0;
 
 #[derive(Debug, Serialize)]
 pub struct Snapshot<'a, T> {
@@ -644,6 +678,41 @@ impl<T: Item> Session<T> {
             radio_root: String::new(),
             scopes: vec![],
             error: None,
+            listen: None,
+            listens: vec![],
+        }
+    }
+    /// Songs that stopped playing since the last call, oldest first, for the
+    /// host to record in the listening history.
+    pub fn take_listens(&mut self) -> Vec<Listen> {
+        std::mem::take(&mut self.listens)
+    }
+    /// Show the pinned Home tab. Hosts with a Home view call this after
+    /// creating or restoring the session.
+    pub fn enable_home(&mut self) {
+        self.workspace.enable_home();
+    }
+    fn begin_listen(&mut self, index: usize) {
+        self.finish_listen();
+        let Some(row) = self.rows.get(index).copied() else { return };
+        self.listen = Some(ListenState {
+            row,
+            entry: self.queue[index].entry(),
+            metadata: self.metadata.get(index).cloned().unwrap_or_default(),
+            ..ListenState::default()
+        });
+    }
+    fn finish_listen(&mut self) {
+        if let Some(listen) = self.listen.take() {
+            if listen.listened > 0.0 || listen.finished {
+                self.listens.push(Listen {
+                    entry: listen.entry,
+                    metadata: listen.metadata,
+                    listened: listen.listened,
+                    duration: listen.duration,
+                    finished: listen.finished,
+                });
+            }
         }
     }
     pub fn id(&self) -> &str {
@@ -964,6 +1033,7 @@ impl<T: Item> Session<T> {
         self.record_rows(edit);
     }
     fn stop(&mut self, effects: &mut Vec<Effect>) {
+        self.finish_listen();
         self.awaiting_playlist = false;
         self.transport_epoch += 1;
         self.output = None;
@@ -983,6 +1053,7 @@ impl<T: Item> Session<T> {
             self.radio.cancel_waiting();
             self.transport_epoch += 1;
         }
+        self.begin_listen(index);
         let token = self.token();
         self.output = Some(OutputRequest {
             token: token.clone(),
@@ -1904,6 +1975,12 @@ impl<T: Item> Session<T> {
             }
             Command::ResumeAt { row, seconds, playing } => {
                 if let Some(index) = self.rows.iter().position(|id| *id == row) {
+                    if self.listen.as_ref().is_none_or(|listen| listen.row != row) {
+                        self.begin_listen(index);
+                    }
+                    if let Some(listen) = self.listen.as_mut() {
+                        listen.last = Some(seconds.max(0.0));
+                    }
                     self.current = Some(index);
                     self.position = seconds.max(0.0);
                     let token = self.token();
@@ -2156,6 +2233,10 @@ impl<T: Item> Session<T> {
                                 }
                             }
                             OutputEvent::Ended => {
+                                if let Some(listen) = self.listen.as_mut().filter(|l| l.row == request.row) {
+                                    listen.finished = true;
+                                }
+                                self.finish_listen();
                                 if self.playlist_still_reading_next() {
                                     self.awaiting_playlist = true;
                                     self.transport = Transport::Starting;
@@ -2164,6 +2245,20 @@ impl<T: Item> Session<T> {
                                 }
                             }
                             OutputEvent::Progress { seconds, duration } => {
+                                if let Some(listen) = self.listen.as_mut().filter(|l| l.row == request.row) {
+                                    if seconds.is_finite() {
+                                        if let Some(last) = listen.last {
+                                            let step = seconds - last;
+                                            if step > 0.0 && step <= LISTEN_STEP_LIMIT {
+                                                listen.listened += step;
+                                            }
+                                        }
+                                        listen.last = Some(seconds);
+                                    }
+                                    if duration.is_finite() && duration > 0.0 {
+                                        listen.duration = duration;
+                                    }
+                                }
                                 if seconds.is_finite() {
                                     self.position = seconds.max(0.0)
                                 }

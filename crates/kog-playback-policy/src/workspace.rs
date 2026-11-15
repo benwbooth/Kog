@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const QUEUE_TAB: &str = "queue";
+/// The pinned Home tab with the mixes made for the listener. Like the play
+/// queue it cannot be closed and can be moved. Hosts without a Home view
+/// (mobile) never enable it, so their tab strips are unchanged.
+pub const HOME_TAB: &str = "home";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -129,6 +133,10 @@ pub struct Workspace {
     tabs: Vec<Tab>,
     #[serde(default)]
     queue_position: usize,
+    /// Where the Home tab sits among all tabs; none when the host has no
+    /// Home view.
+    #[serde(default)]
+    home_position: Option<usize>,
     active: String,
     serial: u64,
     pending_close: Option<String>,
@@ -138,6 +146,7 @@ impl Default for Workspace {
         Self {
             tabs: vec![],
             queue_position: 0,
+            home_position: None,
             active: QUEUE_TAB.into(),
             serial: 0,
             pending_close: None,
@@ -432,6 +441,17 @@ impl Workspace {
             saving: false,
             count: 0,
         };
+        let home = TabSnapshot {
+            key: HOME_TAB.into(),
+            scope: String::new(),
+            playlist_id: -1,
+            name: "Home".into(),
+            dirty: false,
+            readonly: true,
+            loading: false,
+            saving: false,
+            count: 0,
+        };
         let mut tabs: Vec<_> = self
             .tabs
             .iter()
@@ -448,6 +468,9 @@ impl Workspace {
             })
             .collect();
         tabs.insert(self.queue_position.min(tabs.len()), queue);
+        if let Some(position) = self.home_position {
+            tabs.insert(position.min(tabs.len()), home);
+        }
         Snapshot {
             current: None,
             active: self.active.clone(),
@@ -484,6 +507,9 @@ impl Workspace {
         let mut workspace: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
         workspace.pending_close = None;
         workspace.queue_position = workspace.queue_position.min(workspace.tabs.len());
+        workspace.home_position = workspace
+            .home_position
+            .map(|position| position.min(workspace.tabs.len() + 1));
         for tab in &mut workspace.tabs {
             // A tab saved with no songs loads them again: an older Kog that
             // restored a tab saved without its songs saves it back empty,
@@ -496,7 +522,9 @@ impl Workspace {
             }
             tab.saving = None;
         }
-        if !workspace.tabs.iter().any(|t| t.key == workspace.active) {
+        if !workspace.tabs.iter().any(|t| t.key == workspace.active)
+            && !(workspace.active == HOME_TAB && workspace.home_position.is_some())
+        {
             workspace.active = QUEUE_TAB.into();
         }
         Ok(workspace)
@@ -566,10 +594,11 @@ impl Workspace {
             } else {
                 &keys[1]
             };
+            let neighbor = neighbor.clone();
+            let mut order = keys.clone();
+            order.remove(visual);
             self.tabs.remove(index);
-            if index < self.queue_position {
-                self.queue_position -= 1;
-            }
+            self.set_order(&order);
             if self.active == key {
                 self.active = neighbor.clone();
             }
@@ -581,7 +610,35 @@ impl Workspace {
     fn tab_keys(&self) -> Vec<String> {
         let mut keys: Vec<_> = self.tabs.iter().map(|tab| tab.key.clone()).collect();
         keys.insert(self.queue_position.min(keys.len()), QUEUE_TAB.into());
+        if let Some(position) = self.home_position {
+            keys.insert(position.min(keys.len()), HOME_TAB.into());
+        }
         keys
+    }
+    /// Take the tab order from `keys`, every key of [`Self::tab_keys`]
+    /// including the queue (and Home when it is shown).
+    fn set_order(&mut self, keys: &[String]) {
+        let mut keys = keys.to_vec();
+        if self.home_position.is_some() {
+            if let Some(position) = keys.iter().position(|k| k == HOME_TAB) {
+                self.home_position = Some(position);
+                keys.remove(position);
+            }
+        }
+        if let Some(position) = keys.iter().position(|k| k == QUEUE_TAB) {
+            self.queue_position = position;
+        }
+        self.tabs.sort_by_key(|tab| keys.iter().position(|k| k == &tab.key).unwrap_or(usize::MAX));
+    }
+    /// Show the pinned Home tab, first in the strip unless a saved order
+    /// already places it.
+    pub fn enable_home(&mut self) {
+        if self.home_position.is_none() {
+            self.home_position = Some(0);
+        }
+    }
+    pub fn home_enabled(&self) -> bool {
+        self.home_position.is_some()
     }
     fn save(&mut self, key: &str, close: bool) -> Result<Effect, String> {
         self.serial += 1;
@@ -627,7 +684,7 @@ impl Workspace {
                 name,
                 readonly,
             } => {
-                if key == QUEUE_TAB || key.is_empty() {
+                if key == QUEUE_TAB || key == HOME_TAB || key.is_empty() {
                     return Err("Invalid playlist tab key".into());
                 }
                 self.active = key.clone();
@@ -701,7 +758,8 @@ impl Workspace {
                 }
             }
             Focus { key } => {
-                if key != QUEUE_TAB && !self.tabs.iter().any(|t| t.key == key) {
+                let home = key == HOME_TAB && self.home_position.is_some();
+                if key != QUEUE_TAB && !home && !self.tabs.iter().any(|t| t.key == key) {
                     return Err("Playlist tab no longer exists".into());
                 }
                 self.active = key.clone();
@@ -729,9 +787,7 @@ impl Workspace {
                     .and_then(|k| keys.iter().position(|v| v == k))
                     .unwrap_or(keys.len());
                 keys.insert(target, key);
-                self.queue_position = keys.iter().position(|k| k == QUEUE_TAB).unwrap();
-                self.tabs
-                    .sort_by_key(|tab| keys.iter().position(|k| k == &tab.key).unwrap());
+                self.set_order(&keys);
             }
             Activate { index } => {
                 let tab = self.active_mut()?;
@@ -940,7 +996,7 @@ impl Workspace {
                 }
             }
             Close { key } => {
-                if key == QUEUE_TAB {
+                if key == QUEUE_TAB || key == HOME_TAB {
                     return Ok(Effect::None);
                 }
                 if self.tabs.iter().any(|t| t.key == key && t.dirty()) {

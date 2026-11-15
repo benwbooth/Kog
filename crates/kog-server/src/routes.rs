@@ -111,6 +111,7 @@ pub fn router(state: AppState) -> Router {
             .layer(tower_http::compression::CompressionLayer::new()))
         .merge(crate::api::router())
         .merge(crate::radio::router())
+        .merge(crate::discover::router())
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()
@@ -879,6 +880,9 @@ pub async fn serve_with_shutdown(
     if !config.enabled {
         return Err("the API server is disabled".to_owned());
     }
+    // A serving process keeps the library index and the Home mixes going
+    // for its web and phone clients.
+    let _ = crate::discover::shared();
     // Refuse to start on a configuration that would be unsafe or unusable.
     config.validate()?;
     let address = config.socket_address();
