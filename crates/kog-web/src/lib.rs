@@ -6131,6 +6131,53 @@ fn App() -> impl IntoView {
             node.set_scroll_top(0);
         }
     };
+    // Following the playing song: when it changes, the cover flow springs to
+    // its album and lists its songs, revealing the playing one, and the grid
+    // scrolls its album into view (leaving an open album page alone).
+    // Opening either view starts on the playing album. Someone browsing is
+    // not pulled away mid-gesture: the follow waits until they have been
+    // idle a few seconds.
+    let last_browse = StoredValue::new(0.0_f64);
+    let followed = StoredValue::new(None::<(usize, String)>);
+    let follow_tick = RwSignal::new(0_u32);
+    Effect::new(move |_| {
+        let mode = view_mode.get();
+        let current = pane_current.get();
+        follow_tick.track();
+        tile_of_index.track();
+        if !matches!(mode, row_window::ViewMode::Grid | row_window::ViewMode::Flow) || row_window::RowWindow::compact() {
+            followed.set_value(None);
+            return;
+        }
+        let Some(current) = current else { return };
+        let Some(at) = tile_of_index.with_untracked(|tiles| tiles.get(&current).copied()) else { return };
+        let key = album_tiles.with_untracked(|tiles| tiles.get(at).map(tile_flow_key)).unwrap_or_default();
+        if followed.get_value().as_ref() == Some(&(current, key.clone())) {
+            return;
+        }
+        let idle = js_sys::Date::now() - last_browse.get_value();
+        if idle < 3000.0 || flow_dragging.get_value() {
+            leptos::task::spawn_local(async move {
+                sleep_ms((3000.0 - idle).clamp(200.0, 3000.0) as i32).await;
+                follow_tick.update(|tick| *tick = tick.wrapping_add(1));
+            });
+            return;
+        }
+        followed.set_value(Some((current, key.clone())));
+        if mode == row_window::ViewMode::Flow {
+            flow_move_to(at as i64);
+            flow_chosen.set(Some(key));
+            leptos::task::spawn_local(async move {
+                sleep_ms(0).await;
+                if let Some(position) = shown_rows.with_untracked(|rows| rows.iter().position(|(index, _)| *index == current)) {
+                    row_window.reveal(position);
+                }
+            });
+        } else if !album_open.get_untracked() {
+            row_window.reveal(at);
+        }
+    });
+
     // Fewer albums than before: back within reach.
     Effect::new(move |_| {
         let count = album_tiles.with(Vec::len) as i64;
@@ -8347,6 +8394,7 @@ fn App() -> impl IntoView {
                                         )
                                         on:wheel=move |ev: web_sys::WheelEvent| {
                                             ev.prevent_default();
+                                            last_browse.set_value(js_sys::Date::now());
                                             let delta = if ev.delta_x().abs() > ev.delta_y().abs() { ev.delta_x() } else { ev.delta_y() };
                                             // Lines and pages: a notch each.
                                             let delta = if ev.delta_mode() == 0 { delta } else { delta.signum() * 100.0 };
@@ -8358,6 +8406,7 @@ fn App() -> impl IntoView {
                                             }
                                         }
                                         on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                            last_browse.set_value(js_sys::Date::now());
                                             let target = flow_target.get_untracked();
                                             let next = match ev.key().as_str() {
                                                 "ArrowLeft" => Some(target - 1),
@@ -8382,6 +8431,7 @@ fn App() -> impl IntoView {
                                             if ev.button() != 0 {
                                                 return;
                                             }
+                                            last_browse.set_value(js_sys::Date::now());
                                             press.set_value(Some((f64::from(ev.client_x()), flow_position.get_untracked())));
                                             last_move.set_value((f64::from(ev.client_x()), js_sys::Date::now(), 0.0));
                                             dragged.set_value(false);
@@ -8591,6 +8641,7 @@ fn App() -> impl IntoView {
                             on:scroll=move |_| row_window.refresh()
                             class:drop-active=move || playlist_drop_active.get()
                             on:wheel=move |event: web_sys::WheelEvent| {
+                                last_browse.set_value(js_sys::Date::now());
                                 if touch_mode {
                                     return;
                                 }
