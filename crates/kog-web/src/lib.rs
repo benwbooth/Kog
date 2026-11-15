@@ -46,6 +46,7 @@ mod session;
 mod workspace;
 mod menu;
 mod row_window;
+mod albums;
 mod persistence;
 mod artwork;
 mod thumbs;
@@ -973,6 +974,9 @@ fn styled_font(selector: &str, fallback: &str) -> String {
     let weight = style.get_property_value("font-weight").unwrap_or_default();
     format!("{} {} {}", weight.trim(), size.trim(), family.trim())
 }
+
+/// A filled play triangle that takes the text color.
+const PLAY_GLYPH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>"#;
 
 /// The fields the rows view's lines can show, with their menu labels: the
 /// sort menu's columns plus the format.
@@ -3072,12 +3076,76 @@ fn App() -> impl IntoView {
     };
     let (lines_menu_at, set_lines_menu_at) = signal(None::<(f64, f64)>);
     let card_row = Memo::new(move |_| row_lines.with(|lines| row_window::card_row_height(lines)));
-    let row_window = row_window::RowWindow::new(view_mode, card_row.into());
-    let row_range = Memo::new(move |_| row_window.range(all_rows.with(Vec::len)));
+    // The cover grid shows one tile per album: songs sharing an album tag and
+    // album artist (or artist). Regrouped only when the rows or their tags
+    // change, and only for the grid.
+    let album_tiles = Memo::new(move |_| {
+        if view_mode.get() != row_window::ViewMode::Grid {
+            return Vec::new();
+        }
+        all_rows.with(|rows| {
+            metadata.with(|cache| {
+                albums::group(rows, |entry| cache.get(&meta_key(entry)).and_then(Option::as_ref))
+            })
+        })
+    });
+    // Each song's tile, by its entry index.
+    let tile_of_index = Memo::new(move |_| {
+        all_rows.with(|rows| {
+            album_tiles.with(|tiles| {
+                tiles
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(at, tile)| tile.rows.iter().filter_map(move |&position| {
+                        rows.get(position).map(|(index, _)| (*index, at))
+                    }))
+                    .collect::<HashMap<usize, usize>>()
+            })
+        })
+    });
+    // The album page open over the grid, by its tile's key, and where the
+    // grid was scrolled when it opened.
+    let open_album = RwSignal::new(None::<String>);
+    let album_return_scroll = StoredValue::new(0_i32);
+    let open_tile = Memo::new(move |_| {
+        open_album.get().and_then(|key| {
+            album_tiles.with(|tiles| tiles.iter().find(|tile| tile.key == key).cloned())
+        })
+    });
+    let album_open = Memo::new(move |_| {
+        view_mode.get() == row_window::ViewMode::Grid && open_tile.with(Option::is_some)
+    });
+    // The layout shown: an album's page lists its songs as rows.
+    let shown_mode = Memo::new(move |_| {
+        if album_open.get() { row_window::ViewMode::Rows } else { view_mode.get() }
+    });
+    // The rows the pane lays out: every row, an open album's songs, or each
+    // tile's first song standing for its tile.
+    let shown_rows = Memo::new(move |_| {
+        if view_mode.get() != row_window::ViewMode::Grid {
+            return all_rows.get();
+        }
+        all_rows.with(|rows| match open_tile.get() {
+            Some(tile) => tile.rows.iter().filter_map(|&position| rows.get(position).cloned()).collect(),
+            None => album_tiles.with(|tiles| {
+                tiles.iter().filter_map(|tile| rows.get(tile.rows[0]).cloned()).collect()
+            }),
+        })
+    });
+    // A song's tile, when the grid shows tiles.
+    let grid_tile = move |index: usize| -> Option<albums::AlbumTile> {
+        if shown_mode.get() != row_window::ViewMode::Grid {
+            return None;
+        }
+        let at = tile_of_index.with(|tiles| tiles.get(&index).copied())?;
+        album_tiles.with(|tiles| tiles.get(at).cloned())
+    };
+    let row_window = row_window::RowWindow::new(shown_mode.into(), card_row.into());
+    let row_range = Memo::new(move |_| row_window.range(shown_rows.with(Vec::len)));
     let mounted_rows = move || {
         let range = row_range.get();
         let dragging = dragging_track.get();
-        all_rows.with(|rows| {
+        shown_rows.with(|rows| {
             let mut mounted = rows[range.clone()].iter().cloned().enumerate()
                 .map(|(offset, row)| (range.start + offset, row)).collect::<Vec<_>>();
             // Keep a drag's source node alive while scrolling to distant rows,
@@ -5313,7 +5381,7 @@ fn App() -> impl IntoView {
             }
         };
         let range = row_range.get();
-        all_rows.with(|rows| rows.get(range).into_iter().flatten().for_each(|(_, entry)| consider(entry, &mut missing)));
+        shown_rows.with(|rows| rows.get(range).into_iter().flatten().for_each(|(_, entry)| consider(entry, &mut missing)));
         // The rows on screen go in a batch of their own, ahead of the rest.
         let visible = missing.len();
         queue.with(|entries| entries.iter().for_each(|entry| consider(entry, &mut missing)));
@@ -5544,7 +5612,13 @@ fn App() -> impl IntoView {
                     break;
                 }
                 if let Some(index) = pane_current.get_untracked() {
-                    if let Some(position) = all_rows.with_untracked(|rows| rows.iter().position(|(i, _)| *i == index)) {
+                    // In the grid, the tile holding the song.
+                    let position = if shown_mode.get_untracked() == row_window::ViewMode::Grid {
+                        tile_of_index.with_untracked(|tiles| tiles.get(&index).copied())
+                    } else {
+                        shown_rows.with_untracked(|rows| rows.iter().position(|(i, _)| *i == index))
+                    };
+                    if let Some(position) = position {
                         row_window.reveal(position);
                     }
                 }
@@ -5719,6 +5793,68 @@ fn App() -> impl IntoView {
     let activate_row = move |index| {
         playlist_workspace.send(kog_playback_policy::workspace::Command::Activate { index });
     };
+
+    // The cover grid's album page: opening it remembers where the grid was
+    // scrolled, and Back, Escape, Backspace or the mouse's back button
+    // return there.
+    let album_opened_at = StoredValue::new(0.0_f64);
+    let open_album_page = move |key: String| {
+        let node = row_window.node.get_untracked();
+        album_return_scroll.set_value(node.as_ref().map(|node| node.scroll_top()).unwrap_or(0));
+        album_opened_at.set_value(js_sys::Date::now());
+        open_album.set(Some(key));
+        if let Some(node) = node {
+            node.set_scroll_top(0);
+        }
+        row_window.refresh();
+    };
+    let close_album_page = move || {
+        if open_album.get_untracked().is_none() {
+            return;
+        }
+        open_album.set(None);
+        let top = album_return_scroll.get_value();
+        leptos::task::spawn_local(async move {
+            // Once the grid's tiles are back in place.
+            sleep_ms(0).await;
+            if let Some(node) = row_window.node.get_untracked() {
+                node.set_scroll_top(top);
+            }
+            row_window.refresh();
+        });
+    };
+    // Another tab or view closes the album.
+    Effect::new(move |_| {
+        pane_key.track();
+        view_mode.track();
+        open_album.set(None);
+    });
+    let album_keys = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+        if !album_open.get_untracked() || ev.ctrl_key() || ev.meta_key() || ev.alt_key() {
+            return;
+        }
+        let in_text = ev
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+            .is_some_and(|element| {
+                let tag = element.tag_name().to_ascii_lowercase();
+                tag == "input" || tag == "textarea" || tag == "select" || element.is_content_editable()
+            });
+        if !in_text && matches!(ev.key().as_str(), "Escape" | "Backspace") {
+            ev.prevent_default();
+            close_album_page();
+        }
+    });
+    let album_back_button = window_event_listener(leptos::ev::mouseup, move |ev: web_sys::MouseEvent| {
+        if ev.button() == 3 && album_open.get_untracked() {
+            ev.prevent_default();
+            close_album_page();
+        }
+    });
+    on_cleanup(move || {
+        album_keys.remove();
+        album_back_button.remove();
+    });
 
 
     // The transport's status line, as on the desktop: the decoder playing the
@@ -7847,7 +7983,7 @@ fn App() -> impl IntoView {
                                     aria-label=move || if pane_sort.get().1 { "Ascending" } else { "Descending" }
                                     on:click=move |_| toggle_sort(pane_sort.get_untracked().0)
                                 >{move || if pane_sort.get().1 { "▲" } else { "▼" }}</button>
-                                <Show when=move || view_mode.get() == row_window::ViewMode::Rows fallback=|| ()>
+                                <Show when=move || shown_mode.get() == row_window::ViewMode::Rows fallback=|| ()>
                                     <button
                                         class="flat sort-bar-button sort-bar-lines"
                                         type="button"
@@ -7874,8 +8010,9 @@ fn App() -> impl IntoView {
                         <div
                             class="rows"
                             id="playlist-rows"
-                            class:view-rows=move || view_mode.get() == row_window::ViewMode::Rows
-                            class:view-grid=move || view_mode.get() == row_window::ViewMode::Grid
+                            class:view-rows=move || shown_mode.get() == row_window::ViewMode::Rows
+                            class:view-grid=move || shown_mode.get() == row_window::ViewMode::Grid
+                            class:album-open=move || album_open.get()
                             node_ref=row_window.node
                             on:scroll=move |_| row_window.refresh()
                             class:drop-active=move || playlist_drop_active.get()
@@ -8054,12 +8191,84 @@ fn App() -> impl IntoView {
                                     </Show>
                                 }
                             >
+                                <Show when=move || album_open.get() fallback=|| ()>
+                                    {move || {
+                                        // The album page's head: a big cover, "Album", the
+                                        // title, artist, year, song count and length, and a
+                                        // big play button.
+                                        let tile = open_tile.get_untracked();
+                                        let first = tile.as_ref().and_then(|tile| {
+                                            all_rows.with_untracked(|rows| rows.get(tile.rows[0]).cloned())
+                                        });
+                                        let cover = RwSignal::new(None::<String>);
+                                        if let Some((_, entry)) = &first {
+                                            let key = meta_key(entry);
+                                            let tags = Memo::new(move |_| metadata.with(|cache| cache.get(&key).cloned().flatten()));
+                                            thumbs::load_for_row(base(), token.get_untracked(), entry, tags, cover, true);
+                                        }
+                                        let first_index = first.map(|(index, _)| index);
+                                        let title = move || open_tile.with(|tile| tile.as_ref().map(|tile| tile.album.clone()).unwrap_or_default());
+                                        let details = move || open_tile.with(|tile| {
+                                            tile.as_ref()
+                                                .map(|tile| {
+                                                    let parts = [
+                                                        tile.artist.clone(),
+                                                        tile.year.map(|year| year.to_string()).unwrap_or_default(),
+                                                        tile.count_label(),
+                                                    ];
+                                                    format!(
+                                                        "{}, {}",
+                                                        parts.into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("  ·  "),
+                                                        tile.length_label()
+                                                    )
+                                                })
+                                                .unwrap_or_default()
+                                        });
+                                        view! {
+                                            <div class="album-page-head">
+                                                <button
+                                                    class="album-back"
+                                                    type="button"
+                                                    title="Back (Esc)"
+                                                    aria-label="Back"
+                                                    inner_html=icons::GO_UP
+                                                    on:click=move |_| close_album_page()
+                                                ></button>
+                                                <div class="album-page-hero">
+                                                    <div class="album-page-cover" class:has-cover=move || cover.with(Option::is_some)>
+                                                        <span class="album-page-mark" inner_html=icons::FMT_AUDIO></span>
+                                                        {move || cover.get().map(|src| view! {
+                                                            <img src=src alt="" draggable="false" on:error=move |_| cover.set(None)/>
+                                                        })}
+                                                    </div>
+                                                    <div class="album-page-info">
+                                                        <span class="album-page-kind">"Album"</span>
+                                                        <h2 class="album-page-title" title=title>{title}</h2>
+                                                        <span class="album-page-meta">{details}</span>
+                                                        <button
+                                                            class="album-page-play"
+                                                            type="button"
+                                                            title="Play"
+                                                            aria-label="Play album"
+                                                            inner_html=PLAY_GLYPH
+                                                            on:click=move |_| {
+                                                                if let Some(index) = first_index {
+                                                                    activate_row(index);
+                                                                }
+                                                            }
+                                                        ></button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
+                                    }}
+                                </Show>
                                 <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", row_window.height(row_range.get().start))></div>
                                 <For
                                     each=mounted_rows
                                     // The view mode too: switching it builds the rows afresh,
                                     // asking for the size of cover it shows.
-                                    key=move |(_, (index, entry))| format!("{}:{}:{index}:{}", pane_key.get(), view_mode.get().key(), meta_key(entry))
+                                    key=move |(_, (index, entry))| format!("{}:{}:{index}:{}", pane_key.get(), shown_mode.get().key(), meta_key(entry))
                                     let:row
                                 >
                                     {
@@ -8081,7 +8290,16 @@ fn App() -> impl IntoView {
                                             let locator = entry_star_locator(&entry);
                                             Memo::new(move |_| stars.with(|stars| stars.contains(&locator)))
                                         };
-                                        let row_current = Memo::new(move |_| pane_current.get() == Some(index));
+                                        // A grid tile is current while any of its
+                                        // album's songs is.
+                                        let row_current = Memo::new(move |_| {
+                                            let current = pane_current.get();
+                                            current == Some(index)
+                                                || (shown_mode.get() == row_window::ViewMode::Grid
+                                                    && current.is_some_and(|current| tile_of_index.with(|tiles| {
+                                                        tiles.get(&current).is_some_and(|at| tiles.get(&index) == Some(at))
+                                                    })))
+                                        });
                                         let row_status = Memo::new(move |_| {
                                             if !row_current.get() {
                                                 ""
@@ -8098,7 +8316,7 @@ fn App() -> impl IntoView {
                                         // icon's place once it loads.
                                         let row_cover = RwSignal::new(None::<String>);
                                         // The cover grid's tiles ask for the large image.
-                                        let row_grid = view_mode.get_untracked() == row_window::ViewMode::Grid
+                                        let row_grid = shown_mode.get_untracked() == row_window::ViewMode::Grid
                                             && !row_window::RowWindow::compact();
                                         thumbs::load_for_row(base(), token.get_untracked(), &entry, row_meta, row_cover, row_grid);
                                         let card_entry = entry.clone();
@@ -8125,7 +8343,14 @@ fn App() -> impl IntoView {
                                                     )));
                                                 }
                                                 on:click=move |ev: web_sys::MouseEvent| {
-                                                    if touch_mode && !ev.shift_key() && !ev.ctrl_key() && !ev.meta_key() {
+                                                    let plain = !ev.shift_key() && !ev.ctrl_key() && !ev.meta_key();
+                                                    // An album's tile opens its page.
+                                                    if let Some(tile) = grid_tile(index).filter(|tile| plain && !tile.single()) {
+                                                        select_row(index, false, false);
+                                                        open_album_page(tile.key);
+                                                        return;
+                                                    }
+                                                    if touch_mode && plain {
                                                         activate_row(index);
                                                         return;
                                                     }
@@ -8145,7 +8370,13 @@ fn App() -> impl IntoView {
                                                     // Touch handled the activation on
                                                     // the tap; the second tap of a
                                                     // double must not toggle again.
-                                                    if touch_mode {
+                                                    // Nor does the second click that
+                                                    // opened an album play the song
+                                                    // that took the tile's place.
+                                                    if touch_mode
+                                                        || js_sys::Date::now() - album_opened_at.get_value() < 600.0
+                                                        || grid_tile(index).is_some_and(|tile| !tile.single())
+                                                    {
                                                         return;
                                                     }
                                                     activate_row(index);
@@ -8354,7 +8585,7 @@ fn App() -> impl IntoView {
                                                     // The rows view shows the lines chosen in its Lines
                                                     // menu; the grid's tiles keep the default first three.
                                                     let card_fields = move |line: usize| {
-                                                        if view_mode.get() == row_window::ViewMode::Rows {
+                                                        if shown_mode.get() == row_window::ViewMode::Rows {
                                                             row_lines.with(|lines| lines.get(line).cloned().unwrap_or_default())
                                                         } else {
                                                             // Not the path: tiles keep to their cover's width.
@@ -8362,7 +8593,17 @@ fn App() -> impl IntoView {
                                                         }
                                                     };
                                                     let card_line_entry = card_entry.clone();
+                                                    // An album's tile shows its name, artist and
+                                                    // song count instead.
                                                     let card_line = move |line: usize| {
+                                                        if let Some(tile) = grid_tile(index).filter(|tile| !tile.single()) {
+                                                            return match line {
+                                                                0 => tile.album,
+                                                                1 => tile.artist,
+                                                                2 => tile.count_label(),
+                                                                _ => String::new(),
+                                                            };
+                                                        }
                                                         let fields = card_fields(line);
                                                         row_meta.with(|meta| row_line_text(&fields, index, &card_line_entry, meta.as_ref()))
                                                     };
@@ -8373,6 +8614,7 @@ fn App() -> impl IntoView {
                                                             <span
                                                                 class=format!("row-card-line {class}")
                                                                 class:row-card-empty=move || card_fields(line).is_empty()
+                                                                class:row-card-count=move || line == 2 && grid_tile(index).is_some_and(|tile| !tile.single())
                                                                 class:row-card-clip=move || {
                                                                     card_fields(line).iter().any(|field| field == "path" || field == "filename")
                                                                 }
@@ -8402,6 +8644,21 @@ fn App() -> impl IntoView {
                                                                         on:error=move |_| row_cover.set(None)
                                                                     />
                                                                 })}
+                                                                // The grid tile's play button, shown on
+                                                                // hover: plays the album, or the song.
+                                                                <span
+                                                                    class="tile-play"
+                                                                    role="button"
+                                                                    tabindex="-1"
+                                                                    aria-label="Play"
+                                                                    title="Play"
+                                                                    inner_html=PLAY_GLYPH
+                                                                    on:click=move |ev: web_sys::MouseEvent| {
+                                                                        ev.stop_propagation();
+                                                                        activate_row(index);
+                                                                    }
+                                                                    on:dblclick=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                                                ></span>
                                                                 <Show
                                                                     when=move || row_current.get() && !stopped.get()
                                                                     fallback=|| ()
@@ -8420,7 +8677,7 @@ fn App() -> impl IntoView {
                                                                         <Show when=move || playing.get() fallback=|| ()>
                                                                             // White bars, taller on a grid tile's
                                                                             // bigger pill, so they read on any cover.
-                                                                            {move || if view_mode.get() == row_window::ViewMode::Grid {
+                                                                            {move || if shown_mode.get() == row_window::ViewMode::Grid {
                                                                                 view! { <RowMeter levels=audio_levels pinned=false height=22.0 white=true/> }.into_any()
                                                                             } else {
                                                                                 view! { <RowMeter levels=audio_levels pinned=false height=18.0 white=true/> }.into_any()
@@ -8629,7 +8886,7 @@ fn App() -> impl IntoView {
                                         }
                                     }
                                 </For>
-                                <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", row_window.height(all_rows.with(Vec::len).saturating_sub(row_range.get().end)))></div>
+                                <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", row_window.height(shown_rows.with(Vec::len).saturating_sub(row_range.get().end)))></div>
                             </Show>
                         </div>
                     </main>

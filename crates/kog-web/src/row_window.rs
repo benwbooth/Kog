@@ -7,8 +7,9 @@ use super::*;
 const OVERSCAN: usize = 12;
 /// The cover grid's tiles are about this wide, stretched to fill the line.
 const TILE_WIDTH: f64 = 180.0;
-/// A tile's height beyond its square cover: the title and artist lines.
-const TILE_TEXT: f64 = 62.0;
+/// A tile's height beyond its square cover: the title, artist and song
+/// count lines.
+const TILE_TEXT: f64 = 78.0;
 /// The shortest rows-view row; lines beyond three make it taller (see
 /// `card_row_height`).
 const CARD_ROW: f64 = 64.0;
@@ -65,13 +66,15 @@ struct Metrics {
 pub struct RowWindow {
     pub node: NodeRef<leptos::html::Div>,
     metrics: RwSignal<Metrics>,
-    mode: RwSignal<ViewMode>,
+    /// The layout shown: the cover grid's album page lays its songs out as
+    /// rows.
+    mode: Signal<ViewMode>,
     /// The rows view's row height, from the lines it shows.
     card_row: Signal<f64>,
 }
 
 impl RowWindow {
-    pub fn new(mode: RwSignal<ViewMode>, card_row: Signal<f64>) -> Self {
+    pub fn new(mode: Signal<ViewMode>, card_row: Signal<f64>) -> Self {
         let window = Self {
             node: NodeRef::new(),
             metrics: RwSignal::new(Metrics {

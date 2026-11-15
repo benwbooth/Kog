@@ -6033,3 +6033,180 @@ button.primary:hover:not(:disabled) {
     border-color: var(--highlight-text);
   }
 }
+
+/* The cover grid's albums: a play button on each tile while it is pointed
+ * at, the album's song count under its artist, and the album page's head
+ * (a big cover, "Album", the title, its details and a big play button). */
+.tile-play {
+  display: none;
+}
+
+.rows.view-grid .tile-play {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--highlight);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  cursor: pointer;
+}
+
+.rows.view-grid .track:hover .tile-play {
+  opacity: 1;
+  transform: none;
+}
+
+.rows.view-grid .tile-play:hover {
+  transform: scale(1.06);
+}
+
+.rows.view-grid .track.current .tile-play {
+  display: none;
+}
+
+.tile-play svg {
+  width: 18px;
+  height: 18px;
+  margin-left: 2px;
+}
+
+.rows.view-grid .row-card-line.row-card-count {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.album-page-head {
+  padding: 14px 24px 20px;
+}
+
+.album-back {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.album-back:hover {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.album-back svg {
+  width: 16px;
+  height: 16px;
+  transform: rotate(-90deg);
+}
+
+.album-back svg [fill]:not([fill="none"]) {
+  fill: currentColor;
+}
+
+.album-back svg [stroke]:not([stroke="none"]) {
+  stroke: currentColor;
+}
+
+.album-page-hero {
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  margin-top: 12px;
+}
+
+.album-page-cover {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: clamp(120px, 26%, 220px);
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--muted);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.album-page-cover img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.album-page-mark svg {
+  width: 64px;
+  height: 64px;
+  opacity: 0.55;
+}
+
+.album-page-cover.has-cover .album-page-mark {
+  visibility: hidden;
+}
+
+.album-page-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.album-page-kind {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.album-page-title {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  font-size: clamp(22px, 4vw, 44px);
+  font-weight: 800;
+  line-height: 1.1;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.album-page-meta {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.album-page-play {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-top: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 28px;
+  background: var(--highlight);
+  color: #ffffff;
+  cursor: pointer;
+  transition: transform 90ms ease;
+}
+
+.album-page-play:hover {
+  transform: scale(1.05);
+}
+
+.album-page-play svg {
+  width: 24px;
+  height: 24px;
+  margin-left: 3px;
+}
