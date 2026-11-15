@@ -467,6 +467,8 @@ pub mod qobject {
         #[qinvokable]
         fn workspace_tab_album_groups(self: &AppController, key: QString, rows: QString) -> QString;
         #[qinvokable]
+        fn workspace_tab_tags_pending(self: &AppController, key: QString) -> i32;
+        #[qinvokable]
         fn track_missing_at(self: &AppController, index: i32) -> bool;
         #[qinvokable]
         fn tag_editor_data(self: &AppController, indices: QString) -> QString;
@@ -1725,6 +1727,9 @@ fn formatted_track_value(track: &Track, column: &str) -> QString {
             .unwrap_or_default(),
         "path" => qstring(track_path(track)),
         "filename" => qstring(track_filename(track)),
+        // What `current_file` names while the song plays, so a view can find
+        // the playing song by what it is, not only by its place in the queue.
+        "source" => qstring(track.source.display_label()),
         "codec" => qstring(&track.codec),
         "samplerate" => qstring(sample_rate_label(track.sample_rate)),
         "bitspersample" => track
@@ -6607,6 +6612,21 @@ impl qobject::AppController {
 
     /// The cover grid's tiles for a playlist tab: `rows` is the JSON list of
     /// the tab's rows it shows, in order.
+    /// How many of a playlist tab's songs still wait for their tags (not
+    /// failed ones): the cover grid groups albums only once there are none,
+    /// so it never shows songs apart that later merge into an album.
+    pub fn workspace_tab_tags_pending(&self, key: QString) -> i32 {
+        self.tab_workspace_tracks(&key.to_string())
+            .map(|tracks| {
+                tracks
+                    .rows
+                    .iter()
+                    .filter(|row| row.entry.is_some() && row.track.is_none() && row.error.is_none())
+                    .count()
+            })
+            .map_or(0, |count| i32::try_from(count).unwrap_or(i32::MAX))
+    }
+
     pub fn workspace_tab_album_groups(&self, key: QString, rows: QString) -> QString {
         let Some(tracks) = self.tab_workspace_tracks(&key.to_string()) else {
             return qstring("[]");

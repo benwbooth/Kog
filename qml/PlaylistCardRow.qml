@@ -21,10 +21,16 @@ Item {
     property bool hovered: false
     property int revision: app.playlist_revision
 
+    // The playing song: by its place when the list knows it, else by what
+    // it is (a playlist tab that is not the one playing, or reopened), so
+    // a reopened album page still marks it.
     readonly property bool isCurrentTrack: {
         revision
-        return app.current_index >= 0
-            && Number(app.track_number_at(rowIndex)) === app.current_index + 1
+        if (app.current_index >= 0)
+            return Number(app.track_number_at(rowIndex)) === app.current_index + 1
+        const playing = String(app.current_file || "")
+        return playing.length > 0 && app.playback_state !== "stopped"
+            && value("source") === playing
     }
     readonly property bool isPlaying: isCurrentTrack
         && app.playback_state === "playing"

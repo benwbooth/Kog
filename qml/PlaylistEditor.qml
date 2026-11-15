@@ -227,6 +227,7 @@ FocusScope {
             return editor.live ? editor.app.workspace_current_index() : -1
         }
         readonly property string playback_state: editor.app.playback_state
+        readonly property string current_file: editor.app.current_file
         readonly property real audio_level_low: editor.app.audio_level_low
         readonly property real audio_level_low_mid: editor.app.audio_level_low_mid
         readonly property real audio_level_mid: editor.app.audio_level_mid
@@ -242,6 +243,7 @@ FocusScope {
         readonly property int desktop_art_revision: editor.app.desktop_art_revision
         function track_cover_at(row) { return editor.app.workspace_tab_cover_at(editor.activeKey, editor.rows[row]) }
         function track_tile_at(row) { return editor.app.workspace_tab_tile_at(editor.activeKey, editor.rows[row]) }
+        function tags_pending() { return editor.app.workspace_tab_tags_pending(editor.activeKey) }
         function track_known_image_at(row, tile) { return editor.app.workspace_tab_known_image_at(editor.activeKey, editor.rows[row], tile) }
     }
     QtObject {
@@ -377,6 +379,7 @@ FocusScope {
             selectionTest: row => editor.selection.indexOf(editor.rows[row]) >= 0
             groupSource: () => editor.app.workspace_tab_album_groups(editor.activeKey,
                 JSON.stringify(editor.rows))
+            groupScope: editor.activeKey
             rowLines: editor.rowLines
             flow: editor.shownMode === "flow"
             onPressed: (row, modifiers, button) => {

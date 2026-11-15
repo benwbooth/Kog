@@ -107,8 +107,29 @@ FocusScope {
         interval: 120
         onTriggered: browser.refreshGroups()
     }
+    // Albums are grouped only once every song's tags are in, so the grid
+    // never shows songs apart that later merge into their album: until then
+    // it keeps the tiles it had (none for a list just opened) and says how
+    // many songs are left to read.
+    property int tagsPending: 0
+    // What the rows belong to (a playlist tab's key): another list starts
+    // without the last one's tiles.
+    property string groupScope: ""
+    onGroupScopeChanged: {
+        groups = []
+        rowTile = []
+        numberTile = ({})
+        grid.syncTileCount()
+        regroup.restart()
+    }
     function refreshGroups() {
         regroup.stop()
+        tagsPending = rowCount > 0 && app.tags_pending ? Number(app.tags_pending()) : 0
+        if (tagsPending > 0) {
+            // Ask again shortly: tags arrive in batches as files are read.
+            regroup.restart()
+            return
+        }
         let parsed = []
         if (rowCount > 0) {
             try {
@@ -153,9 +174,22 @@ FocusScope {
         return false
     }
     // The playing song's tile.
+    // The playing song's tile: by its place when the list knows it, else
+    // by what it is (see PlaylistCardRow.isCurrentTrack).
     readonly property int playingTile: {
-        const tile = numberTile[app.current_index + 1]
-        return app.current_index >= 0 && tile !== undefined ? tile : -1
+        if (app.current_index >= 0) {
+            const tile = numberTile[app.current_index + 1]
+            return tile !== undefined ? tile : -1
+        }
+        const playing = String(app.current_file || "")
+        if (playing.length === 0 || app.playback_state === "stopped")
+            return -1
+        revision
+        for (let row = 0; row < rowTile.length; ++row) {
+            if (String(app.track_value_at(row, "source")) === playing)
+                return rowTile[row] === undefined ? -1 : rowTile[row]
+        }
+        return -1
     }
 
     // Following the playing song: when it changes, the grid scrolls its
@@ -1476,6 +1510,15 @@ FocusScope {
                 onActivated: row => browser.activated(row)
             }
         }
+    }
+
+    // While a list's tags are still being read and no tiles show yet.
+    Label {
+        anchors.centerIn: parent
+        visible: browser.tagsPending > 0 && browser.groups.length === 0
+        text: qsTr("Reading tags… %1 songs to go").arg(browser.tagsPending)
+        color: browser.mutedText
+        font.pixelSize: 13
     }
 
     // The mouse's back button returns from an album, too.
