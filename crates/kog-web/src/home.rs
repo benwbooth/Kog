@@ -19,6 +19,56 @@ struct HomeSong {
     title: String,
     #[serde(default)]
     album: String,
+    #[serde(default)]
+    artist: String,
+}
+
+/// Load a card's cover into `shown`: the server's thumbnail of the song's
+/// cover, asked again while the server is still looking it up. A song
+/// inside an archive is looked up by its tags.
+fn load_cover(base: String, token: String, song: &HomeSong, shown: RwSignal<Option<String>>) {
+    if !matches!(song.kind.as_str(), "local" | "archive") || song.path.is_empty() {
+        return;
+    }
+    let mut url = format!(
+        "{base}/api/art/thumb?kind={}&path={}&token={}&album={}&size=large",
+        url_encode(&song.kind),
+        url_encode(&song.path),
+        url_encode(&token),
+        url_encode(&song.album),
+    );
+    if song.kind == "archive" {
+        url.push_str(&format!("&entry={}&artist={}", url_encode(&song.entry), url_encode(&song.artist)));
+    }
+    let image_query = format!("?token={}", url_encode(&token));
+    leptos::task::spawn_local(async move {
+        for _ in 0..40 {
+            let Ok(response) = gloo_net::http::Request::get(&url)
+                .header("X-Kog-Device", &device_id())
+                .send()
+                .await
+            else {
+                return;
+            };
+            match response.status() {
+                202 => {
+                    let _ = sleep_ms(1500).await;
+                }
+                200 => {
+                    if let Some(image) = response
+                        .json::<serde_json::Value>()
+                        .await
+                        .ok()
+                        .and_then(|body| body["image"].as_str().map(str::to_owned))
+                    {
+                        let _ = shown.try_set(Some(format!("{base}/api/art/thumbs/{image}{image_query}")));
+                    }
+                    return;
+                }
+                _ => return,
+            }
+        }
+    });
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -257,17 +307,7 @@ fn MixCard(mix: HomeMix, controller: workspace::Controller, token: ReadSignal<St
                 <span class="home-cover-title">{cover_title}</span>
                 {shown.into_iter().map(|song| {
                     let cover = RwSignal::new(None::<String>);
-                    let entry = Entry {
-                        kind: song.kind.clone(),
-                        path: song.path.clone(),
-                        entry: song.entry.clone(),
-                        fragment: song.fragment.clone(),
-                        name: song.title.clone(),
-                        location: song.path.clone(),
-                    };
-                    let album = song.album.clone();
-                    let tags = Memo::new(move |_| Some(MetaRow { album: Some(album.clone()), ..MetaRow::default() }));
-                    thumbs::load_for_row(controller.backend.base.run(()), token.get_untracked(), &entry, tags, cover, true);
+                    load_cover(controller.backend.base.run(()), token.get_untracked(), &song, cover);
                     view! {
                         <img class="home-cover-tile" alt="" loading="lazy" decoding="async"
                             class:ready=move || cover.with(Option::is_some)

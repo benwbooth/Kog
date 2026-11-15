@@ -906,6 +906,7 @@ enum PromptKind {
     NewPlaylist,
     RenamePlaylist,
     DeletePlaylist,
+    ClearHistory,
     Search,
     PlaylistSearch,
     AddFile,
@@ -1353,6 +1354,8 @@ struct Ui {
     home_generation: u64,
     home_cursor: usize,
     home_offset: usize,
+    /// A play went into the History playlist since the sidebar last looked.
+    history_changed: bool,
     library: Arc<Library>,
     decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
@@ -1796,6 +1799,7 @@ impl Ui {
             home_generation: 0,
             home_cursor: 0,
             home_offset: 0,
+            history_changed: false,
             tracks: Vec::new(),
             selected_tracks: HashSet::new(),
             export: None,
@@ -2008,9 +2012,21 @@ impl Ui {
         ui
     }
 
+    /// A sidebar list's songs: Favorites (0), History, or a saved playlist.
+    fn list_entries(&self, id: i64) -> Result<Vec<kog_core::db::StoredEntry>, String> {
+        if id == 0 {
+            self.library.db().starred_entries()
+        } else if id == kog_audio::playback_order::workspace::HISTORY_PLAYLIST {
+            self.library.db().history_entries(kog_core::db::HISTORY_LIMIT)
+        } else {
+            self.library.db().playlist_entries(id)
+        }
+    }
+
     fn reload_lists(&mut self) {
-        self.lists = vec![(0, "Favorites".to_owned())];
+        self.lists = vec![(0, "Favorites".to_owned()), (kog_audio::playback_order::workspace::HISTORY_PLAYLIST, "History".to_owned())];
         self.list_counts.clear();
+        self.list_counts.insert(kog_audio::playback_order::workspace::HISTORY_PLAYLIST, usize::try_from(self.library.db().history_count()).unwrap_or(0));
         match self.library.db().list_playlists() {
             Ok(lists) => {
                 for playlist in lists {
@@ -4969,11 +4985,7 @@ impl Ui {
         let mut entries = Vec::new();
         for index in self.selected_list_indices() {
             let id = self.lists[index].0;
-            let result = if id == 0 {
-                self.library.db().starred_entries()
-            } else {
-                self.library.db().playlist_entries(id)
-            };
+            let result = self.list_entries(id);
             match result {
                 Ok(rows) => entries.extend(rows.into_iter().map(kog_server::api::entry_json)),
                 Err(error) => {
@@ -4997,11 +5009,7 @@ impl Ui {
         let Some((id, _)) = self.lists.get(index) else {
             return;
         };
-        let result = if *id == 0 {
-            self.library.db().starred_entries()
-        } else {
-            self.library.db().playlist_entries(*id)
-        };
+        let result = self.list_entries(*id);
         match result {
             Ok(entries) => self.session_command(SessionCommand::Expand {
                 scope: "local".into(),
@@ -6048,6 +6056,24 @@ impl Ui {
                     Err(error) => self.status = error,
                 }
             }
+            PromptKind::ClearHistory => {
+                if value != "yes" {
+                    self.status = "History kept".to_owned();
+                    return;
+                }
+                match kog_server::discover::shared().clear_history() {
+                    Ok(_) => {
+                        self.status = "History cleared".to_owned();
+                        self.reload_lists();
+                        self.workspace_command(
+                            kog_audio::playback_order::workspace::Command::ReloadTab {
+                                key: format!("local:{}", kog_audio::playback_order::workspace::HISTORY_PLAYLIST),
+                            },
+                        );
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
             PromptKind::DeletePlaylist => {
                 if value != "yes" {
                     self.status = "Playlist deletion cancelled".to_owned();
@@ -6190,11 +6216,7 @@ impl Ui {
             PromptKind::ExportTracks => self.start_export(PathBuf::from(value.trim())),
             PromptKind::ExportPlaylist => {
                 let id = self.lists.get(self.selected[0]).map_or(0, |(id, _)| *id);
-                let entries = if id == 0 {
-                    self.library.db().starred_entries()
-                } else {
-                    self.library.db().playlist_entries(id)
-                };
+                let entries = self.list_entries(id);
                 match entries {
                     Ok(entries) if entries.is_empty() => {
                         self.status = "Playlist is empty".to_owned()
@@ -7872,6 +7894,13 @@ impl Ui {
                         .any(|&index| self.lists[index].0 > 0) =>
             {
                 self.begin_prompt(PromptKind::DeletePlaylist, String::new());
+            }
+            // History cannot be deleted, only cleared.
+            Key::Delete
+                if self.focus == Focus::Playlists
+                    && self.lists.get(self.selected[0]).is_some_and(|(id, _)| *id == kog_audio::playback_order::workspace::HISTORY_PLAYLIST) =>
+            {
+                self.begin_prompt(PromptKind::ClearHistory, String::new());
             }
             Key::Char('o') => self.begin_prompt(
                 PromptKind::MusicFolder,
@@ -11554,6 +11583,7 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::NewPlaylist => "New playlist",
         PromptKind::RenamePlaylist => "Rename playlist",
         PromptKind::DeletePlaylist => "Type yes to delete selected playlists",
+        PromptKind::ClearHistory => "Type yes to clear your listening history (the Home mixes start over)",
         PromptKind::Search => "Search files",
         PromptKind::PlaylistSearch => "Search playlist",
         PromptKind::AddFile => "Add file or folder",

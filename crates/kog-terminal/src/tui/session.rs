@@ -95,6 +95,7 @@ impl Ui {
         let listens = self.session.take_listens();
         if !listens.is_empty() {
             kog_server::discover::shared().record_listens(&listens);
+            self.history_changed = true;
         }
         if update
             || effects
@@ -115,6 +116,12 @@ impl Ui {
         let _ = self.session.dispatch(SessionCommand::Scopes { scopes });
         self.queue_session(command);
         self.flush_session_effects();
+        if std::mem::take(&mut self.history_changed) {
+            self.reload_lists();
+            self.workspace_command(kog_audio::playback_order::workspace::Command::ReloadTab {
+                key: format!("local:{}", kog_audio::playback_order::workspace::HISTORY_PLAYLIST),
+            });
+        }
     }
     pub(super) fn apply_session_view(&mut self) {
         let view = self.session.snapshot();
@@ -221,10 +228,8 @@ impl Ui {
                             .mix_entries(&mix)
                             .map(|(_, entries)| kog_server::api::queue_entries_from_json(&entries))
                             .ok_or_else(|| "This mix has been replaced by newer ones".to_owned())
-                    } else if playlist_id == 0 {
-                        self.library.db().starred_entries()
                     } else {
-                        self.library.db().playlist_entries(playlist_id)
+                        self.list_entries(playlist_id)
                     };
                     let result = match result {
                         Ok(rows) => IoResult::Loaded {

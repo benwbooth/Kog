@@ -8,6 +8,11 @@ pub const QUEUE_TAB: &str = "queue";
 /// (mobile) never enable it, so their tab strips are unchanged.
 pub const HOME_TAB: &str = "home";
 
+/// The History playlist: every song played, newest first, read from the
+/// listening history. Like Favorites (id 0) it is always there and cannot
+/// be renamed or deleted; it can be cleared.
+pub const HISTORY_PLAYLIST: i64 = -9000;
+
 /// Mixes on the Home tab open as read-only playlist tabs. Their playlist ids
 /// are negative and name the mix's slot ("daily-2", "weekly"), so every host
 /// can load a mix tab from its id, whatever library scope it uses.
@@ -252,6 +257,12 @@ pub enum Command {
     Undo,
     Redo,
     Reload,
+    /// Load a clean tab again, whichever tab is in front: the History
+    /// playlist after new plays, a mix after new mixes. A tab with edits,
+    /// or one loading or saving, is left alone.
+    ReloadTab {
+        key: String,
+    },
     Save,
     Saved {
         key: String,
@@ -994,6 +1005,25 @@ impl Workspace {
                 self.serial += 1;
                 let generation = self.serial;
                 let tab = self.active_mut()?;
+                tab.loading = Some(generation);
+                tab.error = None;
+                return Ok(Effect::Load {
+                    key: tab.key.clone(),
+                    scope: tab.scope.clone(),
+                    playlist_id: tab.playlist_id,
+                    generation,
+                });
+            }
+            ReloadTab { key } => {
+                let ready = self.tabs.iter().any(|t| {
+                    t.key == key && !t.dirty() && t.saving.is_none() && t.loading.is_none()
+                });
+                if !ready {
+                    return Ok(Effect::None);
+                }
+                self.serial += 1;
+                let generation = self.serial;
+                let tab = self.tabs.iter_mut().find(|t| t.key == key).expect("checked above");
                 tab.loading = Some(generation);
                 tab.error = None;
                 return Ok(Effect::Load {

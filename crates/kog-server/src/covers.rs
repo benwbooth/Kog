@@ -249,6 +249,55 @@ impl CoverService {
         self.changes.lock().unwrap_or_else(|error| error.into_inner()).stamp
     }
 
+    /// Look up the cover of a song whose tags are already known, without
+    /// reading it: a song inside an archive, named by `file`, a path beside
+    /// the archive with the song's own file name (so its folder and format
+    /// pick the album's key and the console to search for).
+    pub(crate) fn lookup_tagged(
+        self: &Arc<Self>,
+        file: PathBuf,
+        artist: String,
+        album: String,
+        allow_download: bool,
+    ) -> watch::Receiver<CoverResult> {
+        let service = self.clone();
+        let key = format!("tagged:{}\0{artist}\0{album}", track_key(&file, allow_download));
+        self.tracks.get_or_start(key, async move {
+            let album_key = album_cover_key(&file, &album);
+            let cache_dir = service.cache_dir.clone();
+            let cached = {
+                let cache_dir = cache_dir.clone();
+                let album_key = album_key.clone();
+                tokio::task::spawn_blocking(move || album_cover(&cache_dir, &album_key))
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            if cached.is_some() {
+                return cached;
+            }
+            if album.trim().is_empty() {
+                return None;
+            }
+            let _permit = service.downloads.clone().acquire_owned().await.ok()?;
+            let bytes = tokio::task::spawn_blocking(move || {
+                cached_or_downloaded_cover(
+                    &file,
+                    &artist,
+                    &album,
+                    &cache_dir,
+                    allow_download,
+                    crate::cover_network::fetch,
+                )
+                .map(|bytes| adopt_album_cover(&cache_dir, &album_key, Bytes::from(bytes)))
+            })
+            .await
+            .ok()
+            .flatten();
+            bytes
+        })
+    }
+
     pub(crate) fn lookup(
         self: &Arc<Self>,
         file: PathBuf,

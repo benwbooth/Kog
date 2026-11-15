@@ -994,12 +994,14 @@ ApplicationWindow {
     }
 
     function commitPlaylistDrag(draggedPid, insertIndex) {
-        // UI index 0 is the pinned Favorites row: backend positions skip
-        // it, and drops before/after the dragged row itself are no-ops.
+        // The pinned rows (Favorites, History: ids 0 and below) come
+        // first: backend positions skip them, and drops before/after the
+        // dragged row itself are no-ops.
         const items = playlistsModelItems()
+        const pinned = items.filter(item => item.pid <= 0).length
         const from = items.findIndex(item => item.pid === draggedPid)
         const last = items.length
-        if (from < 1 || insertIndex < 1 || insertIndex > last)
+        if (from < pinned || insertIndex < pinned || insertIndex > last)
             return
         if (insertIndex === from || insertIndex === from + 1)
             return
@@ -1007,9 +1009,9 @@ ApplicationWindow {
         if (insertIndex === last)
             toPosition = last // backend clamps to the end
         else if (from < insertIndex)
-            toPosition = insertIndex - 2
+            toPosition = insertIndex - 1 - pinned
         else
-            toPosition = insertIndex - 1
+            toPosition = insertIndex - pinned
         appController.move_playlist(draggedPid, toPosition)
     }
 
@@ -1998,6 +2000,34 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: clearHistoryConfirmDialog
+        anchors.centerIn: parent
+        width: Math.min(480, root.width - 48)
+        modal: true
+        title: qsTr("Clear History")
+        closePolicy: Popup.CloseOnEscape
+        onAccepted: appController.clear_history()
+        contentItem: Label {
+            text: qsTr("Clear your listening history? The Home mixes learn what you like from it, so they start over.")
+            wrapMode: Text.WordWrap
+        }
+        footer: RowLayout {
+            spacing: 8
+            Item { Layout.fillWidth: true }
+            Button {
+                text: qsTr("Cancel")
+                icon.name: "dialog-cancel"
+                onClicked: clearHistoryConfirmDialog.reject()
+            }
+            Button {
+                text: qsTr("Clear")
+                icon.name: "edit-clear-history"
+                onClicked: clearHistoryConfirmDialog.accept()
+            }
+        }
+    }
+
+    Dialog {
         id: deletePlaylistConfirmDialog
 
         property var deleteIds: []
@@ -2331,6 +2361,13 @@ ApplicationWindow {
             onTriggered: appController.load_playlist_into_pane(root.playlistMenuPid)
         }
         MenuItem {
+            text: qsTr("Clear History")
+            icon.name: "edit-clear-history"
+            visible: root.playlistMenuPid === -9000
+            height: visible ? implicitHeight : 0
+            onTriggered: clearHistoryConfirmDialog.open()
+        }
+        MenuItem {
             text: qsTr("Remove Missing Files")
             icon.name: "edit-clear"
             enabled: root.playlistMenuPid > 0
@@ -2371,7 +2408,7 @@ ApplicationWindow {
             enabled: root.playlistMenuPid > 0
             onTriggered: {
                 const ids = root.orderedSelectedPlaylistIds()
-                    .filter(pid => pid !== 0)
+                    .filter(pid => pid > 0)
                 if (ids.length > 0)
                     deletePlaylistConfirmDialog.openFor(ids)
                 else if (root.playlistMenuPid > 0)

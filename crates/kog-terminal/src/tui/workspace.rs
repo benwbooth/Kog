@@ -167,7 +167,7 @@ impl Ui {
             scope: "local".into(),
             playlist_id: id,
             name,
-            readonly: id == 0,
+            readonly: id <= 0,
         });
         self.workspace_cursor = 0;
         self.workspace_offset = 0;

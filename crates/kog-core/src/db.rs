@@ -108,6 +108,9 @@ pub struct BlacklistEntry {
     pub entry: String,
 }
 
+/// The most songs the History playlist shows.
+pub const HISTORY_LIMIT: usize = 5000;
+
 /// One song's playback in the listening history: how long it was heard
 /// and whether it played to its end, with the song's tags at the time so
 /// the history means something before the library index reaches it.
@@ -649,6 +652,64 @@ impl LibraryDb {
             .map_err(|error| format!("reading plays: {error}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("reading plays: {error}"))
+    }
+
+    /// The History playlist: songs played, newest first, at most `limit`.
+    /// Songs left within their first seconds are not in it, and a song
+    /// played several times in a row shows once.
+    pub fn history_entries(&self, limit: usize) -> Result<Vec<StoredEntry>, String> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT locator, kind, path, entry, fragment FROM plays
+                 WHERE finished != 0 OR listened_ms >= 10000
+                 ORDER BY played_at DESC, id DESC LIMIT ?1",
+            )
+            .map_err(|error| format!("reading the history: {error}"))?;
+        let rows = statement
+            .query_map([limit as i64 * 2], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    StoredEntry {
+                        kind: row.get(1)?,
+                        path: row.get(2)?,
+                        entry: row.get(3)?,
+                        fragment: row.get(4)?,
+                    },
+                ))
+            })
+            .map_err(|error| format!("reading the history: {error}"))?;
+        let mut entries = Vec::new();
+        let mut last = String::new();
+        for row in rows {
+            let (locator, entry) = row.map_err(|error| format!("reading the history: {error}"))?;
+            if locator == last {
+                continue;
+            }
+            last = locator;
+            entries.push(entry);
+            if entries.len() >= limit {
+                break;
+            }
+        }
+        Ok(entries)
+    }
+
+    pub fn history_count(&self) -> i64 {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM plays WHERE finished != 0 OR listened_ms >= 10000",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+    }
+
+    /// Forget every play. The Home mixes then start learning afresh.
+    pub fn clear_history(&self) -> Result<usize, String> {
+        self.conn
+            .execute("DELETE FROM plays", [])
+            .map_err(|error| format!("clearing the history: {error}"))
     }
 
     /// Changes whenever a play is recorded, so caches built from the

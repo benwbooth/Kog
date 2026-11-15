@@ -151,6 +151,8 @@ fn main() {
         "qml/icons/kog-format-pcengine-light.svg",
         "qml/icons/kog-format-playlist.svg",
         "qml/icons/kog-format-playlist-light.svg",
+        "qml/icons/history.svg",
+        "qml/icons/history-light.svg",
         "qml/icons/kog-format-ps2.svg",
         "qml/icons/kog-format-ps2-light.svg",
         "qml/icons/kog-format-psx.svg",

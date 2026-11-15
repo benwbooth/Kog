@@ -47,6 +47,11 @@ pub struct ThumbQuery {
     pub path: Option<String>,
     /// The song's album tag, when the client knows it (empty for none).
     pub album: Option<String>,
+    /// For a song inside an archive (`kind=archive`, `path` the archive):
+    /// its member name and artist tag, so its cover is looked up by its
+    /// tags without extracting it. Without them an archive has no cover.
+    pub entry: Option<String>,
+    pub artist: Option<String>,
     /// `large` for a cover-grid tile; a row's small thumbnail otherwise.
     pub size: Option<String>,
 }
@@ -174,7 +179,10 @@ pub async fn thumb(State(state): State<AppState>, Query(query): Query<ThumbQuery
     let large = query.size.as_deref() == Some("large");
     // Each size remembers its own names.
     let mark = if large { "large\0" } else { "" };
-    let song_key = format!("{mark}{song}");
+    let song_key = match query.entry.as_deref().filter(|entry| !entry.is_empty()) {
+        Some(entry) if query.kind.as_deref() == Some("archive") => format!("{mark}{song}::{entry}"),
+        _ => format!("{mark}{song}"),
+    };
     if let Some(name) = state.thumbs.remembered(&song_key) {
         return found(name);
     }
@@ -185,8 +193,16 @@ pub async fn thumb(State(state): State<AppState>, Query(query): Query<ThumbQuery
     let album = query.album.clone();
     let path = song.clone();
     let path_key = song_key.clone();
+    let member = (query.kind.as_deref() == Some("archive"))
+        .then(|| query.entry.clone().filter(|entry| !entry.is_empty()))
+        .flatten();
+    let tagged = member.is_some();
     let early = tokio::task::spawn_blocking(move || {
         let file = library.resolve(Some(&path)).ok().filter(|file| file.is_file())?;
+        let file = match &member {
+            Some(entry) => crate::discover::cover_file("archive", &file.to_string_lossy(), entry),
+            None => file,
+        };
         let Some(album) = album else {
             return Some((file, None));
         };
@@ -212,11 +228,17 @@ pub async fn thumb(State(state): State<AppState>, Query(query): Query<ThumbQuery
     if let Some(name) = name {
         return found(name);
     }
-    let result = state.covers.lookup(
-        file,
-        state.streams.clone(),
-        kog_audio::settings::AppSettings::load().download_cover_art,
-    );
+    let allow_download = kog_audio::settings::AppSettings::load().download_cover_art;
+    let result = if tagged {
+        state.covers.lookup_tagged(
+            file,
+            query.artist.clone().unwrap_or_default(),
+            query.album.clone().unwrap_or_default(),
+            allow_download,
+        )
+    } else {
+        state.covers.lookup(file, state.streams.clone(), allow_download)
+    };
     let result = tokio::time::timeout(LOOKUP_WAIT, crate::covers::wait(result.clone()))
         .await
         .unwrap_or_else(|_| result.borrow().clone());

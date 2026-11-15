@@ -45,6 +45,9 @@ mod selection;
 mod session;
 mod workspace;
 mod home;
+
+/// The History playlist's id (see `workspace::HISTORY_PLAYLIST`).
+const HISTORY_ID: i64 = kog_playback_policy::workspace::HISTORY_PLAYLIST;
 mod menu;
 mod row_window;
 mod albums;
@@ -8128,6 +8131,44 @@ fn App() -> impl IntoView {
                                             </button>
                                             }
                                         }
+                                        // The History playlist: every song played, newest
+                                        // first. Always there; it can be cleared, not deleted.
+                                        <button
+                                            class="tree-row history-row"
+                                            class:selected=move || selected_playlists.read().contains(&HISTORY_ID)
+                                            title="Double click to open your listening history in a tab"
+                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                if touch_mode {
+                                                    replace_pane_with_playlist(HISTORY_ID, "History".to_owned());
+                                                    set_sidebar_open.set(false);
+                                                    set_mobile_view.set(MobileView::Queue);
+                                                } else {
+                                                    select_playlist(HISTORY_ID, &ev);
+                                                }
+                                            }
+                                            on:dblclick=move |_| playlist_workspace.open(HISTORY_ID, "History".into())
+                                        >
+                                            <span class="twisty"></span>
+                                            <span class="history-icon" aria-hidden="true" inner_html=include_str!("../../../qml/icons/history.svg")></span>
+                                            <span class="label">"History"</span>
+                                            <span
+                                                class="mobile-playlist-more"
+                                                role="button"
+                                                tabindex="0"
+                                                aria-label="History actions"
+                                                on:click=move |ev: web_sys::MouseEvent| {
+                                                    ev.stop_propagation();
+                                                    set_playlist_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, HISTORY_ID, "History".to_owned())));
+                                                }
+                                                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                    if ev.key() == "Enter" || ev.key() == " " {
+                                                        ev.prevent_default();
+                                                        ev.stop_propagation();
+                                                        set_playlist_menu.set(Some((0.0, 0.0, HISTORY_ID, "History".to_owned())));
+                                                    }
+                                                }
+                                            >"⋯"</span>
+                                        </button>
                                         // Re-render labels and counts after a rename or save.
                                         <For each=move || playlists.get() key=|item| format!("{}#{}#{}", item.0, item.1, item.2) let:item>
                                             {
@@ -10746,6 +10787,39 @@ fn App() -> impl IntoView {
                         >
                             {if touch_mode { "Replace Queue" } else { "Replace Pane" }}
                         </button>
+                        <Show
+                            when=move || playlist_menu.get().is_some_and(|(_, _, id, _)| id == HISTORY_ID)
+                            fallback=|| ()
+                        >
+                            <button
+                                class="menu-item"
+                                on:click=move |_| {
+                                    set_playlist_menu.set(None);
+                                    let confirmed = web_sys::window()
+                                        .and_then(|window| window.confirm_with_message(
+                                            "Clear your listening history? The Home mixes learn what you like from it, so they start over.",
+                                        ).ok())
+                                        .unwrap_or(false);
+                                    if confirmed {
+                                        let header = backend.auth.run(());
+                                        let url = format!("{}/api/history", backend.base.run(()));
+                                        leptos::task::spawn_local(async move {
+                                            let mut request = gloo_net::http::Request::delete(&url)
+                                                .header("X-Kog-Device", &device_id());
+                                            if let Some(header) = header {
+                                                request = request.header("Authorization", &header);
+                                            }
+                                            match request.send().await {
+                                                Ok(response) if response.ok() => set_message.set("History cleared".into()),
+                                                _ => set_message.set("Could not clear the history".into()),
+                                            }
+                                        });
+                                    }
+                                }
+                            >
+                                "Clear History"
+                            </button>
+                        </Show>
                         <Show
                             when=move || {
                                 playlist_menu

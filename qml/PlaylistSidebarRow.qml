@@ -17,6 +17,7 @@ FocusScope {
     // shows instead.
     property string coverUrl: ""
     readonly property bool favorite: pid === 0
+    readonly property bool history: pid === -9000
     readonly property bool darkTheme: 0.2126 * theme.base.r
         + 0.7152 * theme.base.g + 0.0722 * theme.base.b < 0.5
     readonly property bool dragging: pointer.dragging
@@ -79,7 +80,7 @@ FocusScope {
                 height: width
                 source: Qt.resolvedUrl(row.favorite
                     ? "icons/star-filled.svg"
-                    : "icons/kog-format-playlist"
+                    : (row.history ? "icons/history" : "icons/kog-format-playlist")
                         + (row.selected || row.darkTheme ? "-light" : "") + ".svg")
                 sourceSize.width: width * 2
                 sourceSize.height: height * 2

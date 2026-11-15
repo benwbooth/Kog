@@ -230,6 +230,14 @@ impl Discover {
         Ok(())
     }
 
+    /// Clear the History playlist: forget every play, and make the mixes
+    /// again from what is left (the stars and the library).
+    pub fn clear_history(&self) -> Result<usize, String> {
+        let cleared = LibraryDb::open()?.clear_history()?;
+        self.refresh();
+        Ok(cleared)
+    }
+
     fn prioritize(&self, entries: impl Iterator<Item = StoredEntry>) {
         let mut inner = lock(&self.inner);
         for entry in entries {
@@ -826,12 +834,33 @@ async fn history_route(axum::Json(listens): axum::Json<Vec<ListenRequest>>) -> R
     }
 }
 
+/// `DELETE /api/history` — clear the History playlist.
+async fn clear_history_route() -> Response {
+    match tokio::task::spawn_blocking(|| shared().clear_history()).await {
+        Ok(Ok(cleared)) => axum::Json(serde_json::json!({ "ok": true, "cleared": cleared })).into_response(),
+        Ok(Err(error)) => crate::routes::bad_request(&error),
+        Err(error) => crate::routes::bad_request(&error.to_string()),
+    }
+}
+
 pub fn router() -> axum::Router<crate::routes::AppState> {
     axum::Router::new()
         .route("/api/discover", get(home_route))
         .route("/api/discover/refresh", post(refresh_route))
         .route("/api/discover/mix", get(mix_route))
-        .route("/api/history", post(history_route))
+        .route("/api/history", post(history_route).delete(clear_history_route))
+}
+
+/// The file a song's cover is filed under: the song itself, or for a song
+/// inside an archive, its own file name beside the archive (that folder and
+/// that format pick the album's cover key and the console to search for).
+pub fn cover_file(kind: &str, path: &str, entry: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if kind != "archive" {
+        return path;
+    }
+    let name = Path::new(entry).file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(entry));
+    path.parent().map(|folder| folder.join(&name)).unwrap_or(name)
 }
 
 /// Look up the covers the Home cards show (the first songs of each mix from
@@ -853,34 +882,52 @@ pub(crate) fn start_cover_prefetch(state: &crate::routes::AppState) {
             seen = generation;
             let Some(home) = discover.home() else { continue };
             let allow_download = kog_audio::settings::AppSettings::load().download_cover_art;
-            let mut files = Vec::new();
+            // Local songs are read for their tags; songs inside archives
+            // are looked up by the tags the index has for them.
+            let mut wanted: Vec<(PathBuf, Option<(String, String)>)> = Vec::new();
             for mix in home.sections.iter().flat_map(|section| &section.mixes) {
                 let mut albums = std::collections::HashSet::new();
                 for song in &mix.songs {
                     if albums.len() >= 4 {
                         break;
                     }
-                    if song.kind != "local" || !albums.insert(song.album.to_lowercase()) {
+                    if !matches!(song.kind.as_str(), "local" | "archive")
+                        || !albums.insert(song.album.to_lowercase())
+                    {
                         continue;
                     }
-                    let file = PathBuf::from(&song.path);
-                    if !files.contains(&file) {
-                        files.push(file);
+                    let item = if song.kind == "archive" {
+                        if song.album.trim().is_empty() {
+                            continue;
+                        }
+                        (cover_file(&song.kind, &song.path, &song.entry), Some((song.artist.clone(), song.album.clone())))
+                    } else {
+                        (PathBuf::from(&song.path), None)
+                    };
+                    if !wanted.iter().any(|(file, _)| *file == item.0) {
+                        wanted.push(item);
                     }
                 }
             }
-            for file in files {
+            for (file, tags) in wanted {
                 if discover.generation() != seen {
                     break;
                 }
-                let exists = {
-                    let file = file.clone();
-                    tokio::task::spawn_blocking(move || file.is_file()).await.unwrap_or(false)
+                let result = match tags {
+                    Some((artist, album)) => covers.lookup_tagged(file, artist, album, allow_download),
+                    None => {
+                        let exists = {
+                            let file = file.clone();
+                            tokio::task::spawn_blocking(move || file.is_file()).await.unwrap_or(false)
+                        };
+                        if !exists {
+                            continue;
+                        }
+                        covers.lookup(file, streams.clone(), allow_download)
+                    }
                 };
-                if exists {
-                    let _ = crate::covers::wait(covers.lookup(file, streams.clone(), allow_download)).await;
-                    tokio::time::sleep(Duration::from_millis(150)).await;
-                }
+                let _ = crate::covers::wait(result).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
             }
         }
     });

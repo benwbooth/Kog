@@ -26,7 +26,7 @@ impl Controller {
             scope,
             playlist_id: id,
             name,
-            readonly: id == 0,
+            readonly: id <= 0,
         });
     }
     pub fn send(self, command: Command) {

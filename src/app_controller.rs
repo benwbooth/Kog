@@ -234,11 +234,20 @@ pub mod qobject {
         #[qinvokable]
         fn discover_refresh(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn clear_history(self: Pin<&mut AppController>);
+        #[qinvokable]
         fn open_mix(self: Pin<&mut AppController>, id: QString, name: QString);
         #[qinvokable]
         fn play_mix(self: Pin<&mut AppController>, id: QString, start: i32);
         #[qinvokable]
-        fn mix_cover(self: &AppController, path: QString, album: QString, artist: QString) -> QString;
+        fn mix_cover(
+            self: &AppController,
+            kind: QString,
+            path: QString,
+            entry: QString,
+            album: QString,
+            artist: QString,
+        ) -> QString;
         #[qinvokable]
         fn open_playlist_tab(self: Pin<&mut AppController>, id: i32, name: QString);
         #[qinvokable]
@@ -1972,6 +1981,8 @@ pub struct AppControllerRust {
     playlist_revision: i32,
     playlists_revision: i32,
     desktop_art_revision: i32,
+    /// A play went into the History playlist since the sidebar last looked.
+    history_changed: bool,
     /// Covers for the song rows and the sidebar's playlists.
     desktop_art: crate::desktop_art::DesktopArt,
     workspace_revision: i32,
@@ -2238,6 +2249,7 @@ impl Default for AppControllerRust {
             playlist_revision: 0,
             playlists_revision: 0,
             desktop_art_revision: 0,
+            history_changed: false,
             desktop_art: crate::desktop_art::DesktopArt::new(cover_art_cache_dir()),
             workspace_revision: 0,
             workspace_metadata_revision: 0,
@@ -2898,6 +2910,7 @@ impl AppControllerRust {
         let listens = self.session.take_listens();
         if !listens.is_empty() {
             kog_server::discover::shared().record_listens(&listens);
+            self.history_changed = true;
         }
         if update_item
             || effects
@@ -3805,11 +3818,18 @@ impl qobject::AppController {
     /// Custom playlists (plus the virtual Favorites at id 0) for the
     /// sidebar, as JSON for QML. Favorites reports the live star count.
     pub fn playlists_json(&self) -> QString {
-        let mut items = vec![serde_json::json!({
-            "id": 0,
-            "name": "Favorites",
-            "entryCount": self.rust().starred.len(),
-        })];
+        let mut items = vec![
+            serde_json::json!({
+                "id": 0,
+                "name": "Favorites",
+                "entryCount": self.rust().starred.len(),
+            }),
+            serde_json::json!({
+                "id": kog_audio::playback_order::workspace::HISTORY_PLAYLIST,
+                "name": "History",
+                "entryCount": self.rust().library_db.history_count(),
+            }),
+        ];
         match self.rust().library_db.list_playlists() {
             Ok(playlists) => {
                 for playlist in playlists {
@@ -4246,7 +4266,7 @@ impl qobject::AppController {
             scope: "local".into(),
             playlist_id: i64::from(id),
             name: name.to_string(),
-            readonly: id == 0,
+            readonly: id <= 0,
         });
     }
 
@@ -4297,6 +4317,27 @@ impl qobject::AppController {
         kog_server::discover::shared().refresh();
     }
 
+    /// Empty the History playlist (the listening history behind the mixes).
+    pub fn clear_history(mut self: Pin<&mut Self>) {
+        match kog_server::discover::shared().clear_history() {
+            Ok(_) => {
+                self.as_mut().bump_playlists_revision();
+                self.as_mut().set_status(qstring("History cleared"));
+                self.as_mut().reload_history_tab();
+            }
+            Err(error) => self.as_mut().set_status(qstring(error)),
+        }
+    }
+
+    /// Show the newest plays in an open History tab.
+    fn reload_history_tab(mut self: Pin<&mut Self>) {
+        let key = format!("local:{}", kog_audio::playback_order::workspace::HISTORY_PLAYLIST);
+        if self.as_ref().rust().session.workspace().tabs.iter().any(|tab| tab.key == key) {
+            self.as_mut()
+                .dispatch_workspace(WorkspaceCommand::ReloadTab { key });
+        }
+    }
+
     /// Open a Home mix as a read-only playlist tab.
     pub fn open_mix(mut self: Pin<&mut Self>, id: QString, name: QString) {
         let id = id.to_string();
@@ -4312,14 +4353,23 @@ impl qobject::AppController {
         });
     }
 
-    /// A Home card's cover for one of its songs (a music file, or the archive
-    /// holding it), or empty while it is looked up; `desktop_art_revision`
-    /// moves when it arrives.
-    pub fn mix_cover(&self, path: QString, album: QString, artist: QString) -> QString {
-        let file = PathBuf::from(path.to_string());
-        if file.as_os_str().is_empty() || path.to_string().contains("://") {
+    /// A Home card's cover for one of its songs, or empty while it is looked
+    /// up; `desktop_art_revision` moves when it arrives. A song inside an
+    /// archive asks under its own name beside the archive, where the server
+    /// files the cover it finds from the song's tags.
+    pub fn mix_cover(
+        &self,
+        kind: QString,
+        path: QString,
+        entry: QString,
+        album: QString,
+        artist: QString,
+    ) -> QString {
+        let path = path.to_string();
+        if path.is_empty() || path.contains("://") {
             return QString::default();
         }
+        let file = kog_server::discover::cover_file(&kind.to_string(), &path, &entry.to_string());
         qstring(self.rust().desktop_art.song_tile(
             &file.to_string_lossy(),
             &file,
@@ -4394,6 +4444,9 @@ impl qobject::AppController {
     fn playlist_stored_entries(&self, id: i64) -> Result<Vec<kog_core::db::StoredEntry>, String> {
         if id == 0 {
             return self.rust().library_db.starred_entries();
+        }
+        if id == kog_audio::playback_order::workspace::HISTORY_PLAYLIST {
+            return self.rust().library_db.history_entries(kog_core::db::HISTORY_LIMIT);
         }
         if let Some(mix) = kog_audio::playback_order::workspace::mix_from_playlist_id(id) {
             return kog_server::discover::shared()
@@ -7719,6 +7772,10 @@ impl qobject::AppController {
             }
         );
         self.as_mut().rust_mut().queue_session(command);
+        if std::mem::take(&mut self.as_mut().rust_mut().history_changed) {
+            self.as_mut().bump_playlists_revision();
+            self.as_mut().reload_history_tab();
+        }
         if progress {
             let position = self.as_ref().rust().session.snapshot().position;
             self.as_mut().set_position_seconds(position);

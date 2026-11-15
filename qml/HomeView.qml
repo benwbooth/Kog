@@ -300,7 +300,8 @@ Item {
                         Behavior on opacity { NumberAnimation { duration: 180 } }
                         source: {
                             home.app.desktop_art_revision
-                            return String(home.app.mix_cover(modelData.path || "",
+                            return String(home.app.mix_cover(modelData.kind || "local",
+                                modelData.path || "", modelData.entry || "",
                                 modelData.album || "", modelData.artist || ""))
                         }
                     }

@@ -2177,6 +2177,7 @@ pub async fn list_playlists(State(state): State<AppState>) -> Response {
         let db = library.db();
         let playlists = db.list_playlists()?;
         Ok::<_, String>(serde_json::json!({
+            "historyCount": db.history_count(),
             "playlists": playlists
                 .iter()
                 .map(|playlist| serde_json::json!({
@@ -2205,6 +2206,18 @@ pub async fn playlist_entries(
         let db = library.db();
         let entries = if id == 0 {
             db.starred_entries()?
+        } else if id == kog_audio::playback_order::workspace::HISTORY_PLAYLIST {
+            db.history_entries(kog_core::db::HISTORY_LIMIT)?
+        } else if let Some(mix) = kog_audio::playback_order::workspace::mix_from_playlist_id(id) {
+            drop(db);
+            let entries = crate::discover::shared()
+                .mix_entries(&mix)
+                .map(|(_, entries)| queue_entries_from_json(&entries))
+                .ok_or_else(|| "This mix has been replaced by newer ones".to_owned())?;
+            return Ok(serde_json::json!({
+                "id": id,
+                "entries": entries.into_iter().map(entry_json).collect::<Vec<_>>(),
+            }));
         } else {
             db.playlist_entries(id)?
         };
