@@ -26,7 +26,7 @@ FocusScope {
     // The song count; the tiles are regrouped whenever it or the rows change.
     property int rowCount: 0
     // The tiles for the rows shown, as JSON from Rust:
-    // [{album, artist, year, length, single, rows, numbers}].
+    // [{key, album, artist, year, length, single, rows, numbers}].
     property var groupSource: function() { return "[]" }
     // What the album page's rows show, as the rows view's lines.
     property var rowLines: [["title"], ["artist"], ["album", "format", "length"], ["path"]]
@@ -88,7 +88,7 @@ FocusScope {
         }
     }
     function groupKey(group) {
-        return group.album.toLowerCase() + "\u0001" + group.artist.toLowerCase()
+        return group.key
     }
     function tileSelected(tile) {
         const group = groups[tile]

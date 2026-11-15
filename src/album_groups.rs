@@ -1,6 +1,8 @@
 //! The cover grid's tiles: one per album, grouped by the album tag plus the
-//! album artist (or the artist without one). Songs with no album tag stay
-//! tiles of their own; folders and paths never group songs.
+//! album artist, or by the album tag alone for songs without an album
+//! artist (so an album whose songs credit different composers stays one
+//! tile). Songs with no album tag stay tiles of their own; folders and paths
+//! never group songs.
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -12,6 +14,9 @@ use serde_json::{Value, json};
 /// playing song is matched by).
 #[derive(Debug, Default, PartialEq)]
 pub struct AlbumGroup {
+    /// The album and album artist folded to lower case; empty for a lone
+    /// song.
+    pub key: String,
     pub album: String,
     pub artist: String,
     pub year: Option<u32>,
@@ -32,11 +37,35 @@ fn group_artist(track: &Track) -> &str {
     if album_artist.is_empty() { track.artist.trim() } else { album_artist }
 }
 
+/// The artist an album without an album artist shows: the track artist of
+/// at least half its songs, else "Various Artists".
+fn common_artist<'a>(artists: impl IntoIterator<Item = &'a str>) -> String {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    let mut total = 0;
+    for artist in artists {
+        total += 1;
+        if artist.is_empty() {
+            continue;
+        }
+        match counts.iter_mut().find(|(seen, _)| seen.eq_ignore_ascii_case(artist)) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((artist, 1)),
+        }
+    }
+    match counts.iter().max_by_key(|(_, count)| *count) {
+        Some((artist, count)) if count * 2 >= total => (*artist).to_owned(),
+        Some(_) => "Various Artists".to_owned(),
+        None => String::new(),
+    }
+}
+
 /// Groups the shown songs, as their numbers and tracks (`None` for a row
 /// without metadata yet), into tiles in the order each album first appears.
 pub fn group<'a>(tracks: impl IntoIterator<Item = (usize, Option<&'a Track>)>) -> Vec<AlbumGroup> {
     let mut groups: Vec<AlbumGroup> = Vec::new();
-    let mut by_key: HashMap<(String, String), usize> = HashMap::new();
+    let mut by_key: HashMap<String, usize> = HashMap::new();
+    // Each album-artist-less group's track artists, to pick the one it shows.
+    let mut track_artists: HashMap<usize, Vec<&'a str>> = HashMap::new();
     for (row, (number, track)) in tracks.into_iter().enumerate() {
         let album = track.map(|track| track.album.trim()).unwrap_or_default();
         if album.is_empty() {
@@ -52,16 +81,20 @@ pub fn group<'a>(tracks: impl IntoIterator<Item = (usize, Option<&'a Track>)>) -
         }
         // A row without metadata has no album, so it was a single above.
         let Some(track) = track else { continue };
-        let artist = group_artist(track);
-        let key = (album.to_lowercase(), artist.to_lowercase());
-        let at = *by_key.entry(key).or_insert_with(|| {
+        let album_artist = track.album_artist.trim();
+        let key = format!("{}\u{1}{}", album.to_lowercase(), album_artist.to_lowercase());
+        let at = *by_key.entry(key.clone()).or_insert_with(|| {
             groups.push(AlbumGroup {
+                key,
                 album: album.to_owned(),
-                artist: artist.to_owned(),
+                artist: album_artist.to_owned(),
                 ..AlbumGroup::default()
             });
             groups.len() - 1
         });
+        if album_artist.is_empty() {
+            track_artists.entry(at).or_default().push(track.artist.trim());
+        }
         let group = &mut groups[at];
         group.rows.push(row);
         group.numbers.push(number);
@@ -69,6 +102,9 @@ pub fn group<'a>(tracks: impl IntoIterator<Item = (usize, Option<&'a Track>)>) -
         if group.year.is_none() {
             group.year = track.year;
         }
+    }
+    for (at, artists) in track_artists {
+        groups[at].artist = common_artist(artists);
     }
     groups
 }
@@ -89,6 +125,7 @@ pub fn to_json(groups: &[AlbumGroup]) -> String {
             .iter()
             .map(|group| {
                 json!({
+                    "key": group.key,
                     "album": group.album,
                     "artist": group.artist,
                     "year": group.year.map(|year| year.to_string()).unwrap_or_default(),
@@ -118,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn groups_by_album_and_album_artist_falling_back_to_artist() {
+    fn groups_by_album_and_album_artist() {
         let tracks = [
             track("Blue", "", "Joni", 60),
             track("", "", "Loose", 30),
@@ -135,6 +172,33 @@ mod tests {
         assert_eq!(groups[1].rows, vec![1]);
         assert_eq!(groups[2].artist, "Various");
         assert_eq!(groups[2].rows, vec![3, 4]);
+    }
+
+    #[test]
+    fn an_album_crediting_different_composers_stays_one_tile() {
+        let tracks = [
+            track("Final Fight", "", "Manami Matsumae", 60),
+            track("Final Fight", "", "Yoshihiro Sakaguchi", 60),
+            track("Final Fight", "", "Manami Matsumae", 60),
+            track("Final Fight", "", "Harumi Fujita", 60),
+        ];
+        let groups = group(tracks.iter().enumerate().map(|(row, track)| (row + 1, Some(track))));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].rows, vec![0, 1, 2, 3]);
+        // Two of four songs: the most common artist covers half of them.
+        assert_eq!(groups[0].artist, "Manami Matsumae");
+    }
+
+    #[test]
+    fn no_artist_covering_half_the_album_shows_various_artists() {
+        let tracks = [
+            track("Out Run", "", "A", 60),
+            track("Out Run", "", "B", 60),
+            track("Out Run", "", "C", 60),
+        ];
+        let groups = group(tracks.iter().enumerate().map(|(row, track)| (row + 1, Some(track))));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].artist, "Various Artists");
     }
 
     #[test]
