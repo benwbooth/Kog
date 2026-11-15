@@ -97,7 +97,47 @@ struct HomeSection {
 struct HomeState {
     generation: u64,
     sections: Vec<HomeSection>,
-    songs_indexed: u64,
+}
+
+/// How far the server's background reading has got, and whether new mixes
+/// are being made. Kept apart from the mixes so it changing redraws no card.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Progress {
+    songs: u64,
+    analysed: u64,
+    embedded: u64,
+    folders_left: u64,
+    refreshing: bool,
+}
+
+fn grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+impl Progress {
+    fn text(&self) -> String {
+        let mut text = format!("{} songs read, {} measured", grouped(self.songs), grouped(self.analysed));
+        if self.embedded > 0 {
+            text.push_str(&format!(", {} heard by the sound model", grouped(self.embedded)));
+        }
+        text.push_str(if self.folders_left > 0 {
+            ". Still reading your library; mixes get better as it goes."
+        } else {
+            ". Your whole library has been read."
+        });
+        if self.refreshing {
+            text = format!("Making new mixes… {text}");
+        }
+        text
+    }
 }
 
 fn greeting() -> &'static str {
@@ -141,6 +181,8 @@ pub fn HomeView(
     #[prop(into)] active: Signal<bool>,
 ) -> impl IntoView {
     let state = RwSignal::new(HomeState::default());
+    let progress = RwSignal::new(Progress::default());
+    let ticks = StoredValue::new(0u32);
     let (loaded, set_loaded) = signal(false);
     let refresh = move || {
         let base = controller.backend.base.run(());
@@ -162,11 +204,18 @@ pub fn HomeView(
                         .collect()
                 })
                 .unwrap_or_default();
-            let next = HomeState {
-                generation,
-                sections,
-                songs_indexed: value["status"]["songs"].as_u64().unwrap_or(0),
+            let status = &value["status"];
+            let next_progress = Progress {
+                songs: status["songs"].as_u64().unwrap_or(0),
+                analysed: status["analysed"].as_u64().unwrap_or(0),
+                embedded: status["embedded"].as_u64().unwrap_or(0),
+                folders_left: status["folders_left"].as_u64().unwrap_or(0),
+                refreshing: value["refreshing"].as_bool().unwrap_or(false),
             };
+            if progress.with_untracked(|current| *current != next_progress) {
+                progress.set(next_progress);
+            }
+            let next = HomeState { generation, sections };
             if state.with_untracked(|current| *current != next) {
                 state.set(next);
             }
@@ -181,11 +230,14 @@ pub fn HomeView(
     });
     let interval = set_interval_with_handle(
         move || {
-            if active.get_untracked() {
+            // Every two seconds while new mixes are made, else every thirty.
+            let tick = ticks.get_value().wrapping_add(1);
+            ticks.set_value(tick);
+            if active.get_untracked() && (progress.with_untracked(|p| p.refreshing) || tick % 15 == 0) {
                 refresh();
             }
         },
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(2),
     )
     .ok();
     on_cleanup(move || {
@@ -194,6 +246,7 @@ pub fn HomeView(
         }
     });
     let remake = move |_| {
+        progress.update(|progress| progress.refreshing = true);
         let base = controller.backend.base.run(());
         let header = controller.backend.auth.run(());
         leptos::task::spawn_local(async move {
@@ -205,15 +258,19 @@ pub fn HomeView(
             <div class="home-header">
                 <h1>{greeting()}</h1>
                 <Show when=move || state.with(|state| !state.sections.is_empty())>
-                    <button class="flat home-refresh" type="button" title="Make new mixes"
+                    <button class="flat home-refresh" class:spinning=move || progress.with(|p| p.refreshing)
+                        type="button" title="Make new mixes"
                         aria-label="Make new mixes" on:click=remake
                         inner_html=include_str!("../../../qml/icons/view-refresh.svg")></button>
                 </Show>
             </div>
+            <Show when=move || state.with(|state| !state.sections.is_empty()) && progress.with(|p| p.songs > 0)>
+                <p class="home-progress">{move || progress.with(Progress::text)}</p>
+            </Show>
             <Show when=move || loaded.get() && state.with(|state| state.sections.is_empty())>
                 <p class="home-empty">
                     {move || {
-                        let songs = state.with(|state| state.songs_indexed);
+                        let songs = progress.with(|progress| progress.songs);
                         if songs > 0 {
                             format!("Kog is reading your library in the background ({songs} songs so far). Your mixes appear here as soon as it has enough to go on; listening to music helps it learn what you like.")
                         } else {

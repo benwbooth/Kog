@@ -234,6 +234,8 @@ pub mod qobject {
         #[qinvokable]
         fn discover_refresh(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn discover_status_json(self: &AppController) -> QString;
+        #[qinvokable]
         fn clear_history(self: Pin<&mut AppController>);
         #[qinvokable]
         fn open_mix(self: Pin<&mut AppController>, id: QString, name: QString);
@@ -4320,6 +4322,17 @@ impl qobject::AppController {
     /// The Home tab's mixes and the library index's progress.
     pub fn discover_json(&self) -> QString {
         qstring(kog_server::discover::shared().home_json().to_string())
+    }
+
+    /// The library index's progress and whether new mixes are on the way,
+    /// without the mixes themselves.
+    pub fn discover_status_json(&self) -> QString {
+        let discover = kog_server::discover::shared();
+        let mut value = discover.home_json();
+        if let Some(object) = value.as_object_mut() {
+            object.remove("home");
+        }
+        qstring(value.to_string())
     }
 
     pub fn discover_refresh(self: Pin<&mut Self>) {

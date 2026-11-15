@@ -50,6 +50,40 @@ Item {
         onTriggered: home.reload()
     }
 
+    property bool refreshing: false
+    function number(value) {
+        return Number(value || 0).toLocaleString(Qt.locale(), "f", 0)
+    }
+    function progressText() {
+        const s = status
+        let text = qsTr("%1 songs read, %2 measured").arg(number(s.songs)).arg(number(s.analysed))
+        if ((s.embedded || 0) > 0)
+            text += qsTr(", %1 heard by the sound model").arg(number(s.embedded))
+        text += (s.folders_left || 0) > 0
+            ? qsTr(". Still reading your library; mixes get better as it goes.")
+            : qsTr(". Your whole library has been read.")
+        if (refreshing)
+            text = qsTr("Making new mixes… ") + text
+        return text
+    }
+    // The progress and the refresh, every second while Home shows.
+    Timer {
+        interval: 1000
+        repeat: true
+        running: home.visible
+        triggeredOnStart: true
+        onTriggered: {
+            try {
+                const parsed = JSON.parse(home.app.discover_status_json())
+                home.status = parsed.status || {}
+                if (!parsed.refreshing && home.refreshing)
+                    home.reload()
+                home.refreshing = !!parsed.refreshing
+            } catch (_) {
+            }
+        }
+    }
+
     function greeting() {
         const hour = new Date().getHours()
         if (hour < 5) return qsTr("Good night")
@@ -112,9 +146,20 @@ Item {
                     color: home.theme.text
                 }
                 ToolButton {
+                    id: refreshButton
                     anchors.right: parent.right
                     anchors.verticalCenter: titleLabel.verticalCenter
                     visible: home.sections.length > 0
+                    // Turns while new mixes are made, finishing its turn
+                    // when they arrive.
+                    RotationAnimator on rotation {
+                        running: home.refreshing
+                        from: 0
+                        to: 360
+                        duration: 900
+                        loops: Animation.Infinite
+                        alwaysRunToEnd: true
+                    }
                     icon.name: "view-refresh"
                     display: AbstractButton.IconOnly
                     flat: true
@@ -122,8 +167,21 @@ Item {
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
                     ToolTip.text: Accessible.name
-                    onClicked: home.app.discover_refresh()
+                    onClicked: {
+                        home.refreshing = true
+                        home.app.discover_refresh()
+                    }
                 }
+            }
+
+            // How far the background reading has got.
+            Label {
+                visible: home.sections.length > 0 && (home.status.songs || 0) > 0
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: home.mutedText
+                font.pixelSize: 12
+                text: home.progressText()
             }
 
             // Before there is anything to show: what is happening, plainly.

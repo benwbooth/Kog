@@ -6659,15 +6659,18 @@ button.primary:hover:not(:disabled) {
   height: var(--tree-row-height);
 }
 .history-icon {
-  width: 16px;
-  height: 16px;
-  flex: none;
   display: inline-flex;
-  color: var(--muted);
+  align-items: center;
+  justify-content: center;
 }
 .history-icon svg {
   width: 16px;
   height: 16px;
+  flex: none;
+}
+.mobile-playlists .history-icon svg {
+  width: 22px;
+  height: 22px;
 }
 .history-icon svg path {
   stroke: currentColor;
@@ -6732,4 +6735,23 @@ button.primary:hover:not(:disabled) {
 
 .rows.view-grid .track.selected .row-card-art.has-cover .row-card-cover {
   box-shadow: 0 0 0 2px var(--highlight);
+}
+
+/* Home: how far the reading has got, and the refresh turning while new
+ * mixes are made (it finishes its turn smoothly). */
+.home-progress {
+  margin: -10px 0 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.home-refresh svg {
+  transform-origin: 50% 50%;
+}
+.home-refresh.spinning svg {
+  animation: home-spin 900ms linear infinite;
+}
+@keyframes home-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

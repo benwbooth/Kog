@@ -628,6 +628,12 @@ impl Store {
         let _ = self.conn.execute("UPDATE songs SET embedding = NULL, embedding_at = 0", []);
     }
 
+    pub fn pending_folders(&self) -> i64 {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM folders WHERE done = 0", [], |row| row.get(0))
+            .unwrap_or(0)
+    }
+
     pub fn embedded_count(&self) -> i64 {
         self.conn
             .query_row("SELECT COUNT(*) FROM songs WHERE length(embedding) > 0", [], |row| row.get(0))

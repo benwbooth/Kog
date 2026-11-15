@@ -50,6 +50,7 @@ const RECRAWL_AFTER_MS: i64 = 7 * mixes::DAY_MS;
 const HOME_POLL: Duration = Duration::from_secs(20);
 const STATE_NAMESPACE: &str = "discover";
 const STATE_HOME: &str = "home";
+const STATE_REFRESH: &str = "refresh";
 
 /// How far along the library index is.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -61,6 +62,8 @@ pub struct Status {
     pub crawling: bool,
     /// Songs with a sound-model embedding.
     pub embedded: i64,
+    /// Folders the crawl has still to read (0 once the library is read).
+    pub folders_left: i64,
     /// Where the sound model runs ("MIGraphX", "WebGPU", "CPU"), why it
     /// does not, or empty when another Kog runs it.
     pub embedding: String,
@@ -78,6 +81,8 @@ struct Inner {
     /// Songs to embed before the rest.
     embed_first: VecDeque<String>,
     refresh: bool,
+    /// New mixes were asked for here and have not arrived yet.
+    refreshing: bool,
     status: Status,
 }
 
@@ -199,6 +204,7 @@ impl Discover {
             "generation": self.generation(),
             "home": inner.home,
             "status": inner.status,
+            "refreshing": inner.refreshing,
         })
     }
 
@@ -211,7 +217,15 @@ impl Discover {
 
     /// Make the mixes again now instead of waiting for tomorrow.
     pub fn refresh(&self) {
-        lock(&self.inner).refresh = true;
+        // The request goes through kog.db, so whichever Kog makes the mixes
+        // (the desktop app or the server) acts on it.
+        if let Ok(db) = LibraryDb::open() {
+            let _ = db.put_state(STATE_NAMESPACE, STATE_REFRESH, &now_ms().to_string());
+        }
+        let mut inner = lock(&self.inner);
+        inner.refresh = true;
+        inner.refreshing = true;
+        drop(inner);
         self.wake.notify_all();
     }
 
@@ -325,6 +339,7 @@ impl Discover {
                     files,
                     crawling: leased,
                     embedded: store.embedded_count(),
+                    folders_left: store.pending_folders(),
                     embedding,
                 };
                 last_status = Some(Instant::now());
@@ -387,6 +402,7 @@ impl Discover {
                 if let Ok(home) = serde_json::from_str::<Home>(&saved.value) {
                     inner.home = Some(home);
                     inner.home_revision = saved.revision;
+                    inner.refreshing = false;
                     self.generation.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -400,6 +416,14 @@ impl Discover {
             let mut inner = lock(&self.inner);
             (std::mem::take(&mut inner.refresh), inner.home.clone())
         };
+        // Asked for by another Kog since these mixes were made.
+        let requested = db
+            .load_state(STATE_NAMESPACE, STATE_REFRESH)
+            .ok()
+            .flatten()
+            .and_then(|state| state.value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let refresh = refresh || previous.as_ref().is_some_and(|home| requested > home.made_at);
         let (indexed, ..) = store.counts();
         let due = match &previous {
             None => indexed > 0 || db.plays_stamp() > 0,
@@ -438,6 +462,7 @@ impl Discover {
         let mut inner = lock(&self.inner);
         inner.home = Some(home);
         inner.home_revision = revision;
+        inner.refreshing = false;
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 }

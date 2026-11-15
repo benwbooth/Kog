@@ -8158,7 +8158,7 @@ fn App() -> impl IntoView {
                                         // The History playlist: every song played, newest
                                         // first. Always there; it can be cleared, not deleted.
                                         <button
-                                            class="tree-row history-row"
+                                            class="tree-row favorite-row history-row"
                                             class:selected=move || selected_playlists.read().contains(&HISTORY_ID)
                                             title="Double click to open your listening history in a tab"
                                             on:click=move |ev: web_sys::MouseEvent| {
@@ -8173,7 +8173,7 @@ fn App() -> impl IntoView {
                                             on:dblclick=move |_| playlist_workspace.open(HISTORY_ID, "History".into())
                                         >
                                             <span class="twisty"></span>
-                                            <span class="history-icon" aria-hidden="true" inner_html=include_str!("../../../qml/icons/history.svg")></span>
+                                            <span class="favorite-star history-icon" aria-hidden="true" inner_html=include_str!("../../../qml/icons/history.svg")></span>
                                             <span class="label">"History"</span>
                                             <span
                                                 class="mobile-playlist-more"
