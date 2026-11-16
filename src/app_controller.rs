@@ -2002,6 +2002,8 @@ pub struct AppControllerRust {
     desktop_art_revision: i32,
     /// A play went into the History playlist since the sidebar last looked.
     history_changed: bool,
+    /// The Home mixes' generation the open mix tabs show.
+    mixes_seen: u64,
     /// Covers for the song rows and the sidebar's playlists.
     desktop_art: crate::desktop_art::DesktopArt,
     workspace_revision: i32,
@@ -2269,7 +2271,12 @@ impl Default for AppControllerRust {
             playlists_revision: 0,
             desktop_art_revision: 0,
             history_changed: false,
-            desktop_art: crate::desktop_art::DesktopArt::new(cover_art_cache_dir()),
+            mixes_seen: 0,
+            desktop_art: {
+                let art = crate::desktop_art::DesktopArt::new(cover_art_cache_dir());
+                art.set_searches(app_settings.download_cover_art);
+                art
+            },
             workspace_revision: 0,
             workspace_metadata_revision: 0,
             workspace_seen: String::new(),
@@ -4457,6 +4464,24 @@ impl qobject::AppController {
 
     pub fn poll_workspace(mut self: Pin<&mut Self>) {
         self.as_mut().write_pending_session();
+        // New mixes: open mix tabs show the new versions.
+        let generation = kog_server::discover::shared().generation();
+        if generation != self.as_ref().rust().mixes_seen {
+            self.as_mut().rust_mut().mixes_seen = generation;
+            let keys: Vec<String> = self
+                .as_ref()
+                .rust()
+                .session
+                .workspace()
+                .tabs
+                .iter()
+                .filter(|tab| tab.key.starts_with("mix:"))
+                .map(|tab| tab.key.clone())
+                .collect();
+            for key in keys {
+                self.as_mut().dispatch_workspace(WorkspaceCommand::ReloadTab { key });
+            }
+        }
         self.as_mut().poll_session_ports();
         let parked_changed = self
             .as_mut()
@@ -7297,6 +7322,7 @@ impl qobject::AppController {
             return;
         }
         self.as_mut().set_download_cover_art(enabled);
+        self.as_ref().rust().desktop_art.set_searches(enabled);
         if !enabled {
             if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
                 job.cancel.store(true, AtomicOrdering::Relaxed);

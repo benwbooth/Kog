@@ -156,11 +156,19 @@ pub struct Home {
     /// Songs in the index when it was made.
     #[serde(default)]
     pub indexed: i64,
+    /// Mixes from earlier Homes that these replaced, newest first, so a tab
+    /// still showing one keeps its songs.
+    #[serde(default)]
+    pub retired: Vec<Mix>,
 }
 
 impl Home {
     pub fn mix(&self, id: &str) -> Option<&Mix> {
-        self.sections.iter().flat_map(|section| &section.mixes).find(|mix| mix.id == id)
+        self.sections
+            .iter()
+            .flat_map(|section| &section.mixes)
+            .find(|mix| mix.id == id)
+            .or_else(|| self.retired.iter().find(|mix| mix.id == id))
     }
 
     pub fn weekly(&self) -> Option<&Mix> {
@@ -858,6 +866,18 @@ pub fn make_home(inputs: &Inputs<'_>) -> Home {
     if indexed < 2000 {
         thin = true;
     }
+    // Mixes the new ones replace stay findable for open tabs.
+    let mut retired: Vec<Mix> = Vec::new();
+    if let Some(previous) = inputs.previous {
+        let current: HashSet<&str> =
+            sections.iter().flat_map(|section| &section.mixes).map(|mix| mix.id.as_str()).collect();
+        for mix in previous.sections.iter().flat_map(|section| &section.mixes).chain(&previous.retired) {
+            if !current.contains(mix.id.as_str()) && !retired.iter().any(|kept| kept.id == mix.id) {
+                retired.push(mix.clone());
+            }
+        }
+        retired.truncate(40);
+    }
     Home {
         day: inputs.day,
         week: inputs.week,
@@ -865,6 +885,7 @@ pub fn make_home(inputs: &Inputs<'_>) -> Home {
         sections,
         thin,
         indexed,
+        retired,
     }
 }
 

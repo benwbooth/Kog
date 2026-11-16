@@ -114,6 +114,7 @@ pub fn shared() -> Arc<Discover> {
                 wake: Condvar::new(),
                 generation: AtomicU64::new(1),
             });
+            discover.load_saved_home();
             let worker = Arc::clone(&discover);
             let _ = std::thread::Builder::new()
                 .name("kog-discover".into())
@@ -258,11 +259,32 @@ impl Discover {
         })
     }
 
-    /// One mix's songs as queue entries, with its title.
+    /// One mix's songs as queue entries, with its title. A mix a newer Home
+    /// replaced still has its songs; one long gone has none, never an error.
     pub fn mix_entries(&self, id: &str) -> Option<(String, Vec<serde_json::Value>)> {
+        self.load_saved_home();
         let inner = lock(&self.inner);
-        let mix = inner.home.as_ref()?.mix(id)?;
+        let Some(mix) = inner.home.as_ref().and_then(|home| home.mix(id)) else {
+            return Some((String::new(), Vec::new()));
+        };
         Some((mix.title.clone(), mix.songs.iter().map(MixSong::entry_json).collect()))
+    }
+
+    /// Take the saved Home now when none is loaded yet (the worker loads it
+    /// too, but may be busy starting the sound model).
+    fn load_saved_home(&self) {
+        if lock(&self.inner).home.is_some() {
+            return;
+        }
+        let Ok(db) = LibraryDb::open() else { return };
+        let Some(saved) = db.load_state(STATE_NAMESPACE, STATE_HOME).ok().flatten() else { return };
+        let Ok(home) = serde_json::from_str::<Home>(&saved.value) else { return };
+        let mut inner = lock(&self.inner);
+        if inner.home.is_none() {
+            inner.home = Some(home);
+            inner.home_revision = saved.revision;
+            self.generation.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Make the mixes again now instead of waiting for tomorrow.
