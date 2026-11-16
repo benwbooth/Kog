@@ -688,6 +688,9 @@ struct CoverArtRequest {
     cache_dir: PathBuf,
     // The key the lookup used, so the next play finds what this stores.
     key: String,
+    // The album's shared entry, which every row, tile and the server read
+    // first: a cover found for one song shows for the whole album.
+    album_key: Option<String>,
     progress: Arc<std::sync::Mutex<CoverArtProgress>>,
 }
 
@@ -1035,7 +1038,12 @@ fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<P
             fetch_cover(url, max_bytes).ok()
         },
         || cancel.load(AtomicOrdering::Relaxed),
-        |bytes| kog_audio::cover_art::store_cache(&request.cache_dir, key, &bytes),
+        |bytes| {
+            if let Some(album_key) = &request.album_key {
+                let _ = kog_audio::cover_art::store_cache(&request.cache_dir, album_key, &bytes);
+            }
+            kog_audio::cover_art::store_cache(&request.cache_dir, key, &bytes)
+        },
     );
     if found.is_none() && !cancel.load(AtomicOrdering::Relaxed) {
         kog_audio::cover_art::record_miss(&request.cache_dir, key);
@@ -7649,15 +7657,26 @@ impl qobject::AppController {
         }
         let cache_dir = cover_art_cache_dir();
         let (key, may_download) = cover_art_key(&artist, &tagged_album, &album, &file);
+        // The album's entry, which the song rows, tiles and the servers read
+        // first. A cover found here for this song under its own keys is
+        // copied there too, so every view of the album shows the same one
+        // (the album's tile used to miss a cover the transport had found
+        // under the playing song's artist).
+        let album_key = kog_server::desktop_art::album_key(&file, &tagged_album);
+        let share = |path: &Path| {
+            if !tagged_album.trim().is_empty()
+                && kog_audio::cover_art::cache_lookup(&cache_dir, &album_key).is_none()
+                && let Ok(bytes) = std::fs::read(path)
+            {
+                let _ = kog_audio::cover_art::store_cache(&cache_dir, &album_key, &bytes);
+            }
+        };
         if let Some(cached) = kog_audio::cover_art::cache_lookup(&cache_dir, &key) {
+            share(&cached);
             self.as_mut()
                 .set_current_artwork_path(qstring(cached.to_string_lossy()));
             return;
         }
-        // The album's entry, which the song rows and the servers read
-        // first: the cover beside the song in the playlist is shown at once
-        // instead of being searched for again.
-        let album_key = kog_server::desktop_art::album_key(&file, &tagged_album);
         if let Some(cached) = kog_audio::cover_art::cache_lookup(&cache_dir, &album_key)
             .filter(|path| !kog_server::desktop_art::is_rejected_file(&cache_dir, path))
         {
@@ -7667,6 +7686,7 @@ impl qobject::AppController {
         }
         if let Some(bytes) = kog_audio::cover_art::embedded_cover_bytes(&file) {
             if let Some(stored) = kog_audio::cover_art::store_cache(&cache_dir, &key, &bytes) {
+                share(&stored);
                 self.as_mut()
                     .set_current_artwork_path(qstring(stored.to_string_lossy()));
                 return;
@@ -7680,6 +7700,7 @@ impl qobject::AppController {
             if let Some(folder) = file.parent() {
                 let folder_key = kog_audio::cover_art::folder_cover_key(folder);
                 if let Some(cached) = kog_audio::cover_art::cache_lookup(&cache_dir, &folder_key) {
+                    share(&cached);
                     self.as_mut()
                         .set_current_artwork_path(qstring(cached.to_string_lossy()));
                     return;
@@ -7688,6 +7709,7 @@ impl qobject::AppController {
                     if let Some(stored) =
                         kog_audio::cover_art::store_cache(&cache_dir, &folder_key, &bytes)
                     {
+                        share(&stored);
                         self.as_mut()
                             .set_current_artwork_path(qstring(stored.to_string_lossy()));
                         return;
@@ -7727,6 +7749,7 @@ impl qobject::AppController {
             file: file.clone(),
             artist,
             album,
+            album_key: (!tagged_album.trim().is_empty()).then(|| album_key.clone()),
             cache_dir,
             key,
             progress,

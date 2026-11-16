@@ -503,10 +503,18 @@ FocusScope {
                 width: grid.coverSize
                 height: grid.coverSize
 
-                // No cover: the album's (or song's) name and artist.
+                // No cover: the album's (or song's) name and artist, once
+                // the lookup has found none (a quiet square while it looks,
+                // so a cover on its way never follows a text cover).
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 7
+                    visible: !cover.visible && tile.knownCover !== ""
+                    color: browser.tintFor(tile.titleText + "\u0001" + tile.artistText)
+                }
                 TextCover {
                     anchors.fill: parent
-                    visible: !cover.visible
+                    visible: !cover.visible && tile.knownCover === ""
                     title: tile.titleText
                     subtitle: tile.artistText
                 }
@@ -743,6 +751,13 @@ FocusScope {
 
         readonly property var group: browser.openGroup
         readonly property int firstRow: group && group.rows.length > 0 ? group.rows[0] : -1
+        // Whether the album's cover is known (found, or found to be none).
+        readonly property bool coverKnown: {
+            browser.revision
+            browser.app.desktop_art_revision
+            return firstRow >= 0 && !!browser.app.track_known_image_at
+                && String(browser.app.track_known_image_at(firstRow, true)) !== "?"
+        }
         // The album's cover, which its rows show until they have their own.
         readonly property string coverUrl: {
             browser.revision
@@ -847,7 +862,7 @@ FocusScope {
                 TextCover {
                     anchors.fill: parent
                     radius: 10
-                    visible: !albumArt.visible
+                    visible: !albumArt.visible && albumList.coverKnown
                     title: albumList.group ? albumList.group.album : ""
                     subtitle: albumList.group ? albumList.group.artist : ""
                 }
@@ -1157,7 +1172,7 @@ FocusScope {
                             width: coverFlow.coverSize
                             height: width
                             radius: 6
-                            visible: !art.visible
+                            visible: !art.visible && slot.coverKnown
                             title: slot.titleText
                             subtitle: slot.group ? slot.group.artist : ""
                         }
