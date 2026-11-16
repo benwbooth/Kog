@@ -6755,3 +6755,20 @@ button.primary:hover:not(:disabled) {
     transform: rotate(360deg);
   }
 }
+
+/* A card shows its covers or its title, never both; long titles and
+ * composer lists break inside the card instead of spilling out. */
+.home-cover:has(img.ready) {
+  background: color-mix(in srgb, var(--text) 6%, transparent) !important;
+}
+.home-cover:has(img.ready) .home-cover-title {
+  opacity: 0;
+}
+.home-cover-title {
+  overflow-wrap: anywhere;
+  transition: opacity 180ms ease;
+}
+.home-card-title,
+.home-card-subtitle {
+  overflow-wrap: anywhere;
+}

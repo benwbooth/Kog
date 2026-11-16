@@ -283,6 +283,8 @@ Item {
         property var mix: ({})
         readonly property var covers: home.coverSongs(mix)
         readonly property bool single: mix.kind === "album" || covers.length < 4
+        // Covers loaded so far: the title card hides once one shows.
+        property int artReady: 0
         width: 172
         height: 250
 
@@ -308,20 +310,31 @@ Item {
             width: 172
             height: 172
 
+            // Covers show whole on a quiet backdrop; a card without any
+            // shows its title on a tint instead, never both.
             Rectangle {
                 anchors.fill: parent
                 radius: 8
-                color: home.tintFor(card.mix.title || "")
+                color: card.artReady > 0
+                    ? Qt.rgba(home.theme.text.r, home.theme.text.g, home.theme.text.b, 0.06)
+                    : home.tintFor(card.mix.title || "")
+                Behavior on color { ColorAnimation { duration: 180 } }
                 Label {
                     x: 14
                     y: 14
                     width: parent.width - 28
+                    height: parent.height - 28
+                    opacity: card.artReady > 0 ? 0 : 1
+                    Behavior on opacity { NumberAnimation { duration: 180 } }
                     text: card.mix.title || ""
                     font.pixelSize: 17
                     font.bold: true
-                    wrapMode: Text.WordWrap
-                    maximumLineCount: 4
+                    fontSizeMode: Text.Fit
+                    minimumPixelSize: 11
+                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    maximumLineCount: 5
                     elide: Text.ElideRight
+                    clip: true
                     color: home.theme.text
                 }
             }
@@ -355,6 +368,15 @@ Item {
                         smooth: true
                         mipmap: true
                         opacity: status === Image.Ready ? 1 : 0
+                        property bool counted: false
+                        onStatusChanged: {
+                            const ready = status === Image.Ready
+                            if (ready !== counted) {
+                                card.artReady += ready ? 1 : -1
+                                counted = ready
+                            }
+                        }
+                        Component.onDestruction: if (counted) card.artReady -= 1
                         Behavior on opacity { NumberAnimation { duration: 180 } }
                         source: {
                             home.app.desktop_art_revision
@@ -429,7 +451,8 @@ Item {
             width: card.width
             text: card.mix.subtitle || ""
             font.pixelSize: 12
-            wrapMode: Text.WordWrap
+            wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            clip: true
             maximumLineCount: 2
             elide: Text.ElideRight
             color: home.mutedText
