@@ -57,12 +57,17 @@ ToolButton {
         implicitHeight: control.icon.height
         opacity: control.enabled ? 1 : 0.38
 
+        // Sized to whole device pixels: at a fractional scale (130%) an
+        // icon whose size came to a fraction of a pixel was drawn from an
+        // image with an unfilled edge, showing as coloured noise.
         ControlsImpl.IconImage {
+            readonly property real ratio: Screen.devicePixelRatio > 0 ? Screen.devicePixelRatio : 1
+            readonly property real side: Math.round(control.icon.width * ratio) / ratio
             anchors.centerIn: parent
             visible: control.iconName.length > 0
-            width: control.icon.width
-            height: control.icon.height
-            sourceSize: Qt.size(control.icon.width, control.icon.height)
+            width: side
+            height: side
+            sourceSize: Qt.size(side, side)
             name: control.icon.name
             source: control.icon.name.length > 0 ? "" : control.icon.source
             color: control.icon.name.length > 0 ? control.palette.buttonText : "transparent"

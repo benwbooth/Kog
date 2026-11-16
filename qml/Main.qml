@@ -2867,8 +2867,8 @@ ApplicationWindow {
                             required property var modelData
                             width: 30
                             height: 30
-                            icon.width: 18
-                            icon.height: 18
+                            icon.width: 20
+                            icon.height: 20
                             iconName: modelData.icon
                             checkable: true
                             checked: root.playlistViewMode === modelData.mode
