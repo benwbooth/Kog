@@ -263,10 +263,19 @@ FocusScope {
         ? groups[openTile] : null
     property real gridScrollY: 0
     property int albumCursor: -1
+    // A mix's albums open with every song of them in the library, not just
+    // the one or two the mix picked.
+    property bool libraryAlbums: false
     function openAlbum(tile) {
         const group = groups[tile]
         if (!group || group.single)
             return
+        if (libraryAlbums && ApplicationWindow.window && ApplicationWindow.window.openLibraryAlbum) {
+            const separator = group.key.indexOf("\u0001")
+            ApplicationWindow.window.openLibraryAlbum(group.album,
+                separator >= 0 ? group.key.slice(separator + 1) : "")
+            return
+        }
         gridScrollY = grid.contentY
         grid.currentTile = tile
         openKey = groupKey(group)

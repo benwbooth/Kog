@@ -380,6 +380,7 @@ FocusScope {
             groupSource: () => editor.app.workspace_tab_album_groups(editor.activeKey,
                 JSON.stringify(editor.rows))
             groupScope: editor.activeKey
+            libraryAlbums: editor.activeKey.startsWith("mix:")
             rowLines: editor.rowLines
             flow: editor.shownMode === "flow"
             onPressed: (row, modifiers, button) => {
