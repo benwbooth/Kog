@@ -26,6 +26,9 @@ pub const DAY_MS: i64 = 86_400_000;
 /// Songs in a Daily Mix and in Discover Weekly.
 const DAILY_LENGTH: usize = 40;
 const WEEKLY_LENGTH: usize = 30;
+/// Songs shorter than this (jingles, sound effects, short cues) stay out
+/// of the mixes; a song of unknown length is let in.
+const MIN_SONG_MS: i64 = 45_000;
 const MAX_DAILY_MIXES: usize = 6;
 /// A song heard at least this long counts as heard.
 const HEARD_MS: i64 = 30_000;
@@ -377,6 +380,9 @@ impl Blend {
     }
 
     fn try_add(&mut self, song: &Song) -> bool {
+        if song.duration_ms > 0 && song.duration_ms < MIN_SONG_MS {
+            return false;
+        }
         let key = identity(&song.locator);
         if self.seen.contains(&key) {
             return false;
