@@ -42,6 +42,7 @@ mod session;
 mod table;
 mod workspace;
 mod home;
+mod frame_diff;
 use crate::columns::Columns;
 use crate::cover_preview::{self, COVER_HEIGHT, COVER_WIDTH, CoverPreview};
 use crate::remote::{
@@ -13843,6 +13844,7 @@ pub fn run() -> Result<(), String> {
     let mut last_size = (0, 0);
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     let mut last_frame = String::new();
+    let mut frames = frame_diff::FrameDiff::new();
     let mut escape_pending = None::<Instant>;
     let mut last_session_flush = Instant::now();
     loop {
@@ -13880,8 +13882,8 @@ pub fn run() -> Result<(), String> {
         let frame_interval = if ui.inspector.open { 33 } else if animate { 50 } else { 150 };
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(frame_interval) {
             let frame = ui.draw(size);
-            if frame != last_frame {
-                terminal.write(&frame)?;
+            if frame != last_frame || size != last_size {
+                terminal.write(&frames.render(&frame, size))?;
                 last_frame = frame;
             }
             last_size = size;
@@ -13905,6 +13907,12 @@ pub fn run() -> Result<(), String> {
         } else {
             escape_pending = None;
         }
+        // Handle every event that has arrived, then write once: a held arrow
+        // key queues several presses, and writing a frame for each one only
+        // makes the terminal repaint. Each event is still drawn, because the
+        // next one is handled against the layout that drawing settles
+        // (scroll offsets that keep the selection visible).
+        let mut pending_frame = None;
         while let Some(event) = parse_event(&mut input) {
             let passive_hover_motion = matches!(
                 &event,
@@ -13930,14 +13938,16 @@ pub fn run() -> Result<(), String> {
             if ui.exit_requested {
                 return ui.finish_session();
             }
-            if passive_hover_motion {
-                continue;
+            if !passive_hover_motion {
+                pending_frame = Some(ui.draw(size));
             }
-            let frame = ui.draw(size);
-            if frame != last_frame {
-                terminal.write(&frame)?;
+        }
+        if let Some(frame) = pending_frame {
+            if frame != last_frame || size != last_size {
+                terminal.write(&frames.render(&frame, size))?;
                 last_frame = frame;
             }
+            last_size = size;
             last_draw = Instant::now();
         }
     }
