@@ -6772,3 +6772,40 @@ button.primary:hover:not(:disabled) {
 .home-card-subtitle {
   overflow-wrap: anywhere;
 }
+
+/* An album from the whole library, over the pane. */
+main.playlist {
+  position: relative;
+}
+
+.library-album {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--base);
+}
+
+.library-album-rows {
+  overflow: visible;
+}
+
+.library-album-rows .track {
+  cursor: default;
+}
+
+/* Album names that open the album: the transport's line and a row's. */
+.album-link {
+  cursor: pointer;
+}
+
+.album-link:hover,
+.subtitle.album-link:hover .title-text,
+.mobile-now-subtitle.album-link:hover .title-text {
+  text-decoration: underline;
+}
+
+.transport .art {
+  cursor: pointer;
+}

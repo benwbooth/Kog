@@ -3482,6 +3482,98 @@ fn App() -> impl IntoView {
         }
     };
 
+    // An album from the whole library, opened from an album's name or cover
+    // wherever a song shows it: shown once its songs are found (a newer ask
+    // wins), until Back, Escape or Backspace.
+    let library_album = RwSignal::new(None::<serde_json::Value>);
+    let album_request = StoredValue::new(0_u64);
+    let open_library_album = move |album: String, album_artist: String| {
+        if album.trim().is_empty() {
+            return;
+        }
+        let ticket = album_request.get_value().wrapping_add(1);
+        album_request.set_value(ticket);
+        // While the library index has not reached the album yet: the songs
+        // of it in the list shown, so a click always opens it.
+        let nearby = all_rows.with_untracked(|rows| {
+            metadata.with_untracked(|cache| {
+                rows.iter()
+                    .filter_map(|(_, entry)| {
+                        let meta = cache.get(&meta_key(entry)).and_then(Option::as_ref)?;
+                        let same = meta.album.as_deref().is_some_and(|tag| tag.trim().eq_ignore_ascii_case(album.trim()))
+                            && meta.album_artist.as_deref().unwrap_or("").trim().eq_ignore_ascii_case(album_artist.trim());
+                        same.then(|| serde_json::json!({
+                            "entry": {
+                                "kind": entry.kind,
+                                "path": entry.path,
+                                "entry": entry.entry,
+                                "fragment": entry.fragment,
+                            },
+                            "title": meta.title.clone().unwrap_or_else(|| entry.name.clone()),
+                            "artist": meta.artist.clone().unwrap_or_default(),
+                            "album": meta.album.clone().unwrap_or_default(),
+                            "albumArtist": meta.album_artist.clone().unwrap_or_default(),
+                            "year": meta.year,
+                            "genre": meta.genre.clone().unwrap_or_default(),
+                            "durationMs": meta.duration.map(|seconds| (seconds * 1000.0).round() as i64).unwrap_or(0),
+                            "system": meta.codec.clone().unwrap_or_default(),
+                        }))
+                    })
+                    .collect::<Vec<_>>()
+            })
+        });
+        let fetch = get_json(format!(
+            "/api/discover/album?album={}&artist={}",
+            url_encode(&album),
+            url_encode(&album_artist)
+        ));
+        leptos::task::spawn_local(async move {
+            let Ok(mut found) = fetch.await else { return };
+            if album_request.get_value() != ticket {
+                return;
+            }
+            if found["songs"].as_array().is_none_or(|songs| songs.is_empty()) {
+                if nearby.is_empty() {
+                    return;
+                }
+                let length: i64 = nearby.iter().filter_map(|song| song["durationMs"].as_i64()).sum();
+                found["year"] = nearby.iter().find_map(|song| song["year"].as_u64()).into();
+                found["lengthMs"] = length.into();
+                if found["artist"].as_str().is_none_or(str::is_empty) {
+                    found["artist"] = nearby
+                        .iter()
+                        .find_map(|song| song["artist"].as_str().filter(|artist| !artist.is_empty()).map(str::to_owned))
+                        .unwrap_or_default()
+                        .into();
+                }
+                found["songs"] = nearby.into();
+            }
+            library_album.set(Some(found));
+        });
+    };
+    let close_library_album = move || {
+        album_request.set_value(album_request.get_value().wrapping_add(1));
+        library_album.set(None);
+    };
+    let library_album_keys = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+        if library_album.with_untracked(Option::is_none) || ev.ctrl_key() || ev.meta_key() || ev.alt_key() {
+            return;
+        }
+        let in_text = ev
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+            .is_some_and(|element| {
+                let tag = element.tag_name().to_ascii_lowercase();
+                tag == "input" || tag == "textarea" || tag == "select" || element.is_content_editable()
+            });
+        if !in_text && matches!(ev.key().as_str(), "Escape" | "Backspace") {
+            ev.prevent_default();
+            ev.stop_immediate_propagation();
+            close_library_album();
+        }
+    });
+    on_cleanup(move || library_album_keys.remove());
+
     // The tree box searches the whole music folder on the server (like the
     // desktop's tree search), not just the folders already loaded. Debounced:
     // a stale reply for an older query is dropped when the text has moved on.
@@ -7308,6 +7400,15 @@ fn App() -> impl IntoView {
                 .unwrap_or_else(|| "Ready to play".to_owned()),
         }
     };
+    // The playing song's album and album artist, to open its album page.
+    let current_album = move || {
+        current_entry()
+            .and_then(|entry| meta_for(&metadata.get_untracked(), &entry))
+            .and_then(|meta| {
+                let album = meta.album.clone().unwrap_or_default();
+                (!album.trim().is_empty()).then(|| (album, meta.album_artist.clone().unwrap_or_default()))
+            })
+    };
     // A phone player has very little room for a path. When tags are absent,
     // show the containing folder as context; the full location remains in
     // Track Details and the desktop subtitle.
@@ -8338,6 +8439,198 @@ fn App() -> impl IntoView {
                     </aside>
 
                     <main class="playlist" class:home-active=move || playlist_workspace.snapshot().active == "home">
+                        // An album from the whole library over the pane: a big
+                        // cover, "Album", the title, its details, a play button
+                        // and every song of it as rows.
+                        <Show when=move || library_album.with(Option::is_some) fallback=|| ()>
+                            {move || {
+                                let album = library_album.get_untracked().unwrap_or_default();
+                                let songs: Vec<(Entry, MetaRow)> = album["songs"]
+                                    .as_array()
+                                    .map(|songs| {
+                                        songs
+                                            .iter()
+                                            .map(|song| {
+                                                let text = |key: &str| song[key].as_str().map(str::to_owned).filter(|text| !text.is_empty());
+                                                let meta = MetaRow {
+                                                    title: text("title"),
+                                                    artist: text("artist"),
+                                                    album: text("album"),
+                                                    album_artist: text("albumArtist"),
+                                                    genre: text("genre"),
+                                                    year: song["year"].as_u64().map(|year| year as u32),
+                                                    duration: song["durationMs"].as_f64().filter(|ms| *ms > 0.0).map(|ms| ms / 1000.0),
+                                                    codec: text("system"),
+                                                    ..MetaRow::default()
+                                                };
+                                                (entry_from_json(&song["entry"]), meta)
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let entries: Vec<serde_json::Value> = album["songs"]
+                                    .as_array()
+                                    .map(|songs| songs.iter().map(|song| song["entry"].clone()).collect())
+                                    .unwrap_or_default();
+                                let keys: Vec<String> = songs.iter().map(|(entry, _)| meta_key(entry)).collect();
+                                // The playing song's place in the album, by what it is.
+                                let playing_row = Memo::new(move |_| {
+                                    let current = current_entry()?;
+                                    let key = meta_key(&current);
+                                    keys.iter().position(|row| *row == key)
+                                });
+                                let play_from = {
+                                    let entries = entries.clone();
+                                    move |start: usize| {
+                                        let mut entries = entries.clone();
+                                        if entries.is_empty() {
+                                            return;
+                                        }
+                                        let last = entries.len() - 1;
+                                        entries.rotate_left(start.min(last));
+                                        backend.send(SessionCommand::Expand {
+                                            scope: base(),
+                                            entries,
+                                            action: QueueAction::PlayNow,
+                                        });
+                                    }
+                                };
+                                let album_playing = move || playing.get() && !stopped.get() && playing_row.get().is_some();
+                                let cover = RwSignal::new(None::<String>);
+                                if let Some((entry, meta)) = songs.first() {
+                                    let tags = Memo::new({
+                                        let meta = meta.clone();
+                                        move |_| Some(meta.clone())
+                                    });
+                                    thumbs::load_for_row(base(), token.get_untracked(), entry, tags, cover, true);
+                                }
+                                let count = songs.len();
+                                let details = {
+                                    let parts = [
+                                        album["artist"].as_str().unwrap_or_default().to_owned(),
+                                        album["year"].as_u64().map(|year| year.to_string()).unwrap_or_default(),
+                                        if count == 1 { "1 song".to_owned() } else { format!("{count} songs") },
+                                    ];
+                                    let tile = albums::AlbumTile {
+                                        seconds: album["lengthMs"].as_f64().unwrap_or(0.0) / 1000.0,
+                                        ..albums::AlbumTile::default()
+                                    };
+                                    format!(
+                                        "{}, {}",
+                                        parts.into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("  ·  "),
+                                        tile.length_label()
+                                    )
+                                };
+                                let title = album["album"].as_str().unwrap_or_default().to_owned();
+                                let cursor = RwSignal::new(None::<usize>);
+                                let play_button = play_from.clone();
+                                view! {
+                                    <div class="library-album" role="dialog" aria-label=format!("Album {title}")>
+                                        <div class="album-page-head">
+                                            <button
+                                                class="album-back"
+                                                type="button"
+                                                title="Back (Esc)"
+                                                aria-label="Back"
+                                                inner_html=icons::GO_UP
+                                                on:click=move |_| close_library_album()
+                                            ></button>
+                                            <div class="album-page-hero">
+                                                <div class="album-page-cover" class:has-cover=move || cover.with(Option::is_some)>
+                                                    {move || cover.get().map(|src| view! {
+                                                        <img src=src alt="" draggable="false" on:error=move |_| cover.set(None)/>
+                                                    })}
+                                                </div>
+                                                <div class="album-page-info">
+                                                    <span class="album-page-kind">"Album"</span>
+                                                    <h2 class="album-page-title" title=title.clone()>{title.clone()}</h2>
+                                                    <span class="album-page-meta">{details}</span>
+                                                    <button
+                                                        class="album-page-play"
+                                                        type="button"
+                                                        aria-label=move || if album_playing() { "Pause" } else { "Play album" }
+                                                        inner_html=move || if album_playing() { PAUSE_GLYPH } else { PLAY_GLYPH }
+                                                        on:click=move |_| {
+                                                            if playing_row.get_untracked().is_some() && !stopped.get_untracked() {
+                                                                toggle_play();
+                                                            } else {
+                                                                play_button(0);
+                                                            }
+                                                        }
+                                                    ></button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="rows view-rows library-album-rows">
+                                            {songs
+                                                .into_iter()
+                                                .enumerate()
+                                                .map(|(row, (entry, meta))| {
+                                                    let row_cover = RwSignal::new(cover.get_untracked());
+                                                    let tags = Memo::new({
+                                                        let meta = meta.clone();
+                                                        move |_| Some(meta.clone())
+                                                    });
+                                                    thumbs::load_for_row(base(), token.get_untracked(), &entry, tags, row_cover, false);
+                                                    let lines = {
+                                                        let entry = entry.clone();
+                                                        let meta = meta.clone();
+                                                        move || row_fields.with(|fields| card_lines(fields, row, &entry, Some(&meta)))
+                                                    };
+                                                    let current = move || playing_row.get() == Some(row);
+                                                    let play = play_from.clone();
+                                                    let line = move |at: usize, class: &'static str| {
+                                                        let lines = lines.clone();
+                                                        let shown = lines.clone();
+                                                        view! {
+                                                            <span
+                                                                class=format!("row-card-line {class}")
+                                                                class:row-card-empty=move || shown()[at].is_empty()
+                                                            >{move || {
+                                                                let text = lines()[at].clone();
+                                                                if at == 3 { text.replace('/', "/\u{200B}") } else { text }
+                                                            }}</span>
+                                                        }
+                                                    };
+                                                    view! {
+                                                        <div
+                                                            class="track"
+                                                            class:alternate=row % 2 == 0
+                                                            class:current=current
+                                                            class:selected=move || cursor.get() == Some(row)
+                                                            on:click=move |_| cursor.set(Some(row))
+                                                            on:dblclick=move |_| play(row)
+                                                        >
+                                                            <span class="row-card">
+                                                                <span class="row-card-art" class:has-cover=move || row_cover.with(Option::is_some)>
+                                                                    {move || row_cover.get().map(|src| view! {
+                                                                        <img class="row-card-cover" src=src alt="" draggable="false" on:error=move |_| row_cover.set(None)/>
+                                                                    })}
+                                                                </span>
+                                                                <span class="row-art-mark">
+                                                                    <Show when=move || current() && !stopped.get() fallback=|| ()>
+                                                                        <span class="row-title-state">{move || if playing.get() { "▶" } else { "Ⅱ" }}</span>
+                                                                        <Show when=move || playing.get() fallback=|| ()>
+                                                                            <RowMeter levels=audio_levels pinned=false height=14.0/>
+                                                                        </Show>
+                                                                    </Show>
+                                                                </span>
+                                                                <span class="row-card-copy">
+                                                                    {line(0, "row-card-title")}
+                                                                    {line(1, "row-card-artist")}
+                                                                    {line(2, "row-card-detail")}
+                                                                    {line(3, "row-card-path")}
+                                                                </span>
+                                                            </span>
+                                                        </div>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </div>
+                                    </div>
+                                }
+                            }}
+                        </Show>
                         <Show when=move || !backend.persistence.warning.get().is_empty() || !persist.warning.get().is_empty()>
                             <div class="persistence-warning" role="alert">
                                 {move || {
@@ -9071,7 +9364,18 @@ fn App() -> impl IntoView {
                                                     // An album's tile opens its page.
                                                     if let Some(tile) = grid_tile(index).filter(|tile| plain && !tile.single()) {
                                                         select_row(index, false, false);
-                                                        open_album_page(tile.key);
+                                                        // A mix's album holds only the songs the mix
+                                                        // picked: open the whole album instead.
+                                                        if pane_key.get_untracked().starts_with("mix:") {
+                                                            let album_artist = tile
+                                                                .key
+                                                                .split_once('\u{1}')
+                                                                .map(|(_, artist)| artist.to_owned())
+                                                                .unwrap_or_default();
+                                                            open_library_album(tile.album.clone(), album_artist);
+                                                        } else {
+                                                            open_album_page(tile.key);
+                                                        }
                                                         return;
                                                     }
                                                     if touch_mode && plain {
@@ -9346,7 +9650,44 @@ fn App() -> impl IntoView {
                                                                 class:row-card-empty=move || empty(line).is_empty()
                                                                 class:row-card-count=move || line == 2 && grid_tile(index).is_some_and(|tile| !tile.single())
                                                             >
-                                                                {move || highlight_label(text(line), row_filter.get())}
+                                                                {move || {
+                                                                    // The album's name leading the details line
+                                                                    // opens the album, every song of it.
+                                                                    let full = text(line);
+                                                                    let (album, album_artist) = if line == 2
+                                                                        && shown_mode.get() == row_window::ViewMode::Rows
+                                                                        && row_fields.with(|fields| fields.iter().any(|field| field == "album"))
+                                                                    {
+                                                                        row_meta.with(|meta| {
+                                                                            meta.as_ref()
+                                                                                .map(|meta| (
+                                                                                    meta.album.clone().unwrap_or_default(),
+                                                                                    meta.album_artist.clone().unwrap_or_default(),
+                                                                                ))
+                                                                                .unwrap_or_default()
+                                                                        })
+                                                                    } else {
+                                                                        Default::default()
+                                                                    };
+                                                                    if album.trim().is_empty() || !full.starts_with(&album) {
+                                                                        return highlight_label(full, row_filter.get());
+                                                                    }
+                                                                    let rest = full[album.len()..].to_owned();
+                                                                    let name = album.clone();
+                                                                    view! {
+                                                                        <span
+                                                                            class="album-link"
+                                                                            title="Open the album"
+                                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                                ev.stop_propagation();
+                                                                                open_library_album(name.clone(), album_artist.clone());
+                                                                            }
+                                                                            on:dblclick=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                                                        >{highlight_label(album, row_filter.get())}</span>
+                                                                        {highlight_label(rest, row_filter.get())}
+                                                                    }
+                                                                    .into_any()
+                                                                }}
                                                             </span>
                                                         }
                                                     };
@@ -9830,13 +10171,25 @@ fn App() -> impl IntoView {
                     >
                         <div
                             class="art"
-                            title="Show album cover enlarged"
-                            on:click=move |_| {
+                            title="Open the album"
+                            on:click=move |ev: web_sys::MouseEvent| {
                                 if touch_mode && transport_compact.get_untracked() {
                                     set_transport_compact.set(false);
+                                } else if let Some((album, album_artist)) = current_album() {
+                                    // The playing song's album, every song of it.
+                                    ev.stop_propagation();
+                                    if touch_mode {
+                                        set_transport_compact.set(true);
+                                    }
+                                    open_library_album(album, album_artist);
                                 } else {
                                     set_cover_open.set(true);
                                 }
+                            }
+                            on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                // Right click still shows the cover enlarged.
+                                ev.prevent_default();
+                                set_cover_open.set(true);
                             }
                         >
                             <img
@@ -9871,8 +10224,32 @@ fn App() -> impl IntoView {
                                 // stops at the waveform instead of passing over it.
                                 <span class="title-clip"><span class="title-text">{move || now_title()}</span></span>
                             </div>
-                            <div class="subtitle"><span class="title-text">{move || now_subtitle()}</span></div>
-                            <div class="mobile-now-subtitle"><span class="title-text">{move || now_mobile_subtitle()}</span></div>
+                            // The artist · album line opens the album.
+                            <div
+                                class="subtitle"
+                                class:album-link=move || { metadata.track(); current_album().is_some() }
+                                on:click=move |ev: web_sys::MouseEvent| {
+                                    if let Some((album, album_artist)) = current_album() {
+                                        ev.stop_propagation();
+                                        open_library_album(album, album_artist);
+                                    }
+                                }
+                            ><span class="title-text">{move || now_subtitle()}</span></div>
+                            <div
+                                class="mobile-now-subtitle"
+                                class:album-link=move || { metadata.track(); current_album().is_some() }
+                                on:click=move |ev: web_sys::MouseEvent| {
+                                    if !(touch_mode && transport_compact.get_untracked())
+                                        && let Some((album, album_artist)) = current_album()
+                                    {
+                                        ev.stop_propagation();
+                                        if touch_mode {
+                                            set_transport_compact.set(true);
+                                        }
+                                        open_library_album(album, album_artist);
+                                    }
+                                }
+                            ><span class="title-text">{move || now_mobile_subtitle()}</span></div>
                         </div>
                     </div>
 
