@@ -26,9 +26,21 @@ pub const DAY_MS: i64 = 86_400_000;
 /// Songs in a Daily Mix and in Discover Weekly.
 const DAILY_LENGTH: usize = 40;
 const WEEKLY_LENGTH: usize = 30;
-/// Songs shorter than this (jingles, sound effects, short cues) stay out
-/// of the mixes; a song of unknown length is let in.
-const MIN_SONG_MS: i64 = 45_000;
+/// Mixes are filled to a running time, not a number of songs: a mix's
+/// length in songs is worth this much time each (40 songs: 100 minutes),
+/// so jingles and short cues can be in a mix without making it short.
+const TIME_PER_SONG_MS: i64 = 150_000;
+/// A song whose length is unknown counts as this long.
+const UNKNOWN_SONG_MS: i64 = 150_000;
+/// Songs shorter than this are cues: at most one in four songs of a mix.
+const SHORT_SONG_MS: i64 = 45_000;
+/// However short the songs, a mix holds no more than this many.
+const MAX_MIX_SONGS: usize = 120;
+
+/// How long a song counts for when filling a mix.
+fn counted_ms(song: &Song) -> i64 {
+    if song.duration_ms > 0 { song.duration_ms } else { UNKNOWN_SONG_MS }
+}
 const MAX_DAILY_MIXES: usize = 6;
 /// A song heard at least this long counts as heard.
 const HEARD_MS: i64 = 30_000;
@@ -361,6 +373,9 @@ struct Blend {
     credits: HashMap<String, usize>,
     album_cap: usize,
     credit_cap: usize,
+    /// The songs' running time so far, and how many of them are cues.
+    total_ms: i64,
+    short: usize,
 }
 
 impl Blend {
@@ -372,6 +387,8 @@ impl Blend {
             credits: HashMap::new(),
             album_cap,
             credit_cap,
+            total_ms: 0,
+            short: 0,
         }
     }
 
@@ -380,7 +397,8 @@ impl Blend {
     }
 
     fn try_add(&mut self, song: &Song) -> bool {
-        if song.duration_ms > 0 && song.duration_ms < MIN_SONG_MS {
+        let short = song.duration_ms > 0 && song.duration_ms < SHORT_SONG_MS;
+        if short && (self.short + 1) * 4 > self.songs.len() + 1 {
             return false;
         }
         let key = identity(&song.locator);
@@ -404,6 +422,10 @@ impl Blend {
         if !credit.is_empty() {
             *self.credits.entry(credit).or_insert(0) += 1;
         }
+        self.total_ms += counted_ms(song);
+        if short {
+            self.short += 1;
+        }
         self.songs.push(song.clone());
         true
     }
@@ -415,7 +437,7 @@ impl Blend {
         loop {
             let mut progressed = false;
             for (index, source) in sources.iter_mut().enumerate() {
-                if self.songs.len() >= length {
+                if self.total_ms >= length as i64 * TIME_PER_SONG_MS || self.songs.len() >= MAX_MIX_SONGS {
                     return;
                 }
                 while cursors[index] < source.len() {
@@ -781,7 +803,9 @@ pub fn make_home(inputs: &Inputs<'_>) -> Home {
             fresh.exclude(&song.locator);
         }
         fresh.round_robin(sources, DAILY_LENGTH * 2 / 3);
-        // One familiar song, then two new ones.
+        // One familiar song, then two new ones, to the mix's running time.
+        let target_ms = DAILY_LENGTH as i64 * TIME_PER_SONG_MS;
+        let mut total_ms = 0;
         let mut songs = Vec::new();
         let mut familiar_iter = familiar.into_iter();
         let mut fresh_iter = fresh.songs.into_iter();
@@ -792,21 +816,22 @@ pub fn make_home(inputs: &Inputs<'_>) -> Home {
             if familiar_taken < familiar_share
                 && let Some(song) = familiar_iter.next()
             {
+                total_ms += counted_ms(&song);
                 songs.push(song);
                 familiar_taken += 1;
                 progressed = true;
             }
             for _ in 0..2 {
                 if let Some(song) = fresh_iter.next() {
+                    total_ms += counted_ms(&song);
                     songs.push(song);
                     progressed = true;
                 }
             }
-            if !progressed || songs.len() >= DAILY_LENGTH {
+            if !progressed || total_ms >= target_ms || songs.len() >= MAX_MIX_SONGS {
                 break;
             }
         }
-        songs.truncate(DAILY_LENGTH);
         if songs.len() < 8 {
             continue;
         }
