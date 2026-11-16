@@ -45,6 +45,11 @@ ApplicationWindow {
     function setPlaylistViewMode(mode) {
         mainWindowSettings.playlistViewMode = mode
     }
+    // Opens an album's page with every song of it in the library (see
+    // LibraryAlbumPage), from wherever a song shows its album.
+    function openLibraryAlbum(album, albumArtist) {
+        libraryAlbumPage.open(album, albumArtist)
+    }
     // The cover grid and cover flow both show album tiles.
     readonly property bool playlistTileMode: playlistViewMode === "grid" || playlistViewMode === "flow"
     // Rows view rows are as tall as their wrapped text; this is only an
@@ -2993,9 +2998,14 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         Accessible.name: qsTr("Show album cover enlarged")
                         Accessible.role: Accessible.Button
+                        // A click opens the playing song's album; the menu
+                        // still enlarges or chooses the cover.
                         onClicked: mouse => {
                             if (mouse.button === Qt.RightButton)
                                 coverArtMenu.popup()
+                            else if (appController.current_album.length > 0)
+                                root.openLibraryAlbum(appController.current_album,
+                                    appController.current_album_artist())
                             else if (appController.current_artwork_path.length > 0)
                                 coverArtDialog.open()
                             else
@@ -3106,7 +3116,18 @@ ApplicationWindow {
                         visible: !root.compactToolbar
                         text: root.footer.trackSubtitle
                         font.pixelSize: 12
+                        font.underline: subtitlePointer.containsMouse && appController.current_album.length > 0
                         color: root.mutedText
+                        // Opens the playing song's album.
+                        MouseArea {
+                            id: subtitlePointer
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: appController.current_album.length > 0
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.openLibraryAlbum(appController.current_album,
+                                appController.current_album_artist())
+                        }
                     }
                 }
             }
@@ -4326,6 +4347,17 @@ ApplicationWindow {
                     }
                     GradientStop { position: 1; color: "transparent" }
                 }
+            }
+            // An album from the whole library, opened from an album's name or
+            // cover anywhere a song shows it; over the playlists until closed.
+            LibraryAlbumPage {
+                id: libraryAlbumPage
+                z: 30
+                anchors.fill: parent
+                app: appController
+                theme: root.themePalette
+                searchModel: fileTreeModel
+                rowLines: root.playlistRowLines
             }
             Rectangle {
                 z: 10

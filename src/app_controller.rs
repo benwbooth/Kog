@@ -242,6 +242,14 @@ pub mod qobject {
         #[qinvokable]
         fn play_mix(self: Pin<&mut AppController>, id: QString, start: i32);
         #[qinvokable]
+        fn request_album(self: &AppController, album: QString, album_artist: QString) -> i32;
+        #[qinvokable]
+        fn album_result(self: &AppController, ticket: i32) -> QString;
+        #[qinvokable]
+        fn play_entries(self: Pin<&mut AppController>, entries: QString, start: i32);
+        #[qinvokable]
+        fn current_album_artist(self: &AppController) -> QString;
+        #[qinvokable]
         fn mix_cover(
             self: &AppController,
             kind: QString,
@@ -2973,6 +2981,13 @@ fn visible_source_index(model: &qobject::AppController, index: i32) -> Option<us
         .copied()
 }
 
+/// Albums looked up for album pages, by ticket, until taken.
+static ALBUM_TICKETS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+fn album_results() -> &'static std::sync::Mutex<HashMap<i32, String>> {
+    static RESULTS: std::sync::OnceLock<std::sync::Mutex<HashMap<i32, String>>> = std::sync::OnceLock::new();
+    RESULTS.get_or_init(Default::default)
+}
+
 /// Background downloads of remote rows for offline play.
 struct OfflineRun {
     worker: std::thread::JoinHandle<Vec<String>>,
@@ -4413,6 +4428,56 @@ impl qobject::AppController {
             &artist.to_string(),
             &album.to_string(),
         ))
+    }
+
+    /// Look up an album in the whole library index (every song with its
+    /// album and album artist, or the album alone without one) off the UI
+    /// thread: a ticket for [`Self::album_result`].
+    pub fn request_album(&self, album: QString, album_artist: QString) -> i32 {
+        let ticket = ALBUM_TICKETS.fetch_add(1, AtomicOrdering::Relaxed);
+        let (album, album_artist) = (album.to_string(), album_artist.to_string());
+        let _ = std::thread::Builder::new().name("kog-album".into()).spawn(move || {
+            let json = kog_server::discover::album_json(&album, &album_artist).to_string();
+            album_results().lock().unwrap_or_else(|error| error.into_inner()).insert(ticket, json);
+        });
+        ticket
+    }
+
+    /// The album asked for with `ticket`, as JSON (see
+    /// `kog_server::discover::album_json`), once found; empty until then.
+    pub fn album_result(&self, ticket: i32) -> QString {
+        album_results()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&ticket)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    /// Play songs (a JSON list of queue entries) now, from the one at `start`.
+    pub fn play_entries(mut self: Pin<&mut Self>, entries: QString, start: i32) {
+        let Ok(mut entries) = serde_json::from_str::<Vec<serde_json::Value>>(&entries.to_string()) else {
+            return;
+        };
+        if entries.is_empty() {
+            return;
+        }
+        let start = usize::try_from(start).unwrap_or(0).min(entries.len() - 1);
+        entries.rotate_left(start);
+        self.as_mut().session_command(SessionCommand::Expand {
+            scope: "local".into(),
+            entries,
+            action: QueueAction::PlayNow,
+        });
+    }
+
+    /// The playing song's album artist, to find its album in the library.
+    pub fn current_album_artist(&self) -> QString {
+        usize::try_from(self.rust().current_index)
+            .ok()
+            .and_then(|index| self.rust().tracks.get(index))
+            .map(|track| qstring(&track.album_artist))
+            .unwrap_or_default()
     }
 
     /// Play a Home mix now, from its song at `start`.

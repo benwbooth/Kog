@@ -1108,9 +1108,109 @@ async fn clear_history_route() -> Response {
     }
 }
 
+/// An album from the whole library index: every song tagged with its album
+/// and album artist (or, for songs without an album artist, the album tag
+/// alone), as the album grid groups them; ordered as they sit on disk. Opens
+/// the index, so it runs off the UI thread.
+pub fn album_songs(album: &str, album_artist: &str) -> Vec<Song> {
+    let album = album.trim();
+    if album.is_empty() {
+        return Vec::new();
+    }
+    let Ok(store) = Store::open() else {
+        return Vec::new();
+    };
+    let album_artist = album_artist.trim();
+    let mut songs: Vec<Song> = store
+        .songs_by_album(album, 5000)
+        .into_iter()
+        .filter(|song| song.album_artist.trim().eq_ignore_ascii_case(album_artist))
+        .collect();
+    let order = |song: &Song| {
+        let subsong = song
+            .fragment
+            .as_deref()
+            .and_then(|fragment| fragment.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u64>().ok())
+            .unwrap_or(0);
+        (song.path.to_lowercase(), song.entry.to_lowercase(), subsong)
+    };
+    songs.sort_by(|a, b| {
+        let (a_path, a_entry, a_sub) = order(a);
+        let (b_path, b_entry, b_sub) = order(b);
+        kog_audio::playback_order::sort::natural_compare(&a_path, &b_path)
+            .then_with(|| kog_audio::playback_order::sort::natural_compare(&a_entry, &b_entry))
+            .then(a_sub.cmp(&b_sub))
+    });
+    songs.dedup_by(|a, b| a.locator == b.locator);
+    songs
+}
+
+/// The album as JSON for an album page: its name, artist, year, length and
+/// songs (each its queue entry and tags).
+pub fn album_json(album: &str, album_artist: &str) -> serde_json::Value {
+    let songs = album_songs(album, album_artist);
+    let artist = if album_artist.trim().is_empty() {
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for song in &songs {
+            let name = song.artist.trim();
+            if name.is_empty() {
+                continue;
+            }
+            match counts.iter_mut().find(|(seen, _)| seen.eq_ignore_ascii_case(name)) {
+                Some((_, count)) => *count += 1,
+                None => counts.push((name.to_owned(), 1)),
+            }
+        }
+        match counts.iter().max_by_key(|(_, count)| *count) {
+            Some((name, count)) if count * 2 >= songs.len() => name.clone(),
+            Some(_) => "Various Artists".to_owned(),
+            None => String::new(),
+        }
+    } else {
+        album_artist.trim().to_owned()
+    };
+    let year = songs.iter().find_map(|song| song.year);
+    let length_ms: i64 = songs.iter().map(|song| song.duration_ms).sum();
+    serde_json::json!({
+        "album": songs.first().map(|song| song.album.clone()).unwrap_or_else(|| album.to_owned()),
+        "artist": artist,
+        "albumArtist": album_artist.trim(),
+        "year": year,
+        "lengthMs": length_ms,
+        "songs": songs.iter().map(|song| serde_json::json!({
+            "entry": crate::api::entry_json(song.stored_entry()),
+            "title": song.title,
+            "artist": song.artist,
+            "album": song.album,
+            "albumArtist": song.album_artist,
+            "year": song.year,
+            "genre": song.genre,
+            "durationMs": song.duration_ms,
+            "system": song.system,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct AlbumQuery {
+    album: String,
+    #[serde(default)]
+    artist: String,
+}
+
+/// `GET /api/discover/album?album=…&artist=…` — an album from the whole
+/// library (see [`album_json`]).
+async fn album_route(Query(query): Query<AlbumQuery>) -> Response {
+    match tokio::task::spawn_blocking(move || album_json(&query.album, &query.artist)).await {
+        Ok(album) => axum::Json(album).into_response(),
+        Err(error) => crate::routes::bad_request(&error.to_string()),
+    }
+}
+
 pub fn router() -> axum::Router<crate::routes::AppState> {
     axum::Router::new()
         .route("/api/discover", get(home_route))
+        .route("/api/discover/album", get(album_route))
         .route("/api/discover/refresh", post(refresh_route))
         .route("/api/discover/mix", get(mix_route))
         .route("/api/history", post(history_route).delete(clear_history_route))

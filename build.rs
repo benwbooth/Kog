@@ -67,6 +67,7 @@ fn main() {
         "qml/PlaylistRow.qml",
         "qml/PlaylistCardRow.qml",
         "qml/PlaylistCoverGrid.qml",
+        "qml/LibraryAlbumPage.qml",
         "qml/PlaylistSortBar.qml",
         "qml/Preferences.qml",
         "qml/TagEditor.qml",

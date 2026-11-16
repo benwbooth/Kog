@@ -361,6 +361,11 @@ Item {
         }
     }
 
+    TextMetrics {
+        id: albumMetrics
+        font: detailLabel.font
+    }
+
     // The full text of a line, only when the line cuts it off (lines wrap,
     // so only while a search highlight is laid out).
     function lineTip(x, y) {
@@ -389,6 +394,25 @@ Item {
         property bool suppressNextClick: false
         property real hoverX: -1
         property real hoverY: -1
+        // The album's name at the start of the details line opens the album
+        // (every song of it in the library).
+        function albumHit(x, y) {
+            const album = root.shows("album") ? root.value("album") : ""
+            if (album.length === 0 || !detailLabel.visible || !ApplicationWindow.window
+                    || !ApplicationWindow.window.openLibraryAlbum)
+                return false
+            const point = detailLabel.mapFromItem(root, x, y)
+            if (point.x < 0 || point.y < 0 || point.x >= detailLabel.width || point.y >= detailLabel.height)
+                return false
+            // The album leads the line: within its width on the first line,
+            // or the whole first line when it wraps.
+            albumMetrics.text = album
+            const lineHeight = albumMetrics.height
+            if (albumMetrics.advanceWidth >= detailLabel.width)
+                return point.y < lineHeight * Math.ceil(albumMetrics.advanceWidth / detailLabel.width)
+            return point.y < lineHeight && point.x < albumMetrics.advanceWidth
+        }
+        readonly property bool overAlbum: hoverX >= 0 && albumHit(hoverX, hoverY)
         readonly property bool overStar: hoverX >= 0
             && hoverX >= trailing.x + star.x - 6
             && hoverX <= trailing.x + star.x + star.width + 6
@@ -411,7 +435,7 @@ Item {
         hoverEnabled: true
         preventStealing: true
         scrollGestureEnabled: false
-        cursorShape: overStar ? Qt.PointingHandCursor : Qt.ArrowCursor
+        cursorShape: overStar || overAlbum ? Qt.PointingHandCursor : Qt.ArrowCursor
         onEntered: root.hovered = true
         onExited: {
             root.hovered = false
@@ -453,6 +477,11 @@ Item {
             }
             if (mouse.button === Qt.LeftButton && starHit(mouse.x)) {
                 root.app.toggle_stars(String(root.rowIndex))
+                return
+            }
+            if (mouse.button === Qt.LeftButton && mouse.modifiers === Qt.NoModifier
+                    && albumHit(mouse.x, mouse.y)) {
+                ApplicationWindow.window.openLibraryAlbum(root.value("album"), root.value("albumartist"))
                 return
             }
             root.pressed(root.rowIndex, mouse.modifiers, mouse.button)
