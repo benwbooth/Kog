@@ -15,6 +15,12 @@
 //! The server's worker (the app's own, or the docker one sharing the cover
 //! cache) keeps downloading covers in the background, so when the cover
 //! cache changes, rows that found none look again.
+//!
+//! A song with no cover on disk is searched for as the transport would (a
+//! game's box art, then the music services) by a few searchers of their
+//! own, newest asks first, and the cover is filed under the album's shared
+//! entry so every view of the album shows it. Until that search ends the
+//! song has no answer, so no row shows "no cover" for a cover on its way.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -32,6 +38,18 @@ const IDLE: Duration = Duration::from_secs(30);
 const TILES_CHECK: Duration = Duration::from_secs(3);
 /// Answers remembered, before starting over.
 const REMEMBERED: usize = 16384;
+/// Network searches running at once, and waiting at most.
+const SEARCHERS: usize = 2;
+const SEARCHES_QUEUED: usize = 64;
+
+/// A search for a song's cover on the network, for its album.
+struct Search {
+    /// The album's shared cover key, as the server keys it.
+    album_key: String,
+    file: PathBuf,
+    artist: String,
+    album: String,
+}
 
 struct Ask {
     /// The song and the image's side, as [`State::songs`] keys them.
@@ -72,6 +90,13 @@ struct State {
     /// Moves when everything is forgotten, so an answer looked up before
     /// (perhaps the old cover) is dropped.
     generation: u64,
+    /// Network searches waiting, and the albums being searched for
+    /// (waiting or running): their songs have no answer meanwhile.
+    searches: VecDeque<Search>,
+    searching: HashSet<String>,
+    searchers: usize,
+    /// Downloading covers is turned off in the preferences.
+    searches_off: bool,
 }
 
 struct Shared {
@@ -158,10 +183,44 @@ fn work(shared: Arc<Shared>) {
             &ask.album,
             ask.side,
         );
+        // Nothing on disk: search the network as the transport would,
+        // unless the last search just came up empty.
+        let wanted = (icon.is_none()
+            && kog_server::desktop_art::may_search(&shared.cover_cache, &ask.file, &ask.artist, &ask.album))
+        .then(|| kog_server::desktop_art::album_key(&ask.file, &ask.album));
         let provisional = icon.as_ref().is_some_and(|icon| icon.provisional);
         let url = icon.map(|icon| file_url(&icon.path)).unwrap_or_default();
         let mut state = shared.lock();
         if state.generation != ask.generation {
+            continue;
+        }
+        if let Some(album_key) = wanted.filter(|_| !state.searches_off) {
+            // No answer until the search ends: the row asks again then.
+            state.queued.remove(&ask.song);
+            if state.searching.insert(album_key.clone()) {
+                state.searches.push_front(Search {
+                    album_key,
+                    file: ask.file.clone(),
+                    artist: ask.artist.clone(),
+                    album: ask.album.clone(),
+                });
+                while state.searches.len() > SEARCHES_QUEUED {
+                    if let Some(old) = state.searches.pop_back() {
+                        state.searching.remove(&old.album_key);
+                    }
+                }
+                if state.searchers < SEARCHERS {
+                    state.searchers += 1;
+                    let searcher = shared.clone();
+                    if std::thread::Builder::new()
+                        .name("kog-cover-search".into())
+                        .spawn(move || search(searcher))
+                        .is_err()
+                    {
+                        state.searchers -= 1;
+                    }
+                }
+            }
             continue;
         }
         if state.songs.len() >= REMEMBERED {
@@ -179,6 +238,28 @@ fn work(shared: Arc<Shared>) {
         }
         state.songs.insert(ask.song.clone(), Answer { url, provisional, stale: false });
         state.queued.remove(&ask.song);
+    }
+}
+
+/// Search the network for covers, newest asks first. A cover found is
+/// filed under its album's shared entry; either way the revision moves and
+/// the rows on screen ask again.
+fn search(shared: Arc<Shared>) {
+    loop {
+        let next = {
+            let mut state = shared.lock();
+            match state.searches.pop_front() {
+                Some(next) => next,
+                None => {
+                    state.searchers -= 1;
+                    return;
+                }
+            }
+        };
+        kog_server::desktop_art::search_cover(&shared.cover_cache, &next.file, &next.artist, &next.album);
+        let mut state = shared.lock();
+        state.searching.remove(&next.album_key);
+        state.changed = true;
     }
 }
 
@@ -310,6 +391,20 @@ impl DesktopArt {
             self.shared.wake.notify_one();
         }
         showing
+    }
+
+    /// Whether songs without a cover on disk are searched for on the
+    /// network (the preference to download covers).
+    pub fn set_searches(&self, on: bool) {
+        let mut state = self.shared.lock();
+        state.searches_off = !on;
+        if !on {
+            let waiting: Vec<String> = state.searches.drain(..).map(|search| search.album_key).collect();
+            for key in waiting {
+                state.searching.remove(&key);
+            }
+            state.changed = true;
+        }
     }
 
     /// The URL of the playlist's icon (0: Favorites), or empty for one

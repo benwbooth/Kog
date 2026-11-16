@@ -106,6 +106,51 @@ fn song_cover(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Opt
     Some((bytes, false))
 }
 
+/// Whether a song with no cover on disk may still have one found on the
+/// network: it has an album to search for, its downloads are allowed, and
+/// the last search for it did not just come up empty.
+pub fn may_search(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> bool {
+    let lookup_album = cover_art::fallback_album(file, album);
+    if lookup_album.is_empty() {
+        return false;
+    }
+    let (key, may_download) = cover_art::track_cache_key(artist, album, &lookup_album, file);
+    may_download && !cover_art::recent_miss(cover_cache, &key)
+}
+
+/// The full search the transport runs for a song with no cover on disk
+/// (a game's box art, then the music services), filed under the song's key
+/// and its album's shared one, so every view of the album shows it. Blocks
+/// on the network: workers only. Whether a cover was found.
+pub fn search_cover(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> bool {
+    let lookup_album = cover_art::fallback_album(file, album);
+    if lookup_album.is_empty() {
+        return false;
+    }
+    let (key, may_download) = cover_art::track_cache_key(artist, album, &lookup_album, file);
+    if !may_download || cover_art::recent_miss(cover_cache, &key) {
+        return false;
+    }
+    let shared = album_key(file, album);
+    let found = cover_art::download_cover(
+        file,
+        artist,
+        &lookup_album,
+        crate::cover_network::fetch,
+        || false,
+        |bytes| {
+            if !album.trim().is_empty() {
+                let _ = cover_art::store_cache(cover_cache, &shared, &bytes);
+            }
+            cover_art::store_cache(cover_cache, &key, &bytes)
+        },
+    );
+    if found.is_none() {
+        cover_art::record_miss(cover_cache, &key);
+    }
+    found.is_some()
+}
+
 /// The cover a game's song had under its cache keys before "v2" (the
 /// album's, then the song's own), to show while the new lookup runs.
 pub fn previous_cover(cover_cache: &Path, file: &Path, artist: &str, album: &str) -> Option<PathBuf> {
