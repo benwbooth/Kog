@@ -4436,8 +4436,54 @@ impl qobject::AppController {
     pub fn request_album(&self, album: QString, album_artist: QString) -> i32 {
         let ticket = ALBUM_TICKETS.fetch_add(1, AtomicOrdering::Relaxed);
         let (album, album_artist) = (album.to_string(), album_artist.to_string());
+        // While the library index has not reached the album yet: its songs
+        // in the queue and the open playlist tab, so a click always opens it.
+        let same = |track: &Track| {
+            track.album.trim().eq_ignore_ascii_case(album.trim())
+                && track.album_artist.trim().eq_ignore_ascii_case(album_artist.trim())
+        };
+        let rust = self.rust();
+        let mut nearby: Vec<serde_json::Value> = Vec::new();
+        let mut seen = HashSet::new();
+        let tracks = rust
+            .tracks
+            .iter()
+            .chain(rust.workspace_tracks.rows.iter().filter_map(|row| row.track.as_ref()));
+        for track in tracks.filter(|track| same(track)) {
+            let Some(entry) = kog_audio::playback_order::stored_entry_for_track(track) else {
+                continue;
+            };
+            if !seen.insert(crate::workspace_tracks::entry_key(&entry)) {
+                continue;
+            }
+            nearby.push(serde_json::json!({
+                "entry": kog_server::api::entry_json(entry),
+                "title": track.title,
+                "artist": track.artist,
+                "album": track.album,
+                "albumArtist": track.album_artist,
+                "year": track.year,
+                "genre": track.genre,
+                "durationMs": track.duration.map(|length| length.as_millis() as i64).unwrap_or(0),
+                "system": track.codec,
+            }));
+        }
         let _ = std::thread::Builder::new().name("kog-album".into()).spawn(move || {
-            let json = kog_server::discover::album_json(&album, &album_artist).to_string();
+            let mut found = kog_server::discover::album_json(&album, &album_artist);
+            if found["songs"].as_array().is_none_or(|songs| songs.is_empty()) && !nearby.is_empty() {
+                let length: i64 = nearby.iter().filter_map(|song| song["durationMs"].as_i64()).sum();
+                found["year"] = nearby.iter().find_map(|song| song["year"].as_u64()).into();
+                found["lengthMs"] = length.into();
+                if found["artist"].as_str().is_none_or(str::is_empty) {
+                    found["artist"] = nearby
+                        .iter()
+                        .find_map(|song| song["artist"].as_str().filter(|artist| !artist.is_empty()).map(str::to_owned))
+                        .unwrap_or_default()
+                        .into();
+                }
+                found["songs"] = nearby.into();
+            }
+            let json = found.to_string();
             album_results().lock().unwrap_or_else(|error| error.into_inner()).insert(ticket, json);
         });
         ticket
