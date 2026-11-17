@@ -16,6 +16,7 @@
 #include <QtGui/QStyleHints>
 #include <QtGui/QWindow>
 #include <QtQml/qqml.h>
+#include <QtQuick/QQuickWindow>
 
 #include <array>
 
@@ -234,6 +235,11 @@ std::unique_ptr<QApplication> kogApplicationNew()
     }
 #endif
     auto application = std::make_unique<QApplication>(argumentCount, arguments.data());
+    // Every Qt Quick text item draws with the font engine's own hinted
+    // glyphs, as native Qt widgets do. Qt's default draws scaled outlines that
+    // look soft at fractional display scales such as 130%. tests/text_rendering.rs keeps
+    // this line and the QML from drifting back.
+    QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
     kogRegisterModernSkinTypes();
     qmlRegisterSingletonType<KogAppearance>("org.kog.native", 1, 0, "KogAppearance",
                                             [](QQmlEngine *, QJSEngine *) -> QObject * {

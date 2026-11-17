@@ -285,7 +285,7 @@ FocusScope {
                 Label {
                     width: parent.width
                     text: page.album ? page.album.album : ""
-                    font.pixelSize: Math.max(22, Math.min(44, head.width / 18))
+                    font.pixelSize: Math.round(Math.max(22, Math.min(44, head.width / 18)))
                     font.bold: true
                     color: page.theme.text
                     elide: Text.ElideRight

@@ -461,7 +461,7 @@ ApplicationWindow {
                 font.weight: Font.DemiBold
                 font.pixelSize: 10
                 font.capitalization: Font.AllUppercase
-                font.letterSpacing: 1.1
+                font.letterSpacing: 1
                 color: root.palette.placeholderText
                 elide: Text.ElideRight
             }
@@ -2660,6 +2660,10 @@ ApplicationWindow {
 
     header: ToolBar {
         id: mainToolbar
+        // A thousandth of a pixel down: at a 130% display scale, text whose
+        // top lands exactly on a half device pixel sets round letters (e, o)
+        // a pixel low. build.rs checks this stays.
+        transform: Translate { y: 0.001 }
 
         implicitHeight: 48
         padding: 5
@@ -2920,6 +2924,10 @@ ApplicationWindow {
 
     footer: Rectangle {
         implicitHeight: 92
+        // A thousandth of a pixel down: at a 130% display scale, text whose
+        // top lands exactly on a half device pixel sets round letters (e, o)
+        // a pixel low. build.rs checks this stays.
+        transform: Translate { y: 0.001 }
         color: root.toolbarSurface
         border.width: 0
 
@@ -3414,6 +3422,10 @@ ApplicationWindow {
 
     PaneSplitView {
         anchors.fill: parent
+        // A thousandth of a pixel down: at a 130% display scale, text whose
+        // top lands exactly on a half device pixel sets round letters (e, o)
+        // a pixel low. build.rs checks this stays.
+        transform: Translate { y: 0.001 }
         orientation: Qt.Horizontal
 
         Rectangle {

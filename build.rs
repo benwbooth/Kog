@@ -27,6 +27,7 @@ fn main() {
     // commit anyway, and the build *time* shown in the UI comes from the
     // binary's own mtime, so it stays correct.
     emit_build_revision();
+    check_text_rendering();
     let qml_files = [
         "qml/CogButton.qml",
         "qml/AudioVisualization.qml",
@@ -312,4 +313,90 @@ fn git(args: &[&str]) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Text has to look like native text at fractional display scales (Ben's is
+/// 130%), and it has regressed more than once, so the build refuses QML or
+/// startup code that drifts from the rules below:
+///
+/// - the app sets `QQuickWindow::NativeTextRendering` before any window, so
+///   every Text, Label and TextField draws hinted native glyphs;
+/// - no QML item asks for another render type;
+/// - font sizes and spacing are whole pixels: no literal fractional
+///   `pixelSize`, `letterSpacing` or `wordSpacing`, and no `pointSize`
+///   (10pt is 13.33px);
+/// - the main window keeps its 0.001px nudge off exact half pixels.
+fn check_text_rendering() {
+    const STARTUP: &str = "native/kog_desktop_integration.cpp";
+    println!("cargo:rerun-if-changed={STARTUP}");
+    let mut problems = Vec::new();
+    let startup = std::fs::read_to_string(STARTUP).unwrap_or_default();
+    if !startup.contains("QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering)") {
+        problems.push(format!(
+            "{STARTUP}: kogApplicationNew must call \
+             QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering)"
+        ));
+    }
+    let main_qml = std::fs::read_to_string("qml/Main.qml").unwrap_or_default();
+    if main_qml.matches("transform: Translate { y: 0.001 }").count() < 3 {
+        problems.push(
+            "qml/Main.qml: the header, footer and pane split view each need \
+             `transform: Translate { y: 0.001 }`"
+                .to_owned(),
+        );
+    }
+    let mut files = Vec::new();
+    collect_qml(std::path::Path::new("qml"), &mut files);
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (number, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            for statement in code.split(';') {
+                let Some((name, value)) = statement.split_once(':') else {
+                    continue;
+                };
+                let name = name.trim();
+                let value = value.trim().trim_end_matches('}').trim();
+                let property = name.rsplit('.').next().unwrap_or(name);
+                let fractional_literal = value.parse::<f64>().is_ok_and(|v| v.fract() != 0.0);
+                let problem = match property {
+                    "renderType" if !value.ends_with(".NativeRendering") => {
+                        Some("uses a render type other than NativeRendering")
+                    }
+                    "pointSize" | "pointSizeF" if name.contains("font") => {
+                        Some("sets a point size; use a whole font.pixelSize")
+                    }
+                    "pixelSize" | "letterSpacing" | "wordSpacing" if fractional_literal => {
+                        Some("sets a fractional size or spacing; use whole pixels")
+                    }
+                    _ => None,
+                };
+                if let Some(problem) = problem {
+                    problems.push(format!("{}:{}: {problem}", path.display(), number + 1));
+                }
+            }
+        }
+    }
+    if !problems.is_empty() {
+        panic!(
+            "Kog's text must render natively in whole pixels (see check_text_rendering in build.rs):\n{}",
+            problems.join("\n")
+        );
+    }
+}
+
+fn collect_qml(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_qml(&path, files);
+        } else if path.extension().is_some_and(|ext| ext == "qml") {
+            files.push(path);
+        }
+    }
 }
