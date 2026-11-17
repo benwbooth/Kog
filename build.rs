@@ -326,7 +326,8 @@ fn git(args: &[&str]) -> Option<String> {
 /// - font sizes and spacing are whole pixels: no literal fractional
 ///   `pixelSize`, `letterSpacing` or `wordSpacing`, and no `pointSize`
 ///   (10pt is 13.33px);
-/// - the main window keeps its 0.001px nudge off exact half pixels.
+/// - the main window keeps its 0.001px nudge (right and down) off exact half
+///   pixels.
 fn check_text_rendering() {
     const STARTUP: &str = "native/kog_desktop_integration.cpp";
     println!("cargo:rerun-if-changed={STARTUP}");
@@ -346,10 +347,10 @@ fn check_text_rendering() {
         }
     }
     let main_qml = std::fs::read_to_string("qml/Main.qml").unwrap_or_default();
-    if main_qml.matches("transform: Translate { y: 0.001 }").count() < 3 {
+    if main_qml.matches("transform: Translate { x: 0.001; y: 0.001 }").count() < 3 {
         problems.push(
             "qml/Main.qml: the header, footer and pane split view each need \
-             `transform: Translate { y: 0.001 }`"
+             `transform: Translate { x: 0.001; y: 0.001 }`"
                 .to_owned(),
         );
     }

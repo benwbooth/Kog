@@ -2660,10 +2660,11 @@ ApplicationWindow {
 
     header: ToolBar {
         id: mainToolbar
-        // A thousandth of a pixel down: at a 130% display scale, text whose
-        // top lands exactly on a half device pixel sets round letters (e, o)
-        // a pixel low. build.rs checks this stays.
-        transform: Translate { y: 0.001 }
+        // A thousandth of a pixel right and down: at a 130% display scale,
+        // text that starts exactly on a half device pixel has each glyph
+        // rounded on its own, so round letters drop a pixel and digits jam
+        // together (a 7 against its 9). build.rs checks this stays.
+        transform: Translate { x: 0.001; y: 0.001 }
 
         implicitHeight: 48
         padding: 5
@@ -2924,10 +2925,11 @@ ApplicationWindow {
 
     footer: Rectangle {
         implicitHeight: 92
-        // A thousandth of a pixel down: at a 130% display scale, text whose
-        // top lands exactly on a half device pixel sets round letters (e, o)
-        // a pixel low. build.rs checks this stays.
-        transform: Translate { y: 0.001 }
+        // A thousandth of a pixel right and down: at a 130% display scale,
+        // text that starts exactly on a half device pixel has each glyph
+        // rounded on its own, so round letters drop a pixel and digits jam
+        // together (a 7 against its 9). build.rs checks this stays.
+        transform: Translate { x: 0.001; y: 0.001 }
         color: root.toolbarSurface
         border.width: 0
 
@@ -3422,10 +3424,11 @@ ApplicationWindow {
 
     PaneSplitView {
         anchors.fill: parent
-        // A thousandth of a pixel down: at a 130% display scale, text whose
-        // top lands exactly on a half device pixel sets round letters (e, o)
-        // a pixel low. build.rs checks this stays.
-        transform: Translate { y: 0.001 }
+        // A thousandth of a pixel right and down: at a 130% display scale,
+        // text that starts exactly on a half device pixel has each glyph
+        // rounded on its own, so round letters drop a pixel and digits jam
+        // together (a 7 against its 9). build.rs checks this stays.
+        transform: Translate { x: 0.001; y: 0.001 }
         orientation: Qt.Horizontal
 
         Rectangle {
