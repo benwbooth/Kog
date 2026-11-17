@@ -320,7 +320,8 @@ fn git(args: &[&str]) -> Option<String> {
 /// startup code that drifts from the rules below:
 ///
 /// - the app sets `QQuickWindow::NativeTextRendering` before any window, so
-///   every Text, Label and TextField draws hinted native glyphs;
+///   every Text, Label and TextField draws hinted native glyphs, and leaves
+///   hinting and anti-aliasing to the desktop's font settings;
 /// - no QML item asks for another render type;
 /// - font sizes and spacing are whole pixels: no literal fractional
 ///   `pixelSize`, `letterSpacing` or `wordSpacing`, and no `pointSize`
@@ -336,6 +337,13 @@ fn check_text_rendering() {
             "{STARTUP}: kogApplicationNew must call \
              QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering)"
         ));
+    }
+    for overridden in ["setHintingPreference", "NoSubpixelAntialias", "NoAntialias"] {
+        if startup.contains(overridden) {
+            problems.push(format!(
+                "{STARTUP}: {overridden} overrides the desktop's own font settings"
+            ));
+        }
     }
     let main_qml = std::fs::read_to_string("qml/Main.qml").unwrap_or_default();
     if main_qml.matches("transform: Translate { y: 0.001 }").count() < 3 {
