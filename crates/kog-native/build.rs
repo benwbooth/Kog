@@ -836,6 +836,11 @@ fn build_sc68() {
     cc::Build::new()
         .std("gnu99")
         .define("HAVE_CONFIG_H", None)
+        // sc68's asserts are debug traps for hardware it doesn't emulate (an
+        // MFP timer in event-count or pulse-width mode), and the code after
+        // each one already carries on. Left in, one such tune aborts the
+        // whole process, as upstream's release builds never do.
+        .define("NDEBUG", None)
         .include("../../native/sc68-kog")
         .include(root)
         .include(root.join("file68"))
