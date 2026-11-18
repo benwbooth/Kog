@@ -32,8 +32,17 @@ const WEEKLY_LENGTH: usize = 30;
 const TIME_PER_SONG_MS: i64 = 150_000;
 /// A song whose length is unknown counts as this long.
 const UNKNOWN_SONG_MS: i64 = 150_000;
-/// Songs shorter than this are cues: at most one in four songs of a mix.
+/// Songs shorter than this are cues: at most one in eight songs of a mix.
 const SHORT_SONG_MS: i64 = 45_000;
+/// Songs shorter than this (stings, sound effects, a few-second jingle)
+/// are never in a mix.
+const MIN_SONG_MS: i64 = 15_000;
+
+/// Whether a song is long enough to be in a mix at all (a song of unknown
+/// length is).
+fn long_enough(song: &Song) -> bool {
+    song.duration_ms <= 0 || song.duration_ms >= MIN_SONG_MS
+}
 /// However short the songs, a mix holds no more than this many.
 const MAX_MIX_SONGS: usize = 120;
 
@@ -397,8 +406,11 @@ impl Blend {
     }
 
     fn try_add(&mut self, song: &Song) -> bool {
+        if !long_enough(song) {
+            return false;
+        }
         let short = song.duration_ms > 0 && song.duration_ms < SHORT_SONG_MS;
-        if short && (self.short + 1) * 4 > self.songs.len() + 1 {
+        if short && (self.short + 1) * 8 > self.songs.len() + 1 {
             return false;
         }
         let key = identity(&song.locator);
@@ -794,7 +806,8 @@ pub fn make_home(inputs: &Inputs<'_>) -> Home {
     for (index, group) in groups.iter().enumerate() {
         let familiar: Vec<Song> = group
             .iter()
-            .filter(|song| !taste.recent.contains(&identity(&song.locator)))
+            .filter(|song| !taste.recent.contains(&identity(&song.locator))
+                && (song.duration_ms <= 0 || song.duration_ms >= SHORT_SONG_MS))
             .cloned()
             .collect();
         let sources = new_songs_for(store, group, &sample, &taste, &mut rng);
