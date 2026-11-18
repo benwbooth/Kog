@@ -603,18 +603,37 @@ fn play_from_listen(listen: &Listen) -> Option<PlayRecord> {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 struct EmbedWorker {
     backend: embedding::Backend,
-    model: Option<embedding::Embedder>,
+    /// Where the helper said the model runs, or why it does not.
+    runs_on: String,
     error: String,
-    tried: Option<Instant>,
     leased: bool,
     noted: i64,
+    /// The helper runs the model; it is ended after each batch so the GPU
+    /// goes idle between batches.
     helper: helper::Helper,
+    batch: usize,
+    rest_until: Option<Instant>,
+    /// The model would not start here: leave the job to another Kog until
+    /// then.
+    unavailable_until: Option<Instant>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl EmbedWorker {
-    /// How long a failed model load waits before trying again.
+    /// Songs heard in one go before the model is put away.
+    const BATCH: usize = 60;
+    /// The pause between batches: the GPU is idle for this long.
+    const REST: Duration = Duration::from_secs(120);
+    /// When the model failed to start, how long before it is tried again.
     const RETRY: Duration = Duration::from_secs(15 * 60);
+    /// A batch waits while something else keeps the GPU busier than this.
+    const BUSY_PERCENT: u32 = 30;
+
+    /// The sound model's helper: ONNX Runtime and a GPU runtime alone
+    /// take a few gigabytes.
+    fn helper() -> helper::Helper {
+        helper::Helper::with_limit(8_000_000)
+    }
 
     fn new(store: &Store) -> Self {
         // Vectors from another model mean nothing to this one.
@@ -622,59 +641,77 @@ impl EmbedWorker {
             store.clear_embeddings();
             let _ = store.set_meta("embedding_model", embedding::MODEL_ID);
         }
-        Self { backend: embedding::Backend::current(), model: None, error: String::new(), tried: None, leased: false, noted: 0, helper: helper::Helper::default() }
+        Self {
+            backend: embedding::Backend::current(),
+            runs_on: String::new(),
+            error: String::new(),
+            leased: false,
+            noted: 0,
+            helper: Self::helper(),
+            batch: 0,
+            rest_until: None,
+            unavailable_until: None,
+        }
     }
 
     fn state(&self) -> String {
         if self.backend == embedding::Backend::Off {
             return "is turned off".into();
         }
-        match &self.model {
-            Some(model) => format!("runs on {}", model.providers.join(", ")),
-            None if !self.error.is_empty() => format!("is not running: {}", self.error),
-            None => String::new(),
+        if !self.error.is_empty() {
+            return format!("is not running: {}", self.error);
         }
+        if self.runs_on.is_empty() { String::new() } else { format!("runs on {}", self.runs_on) }
     }
 
-    /// Follow the preference, load the model when needed, and take or keep
-    /// the embedding lease while it is loaded.
+    /// Follow the preference, and take or keep the embedding lease.
     fn renew(&mut self, store: &Store, owner: &str) {
         let backend = embedding::Backend::current();
         if backend != self.backend {
-            // ONNX Runtime keeps its first environment; a new session on it
-            // picks the new providers.
             self.backend = backend;
-            self.model = None;
+            self.helper = Self::helper();
             self.error.clear();
-            self.tried = None;
+            self.runs_on.clear();
+            self.rest_until = None;
+            self.unavailable_until = None;
         }
-        if backend == embedding::Backend::Off {
+        if self.unavailable_until.is_some_and(|until| Instant::now() < until) {
             self.leased = false;
             return;
         }
-        if self.model.is_none() && self.tried.is_none_or(|at| at.elapsed() >= Self::RETRY) {
-            self.tried = Some(Instant::now());
-            match embedding::Embedder::load(backend) {
-                Ok(model) => {
-                    eprintln!("kog: the sound model runs on {}", model.providers.join(", "));
-                    self.model = Some(model);
-                    self.error.clear();
-                }
-                Err(error) => {
-                    eprintln!("kog: sound embeddings are unavailable: {error}");
-                    self.error = error;
-                }
-            }
+        if backend == embedding::Backend::Off {
+            self.helper = Self::helper();
+            self.leased = false;
+            return;
         }
-        self.leased = self.model.is_some() && store.take_named_lease("embed_lease", owner, LEASE_TTL);
+        self.leased = store.take_named_lease("embed_lease", owner, LEASE_TTL);
     }
 
-    /// Embed one song. Returns whether there was one to embed.
+    /// The busiest AMD GPU's load, from the kernel (0 where it says nothing).
+    fn gpu_busy() -> u32 {
+        let Ok(cards) = std::fs::read_dir("/sys/class/drm") else { return 0 };
+        cards
+            .filter_map(Result::ok)
+            .filter_map(|card| std::fs::read_to_string(card.path().join("device/gpu_busy_percent")).ok())
+            .filter_map(|value| value.trim().parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Embed one song. Returns whether it did.
     fn step(&mut self, discover: &Discover, store: &mut Store, _crawler: &Crawler) -> bool {
         if !self.leased {
             return false;
         }
-        let Some(model) = self.model.as_mut() else { return false };
+        if self.rest_until.is_some_and(|until| Instant::now() < until) {
+            return false;
+        }
+        // A new batch starts only while the GPU is otherwise quiet (the
+        // helper is not running between batches, so this is someone else).
+        if self.batch == 0 && Self::gpu_busy() > Self::BUSY_PERCENT {
+            self.rest_until = Some(Instant::now() + Duration::from_secs(60));
+            return false;
+        }
         let first = {
             let mut inner = lock(&discover.inner);
             let mut found = None;
@@ -694,20 +731,48 @@ impl EmbedWorker {
             })?
         });
         let Some(song) = song else {
+            self.helper = Self::helper();
+            self.batch = 0;
             store.release_named_lease("embed_lease", &discover.owner);
             self.leased = false;
             return false;
         };
         note_activity(store, "embed", &mut self.noted, &format!("Listening to {}", song_label(&song)));
-        let clip = self.helper.clip(&song.stored_entry(), ANALYSIS_TIMEOUT);
-        let vector = clip.and_then(|clip| match model.embed_clip(&clip) {
-            Ok(vector) => Some(vector),
-            Err(error) => {
-                eprintln!("kog: embedding {}: {error}", song.locator);
-                None
+        match self.helper.embed(&song.stored_entry(), self.backend, ANALYSIS_TIMEOUT) {
+            Ok((vector, runs_on)) => {
+                if !runs_on.is_empty() && runs_on != self.runs_on {
+                    eprintln!("kog: the sound model runs on {runs_on}");
+                    self.runs_on = runs_on;
+                }
+                self.error.clear();
+                let _ = store.set_embedding(song.id, vector.as_deref());
             }
-        });
-        let _ = store.set_embedding(song.id, vector.as_deref());
+            Err(helper::EmbedError::Unavailable(error)) => {
+                // The model itself would not start: no song is marked, and
+                // it is tried again much later.
+                if error != self.error {
+                    eprintln!("kog: sound embeddings are unavailable: {error}");
+                }
+                self.error = error;
+                self.helper = Self::helper();
+                self.batch = 0;
+                self.unavailable_until = Some(Instant::now() + Self::RETRY);
+                store.release_named_lease("embed_lease", &discover.owner);
+                self.leased = false;
+                return false;
+            }
+            Err(helper::EmbedError::Song(error)) => {
+                eprintln!("kog: embedding {}: {error}", song.locator);
+                let _ = store.set_embedding(song.id, None);
+            }
+        }
+        self.batch += 1;
+        if self.batch >= Self::BATCH {
+            // Put the model away (its process ends) and let the GPU rest.
+            self.helper = Self::helper();
+            self.batch = 0;
+            self.rest_until = Some(Instant::now() + Self::REST);
+        }
         true
     }
 }

@@ -58,6 +58,8 @@ enum Request {
     Read { unit: PathBuf, added_at: i64 },
     Measure { entry: Locator },
     Clip { entry: Locator },
+    /// Hear a song with the sound model, loaded in this helper on first use.
+    Embed { entry: Locator, backend: String },
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -71,6 +73,27 @@ struct Response {
     clip: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    /// For an embedding: where the model runs, and whether the error is the
+    /// model's (it would not start) rather than the song's.
+    #[serde(default)]
+    runs_on: Option<String>,
+    #[serde(default)]
+    model_error: bool,
+}
+
+/// Why a song got no embedding.
+pub enum EmbedError {
+    /// The sound model could not start here.
+    Unavailable(String),
+    /// This song could not be heard.
+    Song(String),
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+thread_local! {
+    /// The helper's sound model, loaded on the first embedding job.
+    static MODEL: std::cell::RefCell<Option<Result<super::embedding::Embedder, String>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Run as the helper when the program was started as one; returns only
@@ -129,6 +152,37 @@ fn handle(decoders: &DecoderRegistry, settings: &DecoderSettings, request: Reque
                 Err(error) => Response { error: Some(error), ..Response::default() },
             }
         }
+        Request::Embed { entry, backend } => {
+            let entry = StoredEntry::from(entry);
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                MODEL.with(|model| {
+                    let mut model = model.borrow_mut();
+                    if model.is_none() {
+                        let backend = super::embedding::Backend::from_setting(Some(&backend));
+                        *model = Some(super::embedding::Embedder::load(backend));
+                    }
+                    match model.as_mut().expect("loaded above") {
+                        Err(error) => Response { error: Some(error.clone()), model_error: true, ..Response::default() },
+                        Ok(embedder) => {
+                            let runs_on = Some(embedder.providers.join(", "));
+                            match source_of(decoders, &entry)
+                                .and_then(|source| super::embedding::read_clip(source, settings))
+                                .and_then(|clip| embedder.embed_clip(&clip))
+                            {
+                                Ok(vector) => Response { features: Some(vector), runs_on, ..Response::default() },
+                                Err(error) => Response { error: Some(error), runs_on, ..Response::default() },
+                            }
+                        }
+                    }
+                })
+            }
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            {
+                let _ = (entry, backend);
+                Response { error: Some("no sound model here".into()), model_error: true, ..Response::default() }
+            }
+        }
         Request::Clip { entry } => {
             let entry = StoredEntry::from(entry);
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -157,6 +211,9 @@ fn handle(decoders: &DecoderRegistry, settings: &DecoderSettings, request: Reque
 #[derive(Default)]
 pub struct Helper {
     running: Option<Running>,
+    /// Replace the helper past this much memory (kB); the default limit
+    /// when none.
+    limit_kb: Option<u64>,
 }
 
 struct Running {
@@ -189,6 +246,12 @@ fn resident_kb(pid: u32) -> u64 {
 }
 
 impl Helper {
+    /// A helper allowed more memory before it is replaced (the sound
+    /// model's runtime is big on its own).
+    pub fn with_limit(limit_kb: u64) -> Self {
+        Self { running: None, limit_kb: Some(limit_kb) }
+    }
+
     fn start() -> Result<Running, String> {
         let program = std::env::current_exe().map_err(|error| error.to_string())?;
         let mut child = Command::new(program)
@@ -228,11 +291,14 @@ impl Helper {
             .map_err(|error| error.to_string())
             .and_then(|()| running.lines.recv_timeout(timeout).map_err(|_| "the helper took too long".to_owned()));
         running.jobs += 1;
-        let worn = running.jobs >= JOBS_PER_HELPER || resident_kb(running.child.id()) > MAX_HELPER_KB;
+        let worn = running.jobs >= JOBS_PER_HELPER || resident_kb(running.child.id()) > self.limit_kb.unwrap_or(MAX_HELPER_KB);
         if answer.is_err() || worn {
             self.running = None;
         }
         let response: Response = serde_json::from_str(&answer?).map_err(|error| error.to_string())?;
+        if response.runs_on.is_some() || response.model_error {
+            return Ok(response);
+        }
         match response.error {
             Some(error) if response.songs.is_empty() && response.features.is_none() && response.clip.is_none() => {
                 Err(error)
@@ -254,6 +320,29 @@ impl Helper {
 
     pub fn measure(&mut self, entry: &StoredEntry, timeout: Duration) -> Option<Vec<f32>> {
         self.call(&Request::Measure { entry: Locator::from(entry) }, timeout).ok()?.features
+    }
+
+    /// Hear one song with the sound model (in the helper): its embedding
+    /// and where the model runs.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    pub fn embed(
+        &mut self,
+        entry: &StoredEntry,
+        backend: super::embedding::Backend,
+        timeout: Duration,
+    ) -> Result<(Option<Vec<f32>>, String), EmbedError> {
+        let request = Request::Embed { entry: Locator::from(entry), backend: backend.setting_value().to_owned() };
+        // The first job loads the model, which can take a while.
+        let response = self.call(&request, timeout * 2).map_err(EmbedError::Song)?;
+        if response.model_error {
+            return Err(EmbedError::Unavailable(response.error.unwrap_or_default()));
+        }
+        let runs_on = response.runs_on.unwrap_or_default();
+        match (response.features, response.error) {
+            (Some(vector), _) => Ok((Some(vector), runs_on)),
+            (None, Some(error)) => Err(EmbedError::Song(error)),
+            (None, None) => Ok((None, runs_on)),
+        }
     }
 
     pub fn clip(&mut self, entry: &StoredEntry, timeout: Duration) -> Option<Vec<f32>> {
