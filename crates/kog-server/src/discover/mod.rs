@@ -612,6 +612,8 @@ struct EmbedWorker {
     /// goes idle between batches.
     helper: helper::Helper,
     batch: usize,
+    /// When the running batch started.
+    batch_started: Option<Instant>,
     rest_until: Option<Instant>,
     /// The model would not start here: leave the job to another Kog until
     /// then.
@@ -621,9 +623,11 @@ struct EmbedWorker {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl EmbedWorker {
     /// Songs heard in one go before the model is put away.
-    const BATCH: usize = 60;
-    /// The pause between batches: the GPU is idle for this long.
-    const REST: Duration = Duration::from_secs(120);
+    const BATCH: usize = 20;
+    /// While the model is loaded the GPU reads fully busy (the ROCm runtime
+    /// holds it), so a batch is followed by a rest this many times as long
+    /// as the batch took: the GPU is busy at most a tenth of the time.
+    const REST_FACTOR: u32 = 9;
     /// When the model failed to start, how long before it is tried again.
     const RETRY: Duration = Duration::from_secs(15 * 60);
     /// A batch waits while something else keeps the GPU busier than this.
@@ -649,6 +653,7 @@ impl EmbedWorker {
             noted: 0,
             helper: Self::helper(),
             batch: 0,
+            batch_started: None,
             rest_until: None,
             unavailable_until: None,
         }
@@ -700,10 +705,13 @@ impl EmbedWorker {
 
     /// Embed one song. Returns whether it did.
     fn step(&mut self, discover: &Discover, store: &mut Store, _crawler: &Crawler) -> bool {
-        if !self.leased {
-            return false;
-        }
-        if self.rest_until.is_some_and(|until| Instant::now() < until) {
+        if !self.leased || self.rest_until.is_some_and(|until| Instant::now() < until) {
+            // Not embedding now: the model's process must not stay open, or
+            // the GPU reads busy all the same.
+            if self.batch > 0 {
+                self.helper = Self::helper();
+                self.batch = 0;
+            }
             return false;
         }
         // A new batch starts only while the GPU is otherwise quiet (the
@@ -738,6 +746,9 @@ impl EmbedWorker {
             return false;
         };
         note_activity(store, "embed", &mut self.noted, &format!("Listening to {}", song_label(&song)));
+        if self.batch == 0 {
+            self.batch_started = Some(Instant::now());
+        }
         match self.helper.embed(&song.stored_entry(), self.backend, ANALYSIS_TIMEOUT) {
             Ok((vector, runs_on)) => {
                 if !runs_on.is_empty() && runs_on != self.runs_on {
@@ -768,10 +779,12 @@ impl EmbedWorker {
         }
         self.batch += 1;
         if self.batch >= Self::BATCH {
-            // Put the model away (its process ends) and let the GPU rest.
+            // Put the model away (its process ends, closing the GPU) and
+            // rest nine times as long as the batch took.
             self.helper = Self::helper();
             self.batch = 0;
-            self.rest_until = Some(Instant::now() + Self::REST);
+            let took = self.batch_started.take().map_or(Duration::from_secs(30), |at| at.elapsed());
+            self.rest_until = Some(Instant::now() + took * Self::REST_FACTOR);
         }
         true
     }
