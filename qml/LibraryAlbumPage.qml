@@ -85,18 +85,33 @@ FocusScope {
             ? Math.floor(minutes / 60) + ":" + String(minutes % 60).padStart(2, "0") + ":" + rest
             : minutes + ":" + rest
     }
-    function source(song) {
+    // What the player calls the song while it plays (`current_file`): a
+    // song of a multi-song file (NSF, NSFE, GBS...) as `#N`, counting from
+    // one, after the file, so each of its songs is told apart.
+    function fileOf(song) {
         const entry = song.entry || {}
         if (entry.kind === "archive")
             return entry.path + " :: " + entry.entry
         return String(entry.path || "")
+    }
+    function source(song) {
+        const fragment = String((song.entry || {}).fragment || "")
+        return /^[0-9]+$/.test(fragment)
+            ? fileOf(song) + "#" + (Number(fragment) + 1)
+            : fileOf(song)
     }
     function playingRow() {
         const playing = String(page.app.current_file || "")
         if (playing.length === 0 || page.app.playback_state === "stopped")
             return -1
         for (let row = 0; row < songs.length; ++row) {
-            if (playing === source(songs[row]) || playing.startsWith(source(songs[row]) + "#"))
+            if (playing === source(songs[row]))
+                return row
+        }
+        // A whole file listed once plays as its first song, `#1`.
+        for (let row = 0; row < songs.length; ++row) {
+            if (source(songs[row]) === fileOf(songs[row])
+                    && playing.startsWith(fileOf(songs[row]) + "#"))
                 return row
         }
         return -1
