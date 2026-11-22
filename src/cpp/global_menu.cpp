@@ -138,6 +138,8 @@ void GlobalMenuBar::fill(QPlatformMenu *menu, const QVariantList &items) {
                 if (sub) {
                     sub->setTag(reinterpret_cast<quintptr>(sub));
                     sub->setText(item.value("text").toString());
+                    const QString subIcon = item.value("icon").toString();
+                    if (!subIcon.isEmpty()) sub->setIcon(QIcon::fromTheme(subIcon));
                     sub->setEnabled(true);
                     sub->setVisible(true);
                     fill(sub, item.value("items").toList());
@@ -173,6 +175,10 @@ void GlobalMenuBar::rebuild() {
         if (!menu) continue;
         menu->setTag(reinterpret_cast<quintptr>(menu));
         menu->setText(menuDef.value("title").toString());
+        // The menu's own icon (shown by menu bars that draw title icons,
+        // e.g. hearth): the dbusmenu export puts it on the title's item.
+        const QString icon = menuDef.value("icon").toString();
+        if (!icon.isEmpty()) menu->setIcon(QIcon::fromTheme(icon));
         menu->setEnabled(true);
         menu->setVisible(true);
         fill(menu, menuDef.value("items").toList());

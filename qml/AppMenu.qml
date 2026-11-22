@@ -58,6 +58,10 @@ Menu {
     rightPadding: menuPad
     overlap: 3
     cascade: true
+    // Kept inside the window: a menu taller than the room left scrolls
+    // instead of running off the edge (without margins a Popup.Item menu
+    // isn't constrained at all).
+    margins: Math.round(4 * pt)
     delegate: glassItem
     background: GlassBack {}
     enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120; easing.type: Easing.OutCubic } }
@@ -286,6 +290,7 @@ Menu {
             rightPadding: root.menuPad
             overlap: 3
             cascade: true
+            margins: Math.round(4 * root.pt)
             delegate: glassItem
             background: GlassBack {}
             enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120; easing.type: Easing.OutCubic } }

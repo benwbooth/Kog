@@ -23,7 +23,7 @@ class QPlatformMenuItem;
 // a global menu (no com.canonical.AppMenu.Registrar) the theme returns no
 // menu bar and `available` stays false.
 //
-// `model` is a list of menus: { title, items: [ { id, text, enabled,
+// `model` is a list of menus: { title, icon, items: [ { id, text, enabled,
 // separator, shortcut, checkable, checked, icon, items (a submenu) } ] }.
 // `shortcut` is a QKeySequence string ("Ctrl+Shift+N"): the menu bar only
 // shows it, the app keeps handling the key itself. `icon` is a theme icon
