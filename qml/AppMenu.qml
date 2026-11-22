@@ -328,7 +328,9 @@ Menu {
                     name: mi.iconName
                     x: 2
                     width: 16; height: 16
-                    sourceSize: Qt.size(32, 32)
+                    // The shown size: IconImage multiplies by the window's scale itself
+                    // (32 drew ~43 px shrunk to 21 at 4/3, and thin strokes went missing).
+                    sourceSize: Qt.size(16, 16)
                     anchors.verticalCenter: parent.verticalCenter
                     opacity: mi.enabled ? 1 : 0.4
                 }
