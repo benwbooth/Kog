@@ -9,4 +9,4 @@ Terminal=false
 Categories=AudioVideo;Audio;Player;
 StartupNotify=true
 StartupWMClass=Kog
-MimeType=audio/mpeg;audio/flac;audio/x-wav;audio/ogg;audio/x-midi;audio/x-mod;application/x-mpegURL;application/vnd.apple.mpegurl;
+MimeType=audio/mpeg;audio/mp4;audio/x-m4a;audio/aac;audio/flac;audio/x-flac;audio/ogg;audio/x-vorbis+ogg;audio/x-opus+ogg;audio/opus;audio/x-flac+ogg;audio/x-speex+ogg;audio/webm;audio/x-matroska;audio/wav;audio/x-wav;audio/x-aiff;audio/x-ms-wma;audio/x-ape;audio/x-wavpack;audio/x-tta;audio/x-musepack;audio/x-ac3;audio/vnd.dts;audio/amr;audio/basic;audio/midi;audio/x-midi;audio/x-mod;audio/x-xm;audio/x-it;audio/x-s3m;audio/x-stm;audio/x-669;audio/x-psf;audio/x-minipsf;audio/x-nsf;audio/x-spc;audio/x-vgm;audio/prs.sid;audio/x-mpegurl;audio/x-scpls;application/x-mpegURL;application/vnd.apple.mpegurl;
