@@ -2088,6 +2088,7 @@ ApplicationWindow {
         id: removeSelectedAction
         objectName: "editRemoveAction"
         text: qsTr("Remove Selected")
+        icon.name: "edit-delete"
         shortcut: StandardKey.Delete
         enabled: root.playlistWorkspace.active === "queue" ? root.selectedRows.length > 0 : !!root.playlistWorkspace.actions.remove
         onTriggered: {
@@ -2100,6 +2101,7 @@ ApplicationWindow {
         id: selectAllAction
         objectName: "editSelectAllAction"
         text: qsTr("Select All")
+        icon.name: "edit-select-all"
         shortcut: StandardKey.SelectAll
         enabled: root.playlistWorkspace.active === "queue" ? appController.playlist_count > 0 : !!root.playlistWorkspace.actions.select_all
         onTriggered: {
@@ -2132,7 +2134,7 @@ ApplicationWindow {
     Action {
         id: importPlaylistsAction
         text: qsTr("Import Playlists…")
-        icon.name: "document-open"
+        icon.name: "document-import"
         onTriggered: appController.import_playlists()
     }
 
@@ -2433,6 +2435,7 @@ ApplicationWindow {
         id: editClearSelection
         objectName: "editClearSelection"
         text: qsTr("Clear Selection")
+        icon.name: "edit-select-none"
         enabled: !!root.playlistWorkspace.actions.clear_selection
         onTriggered: appController.workspace_command(JSON.stringify({op:"selection", command:{op:"clear"}}))
     }
@@ -2479,11 +2482,11 @@ ApplicationWindow {
         onTriggered: root.sidebarVisible = checked
     }
     Action { id: infoInspectorAction; text: qsTr("Show Info Inspector"); icon.name: "dialog-information"; shortcut: "Ctrl+I"; onTriggered: infoInspector.show() }
-    Action { id: equalizerAction; text: qsTr("Show Equalizer"); icon.name: "audio-equalizer"; shortcut: "Ctrl+E"; onTriggered: equalizerWindow.visible ? equalizerWindow.hide() : equalizerWindow.show() }
+    Action { id: equalizerAction; text: qsTr("Show Equalizer"); icon.name: "view-media-equalizer"; shortcut: "Ctrl+E"; onTriggered: equalizerWindow.visible ? equalizerWindow.hide() : equalizerWindow.show() }
     Action { id: lyricsAction; text: qsTr("Show Lyrics"); icon.name: "view-media-lyrics"; shortcut: "Ctrl+Shift+L"; onTriggered: lyricsWindow.show() }
     Action { id: miniPlayerAction; text: qsTr("Show Mini Player"); icon.name: "view-restore"; shortcut: "Ctrl+Shift+M"; onTriggered: root.showMiniPlayer() }
     Action { id: visualizerAction; text: qsTr("Visualizer"); icon.name: "view-media-visualization"; shortcut: "Ctrl+Shift+V"; onTriggered: visualizerWindow.visible ? visualizerWindow.hide() : visualizerWindow.show() }
-    Action { id: channelKeysTrackerAction; text: qsTr("Channel Keyboards + Tracker"); icon.name: "view-list-details"; shortcut: "Ctrl+Shift+I"; onTriggered: channelInspector.visible && channelInspector.mode === 2 ? channelInspector.hide() : channelInspector.showMode(2) }
+    Action { id: channelKeysTrackerAction; text: qsTr("Channel Keyboards + Tracker"); icon.name: "object-columns"; shortcut: "Ctrl+Shift+I"; onTriggered: channelInspector.visible && channelInspector.mode === 2 ? channelInspector.hide() : channelInspector.showMode(2) }
     Action { id: playPauseAction; text: qsTr("Play/Pause"); icon.name: "media-playback-start"; shortcut: "Space"; onTriggered: appController.play_pause() }
     Action { id: stopAction; text: qsTr("Stop"); icon.name: "media-playback-stop"; shortcut: "Ctrl+."; onTriggered: appController.stop() }
     Action { id: previousAction; text: qsTr("Previous"); icon.name: "media-skip-backward"; shortcut: "Ctrl+Left"; onTriggered: appController.previous() }
@@ -2496,8 +2499,8 @@ ApplicationWindow {
         return { id: id, text: action.text, enabled: action.enabled, shortcut: shortcut || "",
                  icon: action.icon.name, checkable: action.checkable, checked: action.checked }
     }
-    function menuChoice(id, text, checked, enabled) {
-        return { id: id, text: text, checkable: true, checked: checked, enabled: enabled !== false }
+    function menuChoice(id, text, icon, checked, enabled) {
+        return { id: id, text: text, icon: icon, checkable: true, checked: checked, enabled: enabled !== false }
     }
     readonly property var menuActions: ({
         "file.addFiles": addFilesAction, "file.addUrl": addUrlAction,
@@ -2524,18 +2527,19 @@ ApplicationWindow {
         const playing = appController.playback_state === "playing"
         const maximized = root.visibility === Window.Maximized
         const tabs = (workspace.tabs || []).map(tab => menuChoice("view.tab:" + tab.key,
-            tab.key === "queue" ? qsTr("Play Queue") : tab.name, tab.key === workspace.active))
+            tab.key === "queue" ? qsTr("Play Queue") : tab.name,
+            tab.key === "queue" ? "media-playlist-play" : "view-media-playlist", tab.key === workspace.active))
         return [
             // (In the ☰: File's items first, Edit/View/Playback, then these
             // at the bottom as the hamburger menu had them; no Window/Help.)
-            { title: qsTr("Kog"), items: [
+            { title: qsTr("Kog"), icon: "applications-multimedia", items: [
                 { id: "kog.about", text: qsTr("About Kog…"), icon: "help-about", shortcut: "F1" },
                 { separator: true, inWindow: false },
                 menuItemFor("kog.preferences", preferencesAction, "Ctrl+,"),
                 { separator: true, inWindow: false },
                 menuItemFor("kog.quit", quitAction, "Ctrl+Q")
             ] },
-            { title: qsTr("File"), inline: true, items: [
+            { title: qsTr("File"), icon: "folder-music", inline: true, items: [
                 menuItemFor("file.addFiles", addFilesAction, "Ctrl+O"),
                 menuItemFor("file.addUrl", addUrlAction, "Ctrl+Shift+O"),
                 { id: "file.connect", text: qsTr("Connect to Server…"), icon: "network-server" },
@@ -2560,15 +2564,15 @@ ApplicationWindow {
                 { separator: true },
                 menuItemFor("edit.save", editSaveAction, "Ctrl+S"),
                 menuItemFor("edit.reload", editReload),
-                { id: "edit.addPlayQueue", text: qsTr("Add Play Queue"), enabled: !!actions.add_play_queue },
-                { id: "edit.addQueueSelection", text: qsTr("Add Queue Selection"), enabled: !!actions.add_queue_selection }
+                { id: "edit.addPlayQueue", text: qsTr("Add Play Queue"), icon: "media-playlist-append", enabled: !!actions.add_play_queue },
+                { id: "edit.addQueueSelection", text: qsTr("Add Queue Selection"), icon: "list-add", enabled: !!actions.add_queue_selection }
             ] },
             { title: qsTr("View"), icon: "view-visible", items: tabs.concat([
                 { separator: true },
-                menuChoice("view.mode.list", qsTr("Show as List"), root.playlistViewMode === "list"),
-                menuChoice("view.mode.rows", qsTr("Show as Rows"), root.playlistViewMode === "rows"),
-                menuChoice("view.mode.grid", qsTr("Show as Cover Grid"), root.playlistViewMode === "grid"),
-                menuChoice("view.mode.flow", qsTr("Show as Cover Flow"), root.playlistViewMode === "flow"),
+                menuChoice("view.mode.list", qsTr("Show as List"), "view-list-details", root.playlistViewMode === "list"),
+                menuChoice("view.mode.rows", qsTr("Show as Rows"), "object-rows", root.playlistViewMode === "rows"),
+                menuChoice("view.mode.grid", qsTr("Show as Cover Grid"), "view-grid", root.playlistViewMode === "grid"),
+                menuChoice("view.mode.flow", qsTr("Show as Cover Flow"), "view-media-album-cover", root.playlistViewMode === "flow"),
                 { separator: true },
                 menuItemFor("view.fileTree", showFileTreeAction, "Ctrl+D"),
                 { id: "view.refreshTree", text: qsTr("Refresh File Tree"), icon: "view-refresh", shortcut: "F5", enabled: root.sidebarVisible },
@@ -2579,9 +2583,9 @@ ApplicationWindow {
                 { id: "view.skins", text: qsTr("Winamp Skins…"), icon: "preferences-desktop-theme" },
                 // The same choice as Preferences > General > Appearance.
                 { id: "view.colors", text: qsTr("Colors"), icon: "color-management", items: [
-                    menuChoice("view.colors.system", qsTr("Follow the System"), KogAppearance.mode === "system"),
-                    menuChoice("view.colors.light", qsTr("Light"), KogAppearance.mode === "light"),
-                    menuChoice("view.colors.dark", qsTr("Dark"), KogAppearance.mode === "dark")
+                    menuChoice("view.colors.system", qsTr("Follow the System"), "computer", KogAppearance.mode === "system"),
+                    menuChoice("view.colors.light", qsTr("Light"), "brightness-high", KogAppearance.mode === "light"),
+                    menuChoice("view.colors.dark", qsTr("Dark"), "brightness-low", KogAppearance.mode === "dark")
                 ] },
                 menuItemFor("view.visualizer", visualizerAction, "Ctrl+Shift+V"),
                 { separator: true },
@@ -2590,7 +2594,7 @@ ApplicationWindow {
                 { id: "view.channelKeys", text: qsTr("Channel Keyboards"), icon: "input-keyboard" },
                 { id: "view.channelTracker", text: qsTr("Channel Tracker"), icon: "view-list-text" },
                 { id: "view.mml", text: qsTr("MML Score"), icon: "text-x-generic" },
-                { id: "view.pianoRoll", text: qsTr("Piano Roll"), icon: "view-media-equalizer" }
+                { id: "view.pianoRoll", text: qsTr("Piano Roll"), icon: "audio-midi" }
             ]) },
             { title: qsTr("Playback"), icon: "media-playback-start", items: [
                 { id: "play.playPause", text: playing ? qsTr("Pause") : qsTr("Play"),
@@ -2602,16 +2606,16 @@ ApplicationWindow {
                 { id: "play.next", text: qsTr("Next"), icon: "media-skip-forward", shortcut: "Ctrl+Right", enabled: root.playableCount > 0 || appController.radio_active },
                 { separator: true },
                 { id: "play.shuffle", text: qsTr("Shuffle"), icon: "media-playlist-shuffle", items: [
-                    menuChoice("play.shuffle.off", qsTr("Off"), appController.shuffle_mode === "off"),
-                    menuChoice("play.shuffle.albums", qsTr("Albums"), appController.shuffle_mode === "albums"),
-                    menuChoice("play.shuffle.all", qsTr("All Tracks"), appController.shuffle_mode === "all"),
-                    menuChoice("play.shuffle.spread", qsTr("All Tracks, Albums Spread Apart"), appController.shuffle_mode === "spread")
+                    menuChoice("play.shuffle.off", qsTr("Off"), "media-playlist-normal", appController.shuffle_mode === "off"),
+                    menuChoice("play.shuffle.albums", qsTr("Albums"), "media-random-albums-amarok", appController.shuffle_mode === "albums"),
+                    menuChoice("play.shuffle.all", qsTr("All Tracks"), "media-random-tracks-amarok", appController.shuffle_mode === "all"),
+                    menuChoice("play.shuffle.spread", qsTr("All Tracks, Albums Spread Apart"), "distribute-horizontal", appController.shuffle_mode === "spread")
                 ] },
                 { id: "play.repeat", text: qsTr("Repeat"), icon: "media-playlist-repeat", items: [
-                    menuChoice("play.repeat.off", qsTr("Off"), appController.repeat_mode === "off"),
-                    menuChoice("play.repeat.one", qsTr("One Track"), appController.repeat_mode === "one"),
-                    menuChoice("play.repeat.album", qsTr("Album"), appController.repeat_mode === "album"),
-                    menuChoice("play.repeat.all", qsTr("All Tracks"), appController.repeat_mode === "all")
+                    menuChoice("play.repeat.off", qsTr("Off"), "media-repeat-none", appController.repeat_mode === "off"),
+                    menuChoice("play.repeat.one", qsTr("One Track"), "media-repeat-single", appController.repeat_mode === "one"),
+                    menuChoice("play.repeat.album", qsTr("Album"), "media-repeat-album-amarok", appController.repeat_mode === "album"),
+                    menuChoice("play.repeat.all", qsTr("All Tracks"), "media-repeat-all", appController.repeat_mode === "all")
                 ] },
                 { id: "play.reshuffle", text: qsTr("Reshuffle Radio"), icon: "view-refresh", enabled: appController.radio_active },
                 { separator: true },
@@ -2619,16 +2623,16 @@ ApplicationWindow {
                 menuItemFor("play.stopAfter", stopAfterSelectionAction),
                 menuItemFor("play.clearQueue", clearQueueAction),
                 { separator: true },
-                { id: "play.notification", text: qsTr("Show Now Playing Notification"), icon: "dialog-information", enabled: root.hasLoadedTrack }
+                { id: "play.notification", text: qsTr("Show Now Playing Notification"), icon: "notifications", enabled: root.hasLoadedTrack }
             ] },
-            { title: qsTr("Window"), inWindow: false, items: [
+            { title: qsTr("Window"), icon: "window", inWindow: false, items: [
                 { id: "window.minimize", text: qsTr("Minimize"), icon: "window-minimize" },
                 { id: "window.maximize", text: maximized ? qsTr("Restore") : qsTr("Maximize"),
                   icon: maximized ? "window-restore" : "window-maximize" },
                 { separator: true },
                 { id: "window.close", text: qsTr("Close Window"), icon: "window-close" }
             ] },
-            { title: qsTr("Help"), inWindow: false, items: [
+            { title: qsTr("Help"), icon: "system-help", inWindow: false, items: [
                 { id: "help.mml", text: qsTr("MML Guide"), icon: "help-contents" },
                 { id: "help.about", text: qsTr("About Kog…"), icon: "help-about", shortcut: "F1" }
             ] }
@@ -2728,51 +2732,13 @@ ApplicationWindow {
         objectName: "applicationMenu"
         model: root.menuModel
         onTriggered: id => root.menuAction(id, root)
-        itemDelegate: appMenuItem
         appMenuAtEnd: true
-    }
-    // The ☰ menu's items as the old hamburger menu drew them: room for the
-    // check mark, the icon, and the key at the right.
-    Component {
-        id: appMenuItem
-        MenuItem {
-            id: menuItem
-            property string shortcutText
-            contentItem: RowLayout {
-                spacing: 6
-                Item {
-                    Layout.preferredWidth: menuItem.checkable && menuItem.indicator
-                        ? menuItem.indicator.width : 2
-                }
-                ControlsImpl.IconImage {
-                    visible: menuItem.icon.name !== ""
-                    name: menuItem.icon.name
-                    color: menuItem.icon.color
-                    Layout.preferredWidth: 16
-                    Layout.preferredHeight: 16
-                    sourceSize.width: 16
-                    sourceSize.height: 16
-                }
-                Label {
-                    text: menuItem.text
-                    font: menuItem.font
-                    color: menuItem.highlighted ? menuItem.palette.highlightedText : menuItem.palette.windowText
-                    opacity: menuItem.enabled ? 1 : 0.45
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                    renderType: Text.NativeRendering
-                }
-                Label {
-                    visible: menuItem.shortcutText !== ""
-                    text: menuItem.shortcutText
-                    font: menuItem.font
-                    color: menuItem.highlighted ? menuItem.palette.highlightedText : menuItem.palette.windowText
-                    opacity: menuItem.enabled ? 0.6 : 0.3
-                    Layout.leftMargin: 18
-                    renderType: Text.NativeRendering
-                }
-            }
-        }
+        // Grove's glass look in Kog's colours, drawn inside the window: a
+        // separate popup window gets another scale from arbor at 4/3 (and
+        // its submenus opened on top of the menu there).
+        accent: root.palette.highlight
+        dark: root.baseLuminance < 0.5
+        popupType: Popup.Item
     }
 
     header: ToolBar {
