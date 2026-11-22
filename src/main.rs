@@ -156,6 +156,14 @@ fn main() {
         }
     }
 
+    // `import GlobalMenu` (src/cpp/kog_global_menu.cpp): the window's menus
+    // in the desktop's global menu bar.
+    unsafe extern "C" {
+        fn kog_register_global_menu();
+    }
+    // SAFETY: a plain qmlRegisterType call, on the GUI thread before any QML
+    // is loaded.
+    unsafe { kog_register_global_menu() };
     let mut engine = QQmlApplicationEngine::new();
 
     if let Some(mut engine) = engine.as_mut() {

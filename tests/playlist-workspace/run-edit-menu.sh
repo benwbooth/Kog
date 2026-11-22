@@ -16,7 +16,7 @@ for source in (repo/'qml').iterdir():
 source=(repo/'qml/Main.qml').read_text().replace('import QtQuick\n','import QtQuick\nimport "Checks" as Checks\n',1)
 i=source.rfind('}')
 fixture=str(repo/'tests/fixtures/codec-libs/tone.wav')
-controls = '({editMenu:editMenu,editUndoAction:undoQueueAppendAction,editRedoAction:redoQueueAppendAction,editClearAction:clearPlaylistAction,editSelectAllAction:selectAllAction,editRemoveAction:removeSelectedAction,editMoveDown:editMoveDown,editClearSelection:editClearSelection,editSaveAction:editSaveAction,editReload:editReload})'
+controls = '({editMenu:root.menuModel.find(m => m.title === "Edit"),editUndoAction:undoQueueAppendAction,editRedoAction:redoQueueAppendAction,editClearAction:clearPlaylistAction,editSelectAllAction:selectAllAction,editRemoveAction:removeSelectedAction,editMoveDown:editMoveDown,editClearSelection:editClearSelection,editSaveAction:editSaveAction,editReload:editReload})'
 source=source[:i]+'\n    Checks.EditMenuSmoke { window: root; app: appController; controls: '+controls+'; fixture: '+json.dumps(fixture)+' }\n'+source[i:]
 (out/'qml/Main.qml').write_text(source)
 PREPARE

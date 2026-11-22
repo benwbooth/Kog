@@ -79,6 +79,7 @@ fn main() {
         "qml/TrackerText.qml",
         "qml/PatchEditor.qml",
         "qml/ExportDialog.qml",
+        "qml/AppMenu.qml",
     ];
     // The dev build's from-disk QML maps each of these to the source tree
     // (src/main.rs).
@@ -231,6 +232,19 @@ fn main() {
     .qt_module("WebEngineQuick")
     .qt_module("WebEngineCore")
     .qt_module("WebChannel");
+    // The menus in the desktop's global menu bar need Qt's private QPA
+    // headers; a Qt without them (e.g. Ubuntu's without the -private-dev
+    // package) gets a stand-in with the same QML API and only the ☰ menu.
+    // Kept out of native/, whose changes rebuild every decoder library.
+    let qpa_headers = qt_private_headers();
+    let qt_builder = if qpa_headers.is_empty() {
+        qt_builder.cpp_file("src/cpp/global_menu_fallback.h")
+    } else {
+        qt_builder
+            .cpp_file("src/cpp/global_menu.h")
+            .cpp_file("src/cpp/global_menu.cpp")
+    }
+    .cpp_file("src/cpp/kog_global_menu.cpp");
     let session_headers = wayland_session_headers();
     // The archive tree uses the same in-process libarchive as compress-tools.
     let archive = pkg_config::Config::new()
@@ -241,6 +255,10 @@ fn main() {
     let qt_builder = unsafe {
         qt_builder.cc_builder(|cc| {
             cc.includes(&archive.include_paths);
+            if !qpa_headers.is_empty() {
+                cc.includes(&qpa_headers);
+                cc.define("KOG_GLOBAL_MENU", None);
+            }
             if !session_headers.is_empty() {
                 cc.includes(&session_headers);
                 cc.define("KOG_WAYLAND_SESSION_RESTORE", None);
@@ -279,6 +297,43 @@ fn wayland_session_headers() -> Vec<PathBuf> {
         return Vec::new();
     }
     vec![gui.join("QtGui"), gui, core.join("QtCore"), core]
+}
+
+/// Qt's private QtGui/QtCore include directories (for qpa/ and private/
+/// headers), or nothing when this Qt doesn't ship them.
+fn qt_private_headers() -> Vec<PathBuf> {
+    let qmake = std::env::var("QMAKE").unwrap_or_else(|_| "qmake6".to_owned());
+    let query = |key: &str| {
+        std::process::Command::new(&qmake)
+            .args(["-query", key])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let Some(version) = query("QT_VERSION") else {
+        return Vec::new();
+    };
+    // Plain include trees (Linux, Windows) and macOS frameworks.
+    let mut roots = Vec::new();
+    if let Some(headers) = query("QT_INSTALL_HEADERS") {
+        let headers = PathBuf::from(headers);
+        roots.push((headers.join("QtGui"), headers.join("QtCore")));
+    }
+    if let Some(libs) = query("QT_INSTALL_LIBS") {
+        let libs = PathBuf::from(libs);
+        roots.push((libs.join("QtGui.framework/Headers"), libs.join("QtCore.framework/Headers")));
+    }
+    for (gui, core) in roots {
+        let gui = gui.join(&version);
+        let core = core.join(&version);
+        if gui.join("QtGui/qpa/qplatformmenu.h").is_file()
+            && gui.join("QtGui/private/qguiapplication_p.h").is_file()
+        {
+            return vec![gui.join("QtGui"), gui, core.join("QtCore"), core];
+        }
+    }
+    Vec::new()
 }
 
 /// Stamp the revision this build came from, so the About window and the title
