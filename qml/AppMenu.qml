@@ -53,6 +53,17 @@ Menu {
             fill(sub, menus[m].items || [])
             addMenu(sub)
         }
+        fitWidth(root)
+    }
+    // Wide enough for the longest item and its shortcut (the style's
+    // default is a fixed width that cuts long items off).
+    function fitWidth(menu) {
+        var w = 0
+        for (var i = 0; i < menu.count; i++) {
+            var it = menu.itemAt(i)
+            if (it) w = Math.max(w, it.implicitWidth)
+        }
+        menu.width = Math.max(menu.implicitWidth, Math.ceil(w + menu.leftPadding + menu.rightPadding))
     }
     function fill(menu, items) {
         for (var i = 0; i < items.length; i++) {
@@ -77,6 +88,7 @@ Menu {
             }
             _objects.push(obj)
         }
+        fitWidth(menu)
     }
 
     Component { id: separatorComponent; MenuSeparator {} }
