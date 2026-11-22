@@ -2526,14 +2526,16 @@ ApplicationWindow {
         const tabs = (workspace.tabs || []).map(tab => menuChoice("view.tab:" + tab.key,
             tab.key === "queue" ? qsTr("Play Queue") : tab.name, tab.key === workspace.active))
         return [
+            // (In the ☰: File's items first, Edit/View/Playback, then these
+            // at the bottom as the hamburger menu had them; no Window/Help.)
             { title: qsTr("Kog"), items: [
                 { id: "kog.about", text: qsTr("About Kog…"), icon: "help-about", shortcut: "F1" },
-                { separator: true },
+                { separator: true, inWindow: false },
                 menuItemFor("kog.preferences", preferencesAction, "Ctrl+,"),
-                { separator: true },
+                { separator: true, inWindow: false },
                 menuItemFor("kog.quit", quitAction, "Ctrl+Q")
             ] },
-            { title: qsTr("File"), items: [
+            { title: qsTr("File"), inline: true, items: [
                 menuItemFor("file.addFiles", addFilesAction, "Ctrl+O"),
                 menuItemFor("file.addUrl", addUrlAction, "Ctrl+Shift+O"),
                 { id: "file.connect", text: qsTr("Connect to Server…"), icon: "network-server" },
@@ -2543,7 +2545,7 @@ ApplicationWindow {
                 menuItemFor("file.saveSelection", saveSelectionAction),
                 menuItemFor("file.importPlaylists", importPlaylistsAction)
             ] },
-            { title: qsTr("Edit"), items: [
+            { title: qsTr("Edit"), icon: "document-edit", items: [
                 menuItemFor("edit.undo", undoQueueAppendAction, "Ctrl+Z"),
                 menuItemFor("edit.redo", redoQueueAppendAction, "Ctrl+Shift+Z"),
                 { separator: true },
@@ -2561,7 +2563,7 @@ ApplicationWindow {
                 { id: "edit.addPlayQueue", text: qsTr("Add Play Queue"), enabled: !!actions.add_play_queue },
                 { id: "edit.addQueueSelection", text: qsTr("Add Queue Selection"), enabled: !!actions.add_queue_selection }
             ] },
-            { title: qsTr("View"), items: tabs.concat([
+            { title: qsTr("View"), icon: "view-visible", items: tabs.concat([
                 { separator: true },
                 menuChoice("view.mode.list", qsTr("Show as List"), root.playlistViewMode === "list"),
                 menuChoice("view.mode.rows", qsTr("Show as Rows"), root.playlistViewMode === "rows"),
@@ -2590,7 +2592,7 @@ ApplicationWindow {
                 { id: "view.mml", text: qsTr("MML Score"), icon: "text-x-generic" },
                 { id: "view.pianoRoll", text: qsTr("Piano Roll"), icon: "view-media-equalizer" }
             ]) },
-            { title: qsTr("Playback"), items: [
+            { title: qsTr("Playback"), icon: "media-playback-start", items: [
                 { id: "play.playPause", text: playing ? qsTr("Pause") : qsTr("Play"),
                   icon: playing ? "media-playback-pause" : "media-playback-start",
                   shortcut: "Space", enabled: root.transportReady },
@@ -2619,14 +2621,14 @@ ApplicationWindow {
                 { separator: true },
                 { id: "play.notification", text: qsTr("Show Now Playing Notification"), icon: "dialog-information", enabled: root.hasLoadedTrack }
             ] },
-            { title: qsTr("Window"), items: [
+            { title: qsTr("Window"), inWindow: false, items: [
                 { id: "window.minimize", text: qsTr("Minimize"), icon: "window-minimize" },
                 { id: "window.maximize", text: maximized ? qsTr("Restore") : qsTr("Maximize"),
                   icon: maximized ? "window-restore" : "window-maximize" },
                 { separator: true },
                 { id: "window.close", text: qsTr("Close Window"), icon: "window-close" }
             ] },
-            { title: qsTr("Help"), items: [
+            { title: qsTr("Help"), inWindow: false, items: [
                 { id: "help.mml", text: qsTr("MML Guide"), icon: "help-contents" },
                 { id: "help.about", text: qsTr("About Kog…"), icon: "help-about", shortcut: "F1" }
             ] }
@@ -2727,6 +2729,7 @@ ApplicationWindow {
         model: root.menuModel
         onTriggered: id => root.menuAction(id, root)
         itemDelegate: appMenuItem
+        appMenuAtEnd: true
     }
     // The ☰ menu's items as the old hamburger menu drew them: room for the
     // check mark, the icon, and the key at the right.
