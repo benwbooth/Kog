@@ -5,6 +5,7 @@
 #include <QGuiApplication>
 #include <QIcon>
 #include <QKeySequence>
+#include <QPointer>
 #include <QStringList>
 #include <qpa/qplatformmenu.h>
 #include <qpa/qplatformtheme.h>
@@ -31,6 +32,21 @@ void GlobalMenuBar::setWindow(QWindow *window) {
 
 void GlobalMenuBar::attach() {
     if (!m_bar || !m_window) return;
+    // No global menu bar to serve without a real display (offscreen tests
+    // crashed in QDBusMenuBar::registerMenuBar), and none before the
+    // window has its native surface: attach once it's shown.
+    if (QGuiApplication::platformName() == QLatin1String("offscreen")) return;
+    if (!m_window->handle()) {
+        QPointer<QWindow> w = m_window;
+        auto *c = new QMetaObject::Connection;
+        *c = connect(m_window, &QWindow::visibleChanged, this, [this, w, c](bool on) {
+            if (!on || !w || w != m_window || !w->handle()) return;
+            disconnect(*c);
+            delete c;
+            attach();
+        });
+        return;
+    }
     // Reparenting to the same window is a no-op in the theme, so detach
     // first: the window may have a new surface since the last time.
     m_bar->handleReparent(nullptr);
