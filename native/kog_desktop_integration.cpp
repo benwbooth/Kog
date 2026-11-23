@@ -1,9 +1,11 @@
 #include "kog_desktop_integration.h"
 #include "kog_modern_skin.h"
 
+#include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QHash>
 #include <QtCore/QMimeDatabase>
+#include <QtCore/QSettings>
 #include "kog_settings.h"
 #include <QtGui/QCursor>
 #include <QtGui/QFontDatabase>
@@ -91,12 +93,62 @@ QString kogAppearanceMode()
         ? mode : QStringLiteral("system");
 }
 
+// The icon theme for named icons (menus, buttons). Qt's own platform themes
+// answer "hicolor" outside Plasma, where Breeze came from the KDE platform
+// theme, so Kog picks: the desktop's GTK icon theme (hearth writes it), else
+// whatever Qt was given, else Breeze, each in its light or dark variant so
+// the icons match Kog's light or dark look.
+bool kogIconThemeExists(const QString &name)
+{
+    for (const QString &path : QIcon::themeSearchPaths()) {
+        if (QFileInfo::exists(path + QStringLiteral("/") + name + QStringLiteral("/index.theme"))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void kogApplyIconTheme(bool light)
+{
+    static const QString desktopTheme = [] {
+        const QString gtk = QSettings(QDir::homePath() + QStringLiteral("/.config/gtk-3.0/settings.ini"),
+                                      QSettings::IniFormat)
+                                .value(QStringLiteral("Settings/gtk-icon-theme-name"))
+                                .toString();
+        if (!gtk.isEmpty() && kogIconThemeExists(gtk)) {
+            return gtk;
+        }
+        const QString qt = QIcon::themeName();
+        if (!qt.isEmpty() && qt != QStringLiteral("hicolor")) {
+            return qt;
+        }
+        return QStringLiteral("breeze");
+    }();
+    QString base = desktopTheme;
+    for (const auto *suffix : { "-dark", "-Dark", "_dark" }) {
+        if (base.endsWith(QLatin1StringView(suffix))) {
+            base.chop(qstrlen(suffix));
+            break;
+        }
+    }
+    QString theme = base;
+    if (!light) {
+        for (const auto *suffix : { "-dark", "-Dark" }) {
+            if (kogIconThemeExists(base + QLatin1StringView(suffix))) {
+                theme = base + QLatin1StringView(suffix);
+                break;
+            }
+        }
+    } else if (!kogIconThemeExists(base)) {
+        theme = desktopTheme;
+    }
+    if (QIcon::themeName() != theme) {
+        QIcon::setThemeName(theme);
+    }
+}
+
 void kogApplyEarshotColors(QApplication &application)
 {
-    // KOG_COLORS=system keeps the desktop's own colour scheme.
-    if (qEnvironmentVariable("KOG_COLORS") == QStringLiteral("system")) {
-        return;
-    }
     // Light or dark as chosen in Preferences, else as the desktop is.
     const QString mode = kogAppearanceMode();
     // Qt before 6.5 cannot tell the desktop's scheme, so it stays dark.
@@ -105,7 +157,13 @@ void kogApplyEarshotColors(QApplication &application)
 #else
     const bool systemLight = false;
 #endif
+    // KOG_COLORS=system keeps the desktop's own colour scheme.
+    if (qEnvironmentVariable("KOG_COLORS") == QStringLiteral("system")) {
+        kogApplyIconTheme(systemLight);
+        return;
+    }
     const bool light = mode == QStringLiteral("system") ? systemLight : mode == QStringLiteral("light");
+    kogApplyIconTheme(light);
     application.setPalette(kogEarshotPalette(kogEarshotColors(light)));
 }
 // Ubuntu, bundled with the QML, as the interface typeface at the desktop's
