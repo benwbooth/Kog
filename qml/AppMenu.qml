@@ -272,6 +272,49 @@ Menu {
             opacity: 0.9
         }
     }
+    // A menu icon drawn pixel-exact. At a fractional scale (4/3) a 16 pt
+    // icon is 21.33 device pixels, so the 16 px symbol was stretched between
+    // pixels and its strokes went soft. Instead: an icon-theme design size
+    // (16/22/24/32 px) whose size in points is whole (Qt rounds sourceSize to
+    // whole points, then multiplies by the scale: 22 px can't be asked for at
+    // 4/3), the one nearest the wanted size, placed on the device pixel grid.
+    // At 4/3 that is 24 px (18 pt); at 1x and 2x, 16 and 32 px (16 pt).
+    component CrispIcon: IconImage {
+        id: ci
+        property real size: 16
+        readonly property real dpr: {
+            const w = ci.Window.window
+            return w && w.devicePixelRatio > 0 ? w.devicePixelRatio : (Screen.devicePixelRatio || 1)
+        }
+        readonly property int px: {
+            const want = size * dpr
+            let best = 0
+            for (const d of [16, 22, 24, 32]) {
+                const pt = d / dpr
+                if (Math.abs(pt - Math.round(pt)) > 0.01) continue
+                if (!best || Math.abs(d - want) < Math.abs(best - want)) best = d
+            }
+            return best
+        }
+        // (No exact size at this scale: the plain size, as before.)
+        readonly property int pt: px > 0 ? Math.round(px / dpr) : Math.round(size)
+        width: px > 0 ? px / dpr : size
+        height: width
+        sourceSize: Qt.size(pt, pt)
+        transform: Translate { id: gridSnap }
+        function snap() {
+            if (!visible || px <= 0) return
+            const p = mapToItem(null, 0, 0)
+            const rx = p.x - gridSnap.x, ry = p.y - gridSnap.y
+            gridSnap.x = Math.round(rx * dpr) / dpr - rx
+            gridSnap.y = Math.round(ry * dpr) / dpr - ry
+        }
+        onVisibleChanged: Qt.callLater(snap)
+        onXChanged: Qt.callLater(snap)
+        onYChanged: Qt.callLater(snap)
+        onDprChanged: Qt.callLater(snap)
+        Component.onCompleted: Qt.callLater(snap)
+    }
     component GlassText: Text {
         color: root.fg
         font.family: root.family
@@ -323,16 +366,21 @@ Menu {
                     text: "✓"
                     color: mi.highlighted ? "#ffffff" : root.fg
                 }
-                IconImage {
+                CrispIcon {
+                    id: rowIcon
                     visible: mi.iconName !== ""
                     name: mi.iconName
-                    x: 2
-                    width: 16; height: 16
-                    // The shown size: IconImage multiplies by the window's scale itself
-                    // (32 drew ~43 px shrunk to 21 at 4/3, and thin strokes went missing).
-                    sourceSize: Qt.size(16, 16)
+                    x: 2 + (16 - width) / 2
                     anchors.verticalCenter: parent.verticalCenter
                     opacity: mi.enabled ? 1 : 0.4
+                    // Placed again whenever the menu opens or moves (it opens at
+                    // a new spot, then is moved to stay inside the window).
+                    Connections {
+                        target: mi.menu
+                        function onOpened() { Qt.callLater(rowIcon.snap) }
+                        function onXChanged() { Qt.callLater(rowIcon.snap) }
+                        function onYChanged() { Qt.callLater(rowIcon.snap) }
+                    }
                 }
                 GlassText {
                     id: lbl
