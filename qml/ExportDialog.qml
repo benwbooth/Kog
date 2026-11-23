@@ -6,6 +6,7 @@ import Qt.labs.platform as Platform
 // Export the selected playlist rows to audio files: pick a format, a quality
 // for lossy formats, whether to keep the equalizer and effects, and a folder.
 ApplicationWindow {
+    palette: KogPalette {}
     id: root
     required property var app
     property var rows: []

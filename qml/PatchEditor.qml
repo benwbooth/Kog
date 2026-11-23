@@ -9,6 +9,7 @@ import QtQuick.Layouts
 // and the paths are summed), or a feedback loop. LFOs and envelope followers
 // can move any block setting. The patch is shown as an indented list.
 ApplicationWindow {
+    palette: KogPalette {}
     id: root
     // { blocks, modulators, templates } from the effects catalog.
     property var catalog: ({ blocks: [], modulators: [], templates: [] })

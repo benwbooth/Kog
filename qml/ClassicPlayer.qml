@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 ApplicationWindow {
+    palette: KogPalette {}
     id: root
     objectName: "kogClassicPlayer"
     required property var app

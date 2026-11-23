@@ -12,13 +12,15 @@ ApplicationWindow {
     minimumWidth: 640
     minimumHeight: 400
     color: "#10191f"
-    palette.window: "#10191f"
-    palette.windowText: "#d7e6ed"
-    palette.text: "#d7e6ed"
-    palette.button: "#253944"
-    palette.buttonText: "#d7e6ed"
-    palette.base: "#192832"
-    palette.highlight: "#50c8ef"
+    palette: KogPalette {
+        window: "#10191f"
+        windowText: "#d7e6ed"
+        text: "#d7e6ed"
+        button: "#253944"
+        buttonText: "#d7e6ed"
+        base: "#192832"
+        highlight: "#50c8ef"
+    }
     property var frame: ({ channels: [], rows: [], description: {}, global: [] })
     readonly property var channels: frame.channels || []
     property var rows: []

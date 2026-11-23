@@ -14,29 +14,16 @@ mod workspace_tracks;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 use std::io::IsTerminal;
 
-fn configure_platform_theme() {
-    #[cfg(target_os = "linux")]
-    {
-        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-        let is_plasma = desktop
-            .split(':')
-            .any(|name| name.eq_ignore_ascii_case("KDE") || name.eq_ignore_ascii_case("Plasma"));
-        if !is_plasma {
-            return;
-        }
-
-        // Qt reads both values while constructing QGuiApplication. This is the
-        // same integration a packaged Plasma application receives from its
-        // launcher, while preserving an explicit user override.
-        if std::env::var_os("QT_QPA_PLATFORMTHEME").is_none() {
-            // SAFETY: this runs before Qt, Rodio, or any other worker threads
-            // are created, so no concurrent environment access is possible.
-            unsafe { std::env::set_var("QT_QPA_PLATFORMTHEME", "kde") };
-        }
-        if std::env::var_os("QT_QUICK_CONTROLS_STYLE").is_none() {
-            // SAFETY: see the pre-thread initialization guarantee above.
-            unsafe { std::env::set_var("QT_QUICK_CONTROLS_STYLE", "org.kde.desktop") };
-        }
+/// Qt Quick Controls' Basic style, coloured by Kog's own palette (light or
+/// dark as the desktop is, see kog_desktop_integration.cpp), the same on every
+/// desktop. The platform theme stays whatever the session chose, so file
+/// dialogs, fonts and icons still come from the desktop. An explicit
+/// QT_QUICK_CONTROLS_STYLE wins.
+fn configure_controls_style() {
+    if std::env::var_os("QT_QUICK_CONTROLS_STYLE").is_none() {
+        // SAFETY: this runs before Qt, Rodio, or any other worker threads
+        // are created, so no concurrent environment access is possible.
+        unsafe { std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Basic") };
     }
 }
 
@@ -141,7 +128,7 @@ fn main() {
         }
         Mode::Gui => {}
     }
-    configure_platform_theme();
+    configure_controls_style();
     configure_text_rendering();
     let mut application = desktop_integration::DesktopApplication::new();
 

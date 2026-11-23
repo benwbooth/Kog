@@ -80,6 +80,7 @@ fn main() {
         "qml/PatchEditor.qml",
         "qml/ExportDialog.qml",
         "qml/AppMenu.qml",
+        "qml/KogPalette.qml",
     ];
     // The dev build's from-disk QML maps each of these to the source tree
     // (src/main.rs).

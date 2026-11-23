@@ -14,6 +14,7 @@ import org.kog.native 1.0
 import GlobalMenu
 
 ApplicationWindow {
+    palette: KogPalette {}
     id: root
 
     width: 1120

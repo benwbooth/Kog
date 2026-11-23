@@ -11,6 +11,7 @@ import QtQuick.Layouts
 // /api/stream URL. This window is only the library view and the connection
 // settings that go with it.
 Window {
+    palette: KogPalette {}
     id: root
 
     required property var app

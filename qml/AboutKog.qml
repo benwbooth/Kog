@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 Window {
+    palette: KogPalette {}
     id: root
     objectName: "aboutKogWindow"
     title: qsTr("About Kog")

@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 ApplicationWindow {
+    palette: KogPalette {}
     id: root
     required property var app
     title: qsTr("Kog — Visualizer")

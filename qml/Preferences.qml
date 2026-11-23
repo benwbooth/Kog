@@ -26,8 +26,10 @@ Window {
     readonly property color foregroundColor: windowLuminance < 0.5
         ? Qt.lighter(palette.placeholderText, 1.35)
         : Qt.darker(palette.text, 1.2)
-    palette.windowText: foregroundColor
-    palette.buttonText: foregroundColor
+    palette: KogPalette {
+        windowText: root.foregroundColor
+        buttonText: root.foregroundColor
+    }
 
     property int currentPage: 0
 

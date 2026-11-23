@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 
 Window {
+    palette: KogPalette {}
     id: root
 
     required property var app

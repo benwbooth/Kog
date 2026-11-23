@@ -12,11 +12,13 @@ ApplicationWindow {
     minimumWidth: 560
     minimumHeight: 360
     color: "#10191f"
-    palette.window: "#10191f"
-    palette.windowText: "#d7e6ed"
-    palette.text: "#d7e6ed"
-    palette.base: "#192832"
-    palette.highlight: "#50c8ef"
+    palette: KogPalette {
+        window: "#10191f"
+        windowText: "#d7e6ed"
+        text: "#d7e6ed"
+        base: "#192832"
+        highlight: "#50c8ef"
+    }
     property var chapters: []
     property int chapter: 0
     onVisibleChanged: if (visible && chapters.length === 0) {

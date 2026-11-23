@@ -6,6 +6,7 @@ import QtWebChannel
 import org.kog.native 1.0
 
 ApplicationWindow {
+    palette: KogPalette {}
     id: root
     objectName: "kogModernPlayer"
     required property var app
