@@ -189,7 +189,7 @@ impl Track {
         track
     }
 
-    fn refresh_search_text(&mut self) {
+    pub fn refresh_search_text(&mut self) {
         let source_filename = search_source_filename(&self.source);
         self.search_text = [
             self.title.as_str(),

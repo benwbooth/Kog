@@ -2470,6 +2470,16 @@ impl<T: Item> Session<T> {
         value: Value,
         mut decode: impl FnMut(&Value) -> Result<T, String>,
     ) -> Result<(), String> {
+        self.restore_with_rows(value, |entry, _| decode(entry))
+    }
+    /// Like `restore`, but each entry is decoded alongside the metadata row
+    /// saved with it, so a frontend can rebuild its tracks from that instead
+    /// of reading every file again.
+    pub fn restore_with_rows(
+        &mut self,
+        value: Value,
+        mut decode: impl FnMut(&Value, &SortRow) -> Result<T, String>,
+    ) -> Result<(), String> {
         #[derive(Deserialize)]
         struct Saved {
             version: u32,
@@ -2510,7 +2520,7 @@ impl<T: Item> Session<T> {
         );
         let mut mapping = vec![None; saved.queue.len()];
         for (i, entry) in saved.queue.iter().enumerate() {
-            if let Ok(track) = decode(entry) {
+            if let Ok(track) = decode(entry, &saved.metadata[i]) {
                 mapping[i] = Some(next.queue.len());
                 next.queue.push(track);
                 next.metadata.push(saved.metadata[i].clone());

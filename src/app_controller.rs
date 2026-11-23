@@ -2451,20 +2451,33 @@ impl Default for AppControllerRust {
         }
 
         // Rehydrate the session stopped, then append files requested on launch.
+        // Tracks come from the song info saved with the session (or the song
+        // info cache), not from opening every file: this runs before the
+        // window exists, and probing a long queue of emulated formats (each
+        // 2SF boots an emulator) kept Kog from opening for many minutes.
+        let saved_info = crate::metadata_cache::MetadataCache::open();
         let restore = controller.session_store.value()
             .map(|text| serde_json::from_str(text).map_err(|e| format!("Invalid saved session: {e}")))
             .map(|value| value.and_then(|value| {
                 controller
                     .session
-                    .restore(value, |value| {
+                    .restore_with_rows(value, |value, row| {
                         let entry = stored_entry_from_json(value).ok_or("Invalid queue entry")?;
-                        controller
+                        let source = controller
                             .decoders
                             .expand_queue_entry(&entry)
                             .into_iter()
                             .next()
-                            .map(|source| Track::from_source(source, &controller.decoders))
-                            .ok_or_else(|| "Unavailable queue entry".to_owned())
+                            .ok_or_else(|| "Unavailable queue entry".to_owned())?;
+                        if let Some(mut track) = saved_info.as_ref().and_then(|cache| cache.get(&entry)) {
+                            track.source = source;
+                            return Ok(track);
+                        }
+                        Ok(if row.title.is_empty() {
+                            Track::from_source(source, &controller.decoders)
+                        } else {
+                            kog_audio::playback_order::track_from_sort_row(source, row)
+                        })
                     })
             }));
         // Carry on with the song that was playing, from where it was.

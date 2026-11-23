@@ -130,3 +130,32 @@ pub fn session_path(id: &str, suffix: &str) -> Option<std::path::PathBuf> {
     let key = format!("{:x}", Sha256::digest(id.as_bytes()));
     crate::settings::setting_path(&format!("sessions/{key}.{suffix}.json"))
 }
+
+/// A track rebuilt from its saved `sort_row`, for restoring a queue at
+/// startup without opening every file. Whatever the row doesn't keep (lyrics,
+/// decoder warnings, the backend) fills in when the song is played.
+pub fn track_from_sort_row(source: crate::decoder::PlaybackSource, row: &sort::SortRow) -> crate::track::Track {
+    let whole = |value: Option<f64>| value.filter(|v| v.is_finite() && *v >= 0.0);
+    let mut track = crate::track::Track {
+        title: row.title.clone(),
+        artist: row.artist.clone(),
+        album: row.album.clone(),
+        album_artist: row.album_artist.clone(),
+        composer: row.composer.clone(),
+        genre: row.genre.clone(),
+        year: whole(row.year).map(|v| v as u32),
+        disc_number: whole(row.disc_number).map(|v| v as u32),
+        track_number: whole(row.track_number).map(|v| v as u32),
+        duration: whole(row.duration).map(std::time::Duration::from_secs_f64),
+        file_size_bytes: whole(row.file_size_bytes).map(|v| v as u64),
+        sample_rate: whole(row.sample_rate).map(|v| v as u32),
+        bits_per_sample: whole(row.bits_per_sample).map(|v| v as u8),
+        bitrate: whole(row.bitrate).map(|v| v as u32),
+        channels: whole(row.channels).map(|v| v as u16),
+        codec: row.codec.clone(),
+        source,
+        ..crate::track::Track::default()
+    };
+    track.refresh_search_text();
+    track
+}
