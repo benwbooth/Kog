@@ -314,7 +314,9 @@ ApplicationWindow {
         Layout.preferredWidth: 32
         Layout.preferredHeight: 34
         icon.name: themedIconName
-        icon.color: root.palette.text
+        readonly property bool closeButton: themedIconName === "window-close"
+        readonly property bool closeLit: closeButton && (hovered || down)
+        icon.color: closeLit ? "#ffffff" : root.palette.text
         icon.width: 16
         icon.height: 16
         display: AbstractButton.IconOnly
@@ -323,13 +325,23 @@ ApplicationWindow {
         palette.button: root.toolbarSurface
         palette.windowText: root.palette.text
         palette.buttonText: root.palette.text
-        // Lit under the pointer and when pressed, as Kog's toolbar buttons
-        // (CogButton); Basic's own background stays flat on hover.
-        background: Rectangle {
-            radius: 6
-            color: Qt.rgba(root.palette.text.r, root.palette.text.g, root.palette.text.b,
-                desktopWindowControl.down ? 0.18 : (desktopWindowControl.hovered ? 0.10 : 0))
-            Behavior on color { ColorAnimation { duration: 120 } }
+        // A circle lit under the pointer and when pressed, red for Close;
+        // Basic's own background stays flat on hover.
+        background: Item {
+            Rectangle {
+                readonly property real side: 26
+                x: Math.round((parent.width - side) / 2)
+                y: Math.round((parent.height - side) / 2)
+                width: side
+                height: side
+                radius: side / 2
+                color: desktopWindowControl.closeButton
+                    ? (desktopWindowControl.down ? "#c42b1c"
+                        : (desktopWindowControl.hovered ? "#e81123" : "transparent"))
+                    : Qt.rgba(root.palette.text.r, root.palette.text.g, root.palette.text.b,
+                        desktopWindowControl.down ? 0.18 : (desktopWindowControl.hovered ? 0.10 : 0))
+                Behavior on color { ColorAnimation { duration: 120 } }
+            }
         }
         Accessible.name: description
         ToolTip.visible: hovered
