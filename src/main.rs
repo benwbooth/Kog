@@ -3,6 +3,7 @@ mod app_controller;
 mod desktop_art;
 mod desktop_integration;
 mod file_tree_model;
+mod icon_theme;
 mod mml_view;
 mod playlist_folders;
 mod rom_import;

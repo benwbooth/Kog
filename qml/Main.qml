@@ -16,6 +16,10 @@ import GlobalMenu
 ApplicationWindow {
     palette: KogPalette {}
     id: root
+    // Kog's own Breeze icons, Breeze Dark when the look is dark
+    // (src/icon_theme.rs). Declared first so the theme is set before any
+    // icon loads.
+    IconTheme { dark: root.baseLuminance < 0.5 }
 
     width: 1120
     height: 540
@@ -319,6 +323,14 @@ ApplicationWindow {
         palette.button: root.toolbarSurface
         palette.windowText: root.palette.text
         palette.buttonText: root.palette.text
+        // Lit under the pointer and when pressed, as Kog's toolbar buttons
+        // (CogButton); Basic's own background stays flat on hover.
+        background: Rectangle {
+            radius: 6
+            color: Qt.rgba(root.palette.text.r, root.palette.text.g, root.palette.text.b,
+                desktopWindowControl.down ? 0.18 : (desktopWindowControl.hovered ? 0.10 : 0))
+            Behavior on color { ColorAnimation { duration: 120 } }
+        }
         Accessible.name: description
         ToolTip.visible: hovered
         ToolTip.delay: 700

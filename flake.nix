@@ -32,7 +32,6 @@
           ])
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             pkgs.qt6.qtwayland
-            pkgs.kdePackages.breeze-icons
             pkgs.kdePackages.layer-shell-qt
           ];
         qtEnv = pkgs.qt6.env "kog-qt-env" qtModules;

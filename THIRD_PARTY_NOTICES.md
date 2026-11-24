@@ -21,6 +21,16 @@ Kog uses the LGPL-2.1 option (see `LICENSES/LGPL-2.1.txt`). Upstream copyright
 holders include Aleix Pol Gonzalez and Drew DeVault. It is loaded as a shared
 library, not translated or statically incorporated into Kog.
 
+## Breeze icons
+
+The named icons in Kog's menus, window buttons and toolbars are copied from
+KDE's [Breeze icon theme](https://invent.kde.org/frameworks/breeze-icons)
+6.29.0 (Breeze and Breeze Dark) into `qml/icons/breeze` by
+`scripts/vendor-breeze-icons.py`, unmodified, and embedded in the binary.
+Copyright (C) 2014 Uri Herrera and others; licensed under the GNU Lesser
+General Public License version 3 or (at your option) any later version (see
+`LICENSES/Breeze-icons-COPYING.txt` and `LICENSES/LGPL-3.0.txt`).
+
 ## FFmpeg
 
 Kog dynamically links the system FFmpeg libraries `libavformat`, `libavcodec`,

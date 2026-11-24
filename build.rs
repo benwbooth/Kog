@@ -90,6 +90,8 @@ fn main() {
     // header instead of recursively tracking the whole repository.
     .crate_include_root(Some("native".to_owned()))
     .qrc("web/modern/runtime.qrc")
+    // Kog's copy of Breeze for named icons (scripts/vendor-breeze-icons.py).
+    .qrc("qml/icons/breeze/icons.qrc")
     .qrc_resources([
         "qml/NotificationLayerShell.qml",
         "qml/icons/application-menu.svg",
@@ -208,6 +210,7 @@ fn main() {
         "src/app_controller.rs",
         "src/desktop_integration.rs",
         "src/file_tree_model.rs",
+        "src/icon_theme.rs",
         "src/skin_library.rs",
     ])
     .cpp_file("native/kog_desktop_integration.h")
