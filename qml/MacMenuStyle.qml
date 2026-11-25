@@ -44,19 +44,20 @@ QtObject {
 
     // Glass: a translucent tint over the blurred window behind the menu
     // (vibrancy), a thin bright rim, a darker outline and a soft shadow.
-    // (Dark: a raised grey, lighter than the windows under it, as macOS
-    // menus are.)
-    readonly property color glassTint: dark ? Qt.rgba(0.235, 0.24, 0.26, 0.70) : Qt.rgba(0.985, 0.985, 0.99, 0.68)
+    // The same tint as hearth's global menus (Theme.glassMenu at its default
+    // glass 0.55), so a ☰ menu and a menu-bar menu side by side match.
+    readonly property color glassTint: dark ? Qt.rgba(0.15, 0.155, 0.17, 0.74) : Qt.rgba(0.975, 0.975, 0.98, 0.74)
     // (Where nothing behind can be blurred: nearly opaque.)
     readonly property color glassSolid: dark ? Qt.rgba(0.17, 0.175, 0.19, 0.985) : Qt.rgba(0.975, 0.975, 0.98, 0.985)
     readonly property color glassRim: dark ? Qt.rgba(1, 1, 1, 0.05) : Qt.rgba(1, 1, 1, 0.40)
     // The specular edge: brightest along the top, fading down the sides.
     readonly property color glassSpecular: dark ? Qt.rgba(1, 1, 1, 0.20) : Qt.rgba(1, 1, 1, 0.85)
-    // How the backdrop is treated: blurred well past recognition, its
-    // colours lifted (macOS vibrancy), darkened a touch in dark mode.
-    readonly property real backdropBlur: 64
+    // How the backdrop is treated: blurred about as much as arbor blurs
+    // behind hearth's menus (blur-radius 8; heavier smeared it to a flat grey
+    // that read as opaque), its colours lifted (macOS vibrancy).
+    readonly property real backdropBlur: 20
     readonly property real backdropSaturation: 0.75
-    readonly property real backdropBrightness: dark ? -0.08 : 0.06
+    readonly property real backdropBrightness: dark ? 0 : 0.04
     // The outline: a faint hairline, just enough to part the menu from what
     // is behind (macOS: no hard frame).
     readonly property color glassEdge: dark ? Qt.rgba(0, 0, 0, 0.28) : Qt.rgba(0, 0, 0, 0.09)
