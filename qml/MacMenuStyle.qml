@@ -38,7 +38,9 @@ QtObject {
 
     // Glass: a translucent tint over the blurred window behind the menu
     // (vibrancy), a thin bright rim, a darker outline and a soft shadow.
-    readonly property color glassTint: dark ? Qt.rgba(0.13, 0.135, 0.15, 0.56) : Qt.rgba(0.985, 0.985, 0.99, 0.68)
+    // (Dark: a raised grey, lighter than the windows under it, as macOS
+    // menus are.)
+    readonly property color glassTint: dark ? Qt.rgba(0.21, 0.215, 0.235, 0.62) : Qt.rgba(0.985, 0.985, 0.99, 0.68)
     // (Where nothing behind can be blurred: nearly opaque.)
     readonly property color glassSolid: dark ? Qt.rgba(0.17, 0.175, 0.19, 0.985) : Qt.rgba(0.975, 0.975, 0.98, 0.985)
     readonly property color glassRim: dark ? Qt.rgba(1, 1, 1, 0.05) : Qt.rgba(1, 1, 1, 0.40)

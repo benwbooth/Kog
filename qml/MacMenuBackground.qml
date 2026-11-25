@@ -12,18 +12,27 @@ Item {
     implicitWidth: style.minWidth
     implicitHeight: style.rowHeight + 2 * style.padding
 
-    // What's behind: the window's content (the popup is drawn above it, in
-    // the window's overlay, so the capture never includes the menu itself).
-    readonly property Item behind: Window.window ? Window.window.contentItem : null
+    // What's behind: the window's content, over its background (an
+    // ApplicationWindow draws that as a separate item) and colour. The popup
+    // is drawn above them, in the window's overlay, so the capture never
+    // includes the menu itself.
+    readonly property var win: Window.window
+    readonly property Item behind: win ? win.contentItem : null
+    readonly property Item behindBack: win && win.background !== undefined ? win.background : null
     // (Blurring needs shaders: with the software renderer the tint stays
     // nearly opaque instead.)
     readonly property bool vibrancy: behind !== null && visible && width > 0
         && GraphicsInfo.api !== GraphicsInfo.Software && GraphicsInfo.api !== GraphicsInfo.Unknown
     property rect area: Qt.rect(0, 0, 0, 0)
+    property rect backArea: Qt.rect(0, 0, 0, 0)
     function aim() {
         if (!behind) return
         const p = bg.mapToItem(behind, 0, 0)
         area = Qt.rect(p.x, p.y, bg.width, bg.height)
+        if (behindBack) {
+            const q = bg.mapToItem(behindBack, 0, 0)
+            backArea = Qt.rect(q.x, q.y, bg.width, bg.height)
+        }
     }
     onWidthChanged: Qt.callLater(aim)
     onHeightChanged: Qt.callLater(aim)
@@ -47,14 +56,30 @@ Item {
         color: bg.style.shadow
     }
 
-    ShaderEffectSource {
-        id: grab
-        sourceItem: bg.vibrancy ? bg.behind : null
-        sourceRect: bg.area
+    // The backdrop: the window's colour, its background item, its content.
+    Item {
+        id: backdrop
         anchors.fill: parent
-        live: true
-        hideSource: false
         visible: false
+        layer.enabled: bg.vibrancy
+        Rectangle {
+            anchors.fill: parent
+            color: bg.win && bg.win.color ? bg.win.color : "transparent"
+        }
+        ShaderEffectSource {
+            anchors.fill: parent
+            sourceItem: bg.vibrancy ? bg.behindBack : null
+            sourceRect: bg.backArea
+            live: true
+            hideSource: false
+        }
+        ShaderEffectSource {
+            anchors.fill: parent
+            sourceItem: bg.vibrancy ? bg.behind : null
+            sourceRect: bg.area
+            live: true
+            hideSource: false
+        }
     }
     Rectangle {
         id: mask
@@ -66,7 +91,7 @@ Item {
     MultiEffect {
         anchors.fill: parent
         visible: bg.vibrancy
-        source: grab
+        source: backdrop
         blurEnabled: true
         blur: 1
         blurMax: bg.style.backdropBlur
