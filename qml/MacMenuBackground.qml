@@ -33,6 +33,12 @@ Item {
             const q = bg.mapToItem(behindBack, 0, 0)
             backArea = Qt.rect(q.x, q.y, bg.width, bg.height)
         }
+        // A snapshot, taken again only when the menu opens or moves: a live
+        // capture re-rendered the whole window (web views and all) and blurred
+        // it on every frame anything in it animated, and a spinner always does
+        // (almanac's main window: sluggish menus, 2026-11-25).
+        backSnap.scheduleUpdate()
+        snap.scheduleUpdate()
     }
     onWidthChanged: Qt.callLater(aim)
     onHeightChanged: Qt.callLater(aim)
@@ -67,17 +73,19 @@ Item {
             color: bg.win && bg.win.color ? bg.win.color : "transparent"
         }
         ShaderEffectSource {
+            id: backSnap
             anchors.fill: parent
             sourceItem: bg.vibrancy ? bg.behindBack : null
             sourceRect: bg.backArea
-            live: true
+            live: false
             hideSource: false
         }
         ShaderEffectSource {
+            id: snap
             anchors.fill: parent
             sourceItem: bg.vibrancy ? bg.behind : null
             sourceRect: bg.area
-            live: true
+            live: false
             hideSource: false
         }
     }
