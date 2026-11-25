@@ -81,6 +81,9 @@ fn main() {
         "qml/ExportDialog.qml",
         "qml/AppMenu.qml",
         "qml/KogPalette.qml",
+        "qml/KogMenu.qml",
+        "qml/KogMenuItem.qml",
+        "qml/KogMenuSeparator.qml",
     ];
     // The dev build's from-disk QML maps each of these to the source tree
     // (src/main.rs).

@@ -126,11 +126,11 @@ Item {
         onClicked: tabListMenu.popup(tabListButton, tabListButton.width - tabListMenu.width,
             tabListButton.height)
     }
-    Menu {
+    KogMenu {
         id: tabListMenu
         Instantiator {
             model: bar.entries
-            delegate: MenuItem {
+            delegate: KogMenuItem {
                 required property var modelData
                 text: modelData.name + (modelData.dirty ? " •" : "")
                 checkable: true

@@ -208,11 +208,11 @@ Item {
         }
     }
 
-    Menu {
+    KogMenu {
         id: sortMenu
         Instantiator {
             model: root.sortColumns
-            delegate: MenuItem {
+            delegate: KogMenuItem {
                 required property var modelData
                 text: modelData.label
                 checkable: true

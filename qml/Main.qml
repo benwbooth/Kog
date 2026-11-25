@@ -2248,32 +2248,32 @@ ApplicationWindow {
         onTriggered: appController.workspace_command(JSON.stringify({op: "redo"}))
     }
 
-    Menu {
+    KogMenu {
         id: playlistContextMenu
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Play")
             icon.name: "media-playback-start"
             enabled: root.selectedRow >= 0
             onTriggered: appController.play_index(root.selectedRow)
         }
-        MenuSeparator {}
-        MenuItem {
+        KogMenuSeparator {}
+        KogMenuItem {
             text: qsTr("Show in File Tree")
             icon.name: "folder-open"
             enabled: root.selectedRow >= 0
             onTriggered: root.showInFileTree(
                 String(appController.track_value_at(root.selectedRow, "path")))
         }
-        MenuItem { action: toggleQueueAction }
-        MenuItem { action: stopAfterSelectionAction }
-        MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
-        MenuItem { action: undoQueueAppendAction }
-        MenuItem { action: redoQueueAppendAction }
-        MenuSeparator {}
-        MenuItem { action: saveSelectionAction }
-        MenuItem { action: importPlaylistsAction }
-        MenuItem { action: editTagsAction }
-        MenuItem {
+        KogMenuItem { action: toggleQueueAction }
+        KogMenuItem { action: stopAfterSelectionAction }
+        KogMenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
+        KogMenuItem { action: undoQueueAppendAction }
+        KogMenuItem { action: redoQueueAppendAction }
+        KogMenuSeparator {}
+        KogMenuItem { action: saveSelectionAction }
+        KogMenuItem { action: importPlaylistsAction }
+        KogMenuItem { action: editTagsAction }
+        KogMenuItem {
             readonly property var offline: playlistContextMenu.visible && root.selectedRows.length > 0
                 ? JSON.parse(appController.offline_rows(root.selectedRows.join(","))) : ({ remote: 0, saved: 0 })
             text: offline.saved > 0 && offline.saved === offline.remote ? qsTr("Remove Offline Copy") : qsTr("Download for Offline")
@@ -2289,67 +2289,67 @@ ApplicationWindow {
                 }
             }
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Export…")
             icon.name: "document-export"
             enabled: root.playlistWorkspace.active === "queue" && root.selectedRows.length > 0
             onTriggered: exportDialog.openFor(root.selectedRows)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Blacklist Song")
             icon.name: "list-remove"
             enabled: root.selectedRows.length > 0
             onTriggered: appController.blacklist_pane_selection(
                 root.selectedRows.join(","), false)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Blacklist Folder")
             icon.name: "edit-delete"
             enabled: root.selectedRows.length > 0
             onTriggered: appController.blacklist_pane_selection(
                 root.selectedRows.join(","), true)
         }
-        MenuSeparator {}
-        MenuItem {
+        KogMenuSeparator {}
+        KogMenuItem {
             text: qsTr("Select All")
             icon.name: "edit-select-all"
             enabled: appController.playlist_count > 0
             onTriggered: selectAllAction.trigger()
         }
-        MenuItem { action: clearPlaylistAction }
+        KogMenuItem { action: clearPlaylistAction }
     }
 
-    Menu {
+    KogMenu {
         id: treeContextMenu
 
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Use as Tree Root")
             icon.name: "folder-open"
             enabled: root.treeSelectedPaths.length <= 1
                 && fileTreeModel.is_path_directory(root.treeContextPath)
             onTriggered: root.useTreeRoot(root.treeContextPath)
         }
-        MenuSeparator {}
-        MenuItem {
+        KogMenuSeparator {}
+        KogMenuItem {
             text: qsTr("Add to Playlist")
             icon.name: "list-add"
             onTriggered: root.addTreeSelection(root.treeContextPath, false)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Blacklist Song")
             icon.name: "list-remove"
             enabled: !fileTreeModel.is_path_directory(root.treeContextPath)
             onTriggered: appController.blacklist_tree_paths(
                 JSON.stringify(root.selectedTreePathsFor(root.treeContextPath)), false)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Blacklist Folder")
             icon.name: "edit-delete"
             enabled: fileTreeModel.is_path_directory(root.treeContextPath)
             onTriggered: appController.blacklist_tree_paths(
                 JSON.stringify(root.selectedTreePathsFor(root.treeContextPath)), true)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Delete…")
             icon.name: "edit-delete"
             enabled: root.treeSelectedPaths.length > 0
@@ -2362,24 +2362,24 @@ ApplicationWindow {
         }
     }
 
-    Menu {
+    KogMenu {
         id: playlistMenu
 
-        MenuItem {
+        KogMenuItem {
             objectName: "openPlaylistTabMenuItem"
             text: qsTr("Open in Tab")
             icon.name: "tab-new"
             onTriggered: root.openSelectedPlaylists()
         }
-        MenuItem {
+        KogMenuItem {
             objectName: "appendPlaylistMenuItem"
             text: root.appendPlaylistLabel
             icon.name: "list-add"
             enabled: root.canAppendToTab(root.playlistWorkspace.active)
             onTriggered: root.appendPlaylists(root.orderedSelectedPlaylistIds(), root.playlistWorkspace.active)
         }
-        MenuSeparator {}
-        MenuItem {
+        KogMenuSeparator {}
+        KogMenuItem {
             text: qsTr("Play")
             icon.name: "media-playback-start"
             onTriggered: {
@@ -2388,32 +2388,32 @@ ApplicationWindow {
                     appController.enqueue_playlist(ids[index], index === ids.length - 1)
             }
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Replace Play Queue")
             icon.name: "document-open"
             onTriggered: appController.load_playlist_into_pane(root.playlistMenuPid)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Clear History")
             icon.name: "edit-clear-history"
             visible: root.playlistMenuPid === -9000
             height: visible ? implicitHeight : 0
             onTriggered: clearHistoryConfirmDialog.open()
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Remove Missing Files")
             icon.name: "edit-clear"
             enabled: root.playlistMenuPid > 0
             onTriggered: appController.prune_missing_playlist_entries(root.playlistMenuPid)
         }
-        MenuSeparator {}
-        MenuItem {
+        KogMenuSeparator {}
+        KogMenuItem {
             text: qsTr("Rename")
             icon.name: "edit-rename"
             enabled: root.playlistMenuPid > 0
             onTriggered: root.renamingPlaylistId = root.playlistMenuPid
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Duplicate")
             icon.name: "edit-copy"
             enabled: root.playlistMenuPid > 0
@@ -2424,18 +2424,18 @@ ApplicationWindow {
                     row ? row.name + qsTr(" copy") : "")
             }
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Export as m3u…")
             icon.name: "document-save-as"
             onTriggered: appController.export_playlist(root.playlistMenuPid)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Import Playlists…")
             icon.name: "document-open"
             onTriggered: appController.import_playlists()
         }
-        MenuSeparator {}
-        MenuItem {
+        KogMenuSeparator {}
+        KogMenuItem {
             text: qsTr("Delete…")
             icon.name: "edit-delete"
             enabled: root.playlistMenuPid > 0
@@ -3131,19 +3131,19 @@ ApplicationWindow {
                         }
                     }
 
-                    Menu {
+                    KogMenu {
                         id: coverArtMenu
-                        MenuItem {
+                        KogMenuItem {
                             text: qsTr("Show Enlarged")
                             enabled: appController.current_artwork_path.length > 0
                             onTriggered: coverArtDialog.open()
                         }
-                        MenuItem {
+                        KogMenuItem {
                             text: qsTr("Wrong Cover – Find Another")
                             enabled: appController.current_artwork_path.length > 0
                             onTriggered: appController.reject_current_cover()
                         }
-                        MenuItem {
+                        KogMenuItem {
                             text: qsTr("Choose Cover…")
                             onTriggered: coverChooser.open()
                         }

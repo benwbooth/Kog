@@ -509,25 +509,25 @@ FocusScope {
             }
         }
     }
-    Menu {
+    KogMenu {
         id: contextMenu
         objectName: "workspaceContextMenu"
-        MenuItem { text: qsTr("Play Now"); icon.name: "media-playback-start"; enabled: !!editor.actions.queue; onTriggered: editor.send({op:"queue", action:"play_now"}) }
-        MenuItem { text: qsTr("Play Next"); enabled: !!editor.actions.queue; onTriggered: editor.send({op:"queue", action:"play_next"}) }
-        MenuItem { text: qsTr("Add to Queue"); enabled: !!editor.actions.queue; onTriggered: editor.send({op:"queue", action:"add_to_queue"}) }
-        MenuSeparator {}
-        MenuItem { text: qsTr("Add Play Queue"); enabled: !!editor.actions.add_play_queue; onTriggered: editor.app.workspace_add_queue_selection("all") }
-        MenuItem { text: qsTr("Add Queue Selection"); enabled: !!editor.actions.add_queue_selection; onTriggered: editor.app.workspace_add_queue_selection(editor.queueSelection.join(",")) }
-        MenuItem { text: qsTr("Remove Selected"); icon.name: "edit-delete"; enabled: !!editor.actions.remove; onTriggered: editor.send({op:"remove"}) }
-        MenuItem { text: qsTr("Move Up"); enabled: !!editor.actions.move_up; onTriggered: editor.send({op:"nudge", delta:-1}) }
-        MenuItem { text: qsTr("Move Down"); enabled: !!editor.actions.move_down; onTriggered: editor.send({op:"nudge", delta:1}) }
-        MenuSeparator {}
-        MenuItem { text: qsTr("Undo"); icon.name: "edit-undo"; enabled: !!editor.actions.undo; onTriggered: editor.send({op:"undo"}) }
-        MenuItem { text: qsTr("Redo"); icon.name: "edit-redo"; enabled: !!editor.actions.redo; onTriggered: editor.send({op:"redo"}) }
-        MenuItem { text: qsTr("Select All"); enabled: !!editor.actions.select_all; onTriggered: editor.selectAll() }
-        MenuItem { text: qsTr("Clear Selection"); enabled: !!editor.actions.clear_selection; onTriggered: editor.send({op:"selection", command:{op:"clear"}}) }
-        MenuSeparator {}
-        MenuItem { text: qsTr("Save"); icon.name: "document-save"; enabled: !!editor.actions.save; onTriggered: editor.send({op:"save"}) }
-        MenuItem { text: qsTr("Reload"); icon.name: "view-refresh"; enabled: !!editor.actions.reload; onTriggered: editor.send({op:"reload"}) }
+        KogMenuItem { text: qsTr("Play Now"); icon.name: "media-playback-start"; enabled: !!editor.actions.queue; onTriggered: editor.send({op:"queue", action:"play_now"}) }
+        KogMenuItem { text: qsTr("Play Next"); enabled: !!editor.actions.queue; onTriggered: editor.send({op:"queue", action:"play_next"}) }
+        KogMenuItem { text: qsTr("Add to Queue"); enabled: !!editor.actions.queue; onTriggered: editor.send({op:"queue", action:"add_to_queue"}) }
+        KogMenuSeparator {}
+        KogMenuItem { text: qsTr("Add Play Queue"); enabled: !!editor.actions.add_play_queue; onTriggered: editor.app.workspace_add_queue_selection("all") }
+        KogMenuItem { text: qsTr("Add Queue Selection"); enabled: !!editor.actions.add_queue_selection; onTriggered: editor.app.workspace_add_queue_selection(editor.queueSelection.join(",")) }
+        KogMenuItem { text: qsTr("Remove Selected"); icon.name: "edit-delete"; enabled: !!editor.actions.remove; onTriggered: editor.send({op:"remove"}) }
+        KogMenuItem { text: qsTr("Move Up"); enabled: !!editor.actions.move_up; onTriggered: editor.send({op:"nudge", delta:-1}) }
+        KogMenuItem { text: qsTr("Move Down"); enabled: !!editor.actions.move_down; onTriggered: editor.send({op:"nudge", delta:1}) }
+        KogMenuSeparator {}
+        KogMenuItem { text: qsTr("Undo"); icon.name: "edit-undo"; enabled: !!editor.actions.undo; onTriggered: editor.send({op:"undo"}) }
+        KogMenuItem { text: qsTr("Redo"); icon.name: "edit-redo"; enabled: !!editor.actions.redo; onTriggered: editor.send({op:"redo"}) }
+        KogMenuItem { text: qsTr("Select All"); enabled: !!editor.actions.select_all; onTriggered: editor.selectAll() }
+        KogMenuItem { text: qsTr("Clear Selection"); enabled: !!editor.actions.clear_selection; onTriggered: editor.send({op:"selection", command:{op:"clear"}}) }
+        KogMenuSeparator {}
+        KogMenuItem { text: qsTr("Save"); icon.name: "document-save"; enabled: !!editor.actions.save; onTriggered: editor.send({op:"save"}) }
+        KogMenuItem { text: qsTr("Reload"); icon.name: "view-refresh"; enabled: !!editor.actions.reload; onTriggered: editor.send({op:"reload"}) }
     }
 }

@@ -72,23 +72,23 @@ ApplicationWindow {
         : takenNames.indexOf(draft.name.trim()) >= 0 ? qsTr("Another custom effect has this name") : ""
 
     // A menu that adds a block, parallel paths or a feedback loop to a list.
-    component AddMenu: Menu {
+    component AddMenu: KogMenu {
         id: addMenu
         property var target: []
         Repeater {
             model: root.catalog.blocks
-            MenuItem {
+            KogMenuItem {
                 required property var modelData
                 text: modelData.label
                 onTriggered: { addMenu.target.push(root.newBlock(modelData.kind)); root.changed() }
             }
         }
-        MenuSeparator {}
-        MenuItem {
+        KogMenuSeparator {}
+        KogMenuItem {
             text: qsTr("Parallel paths")
             onTriggered: { addMenu.target.push({ parallel: [{ level: 1, stages: [] }, { level: 1, stages: [] }] }); root.changed() }
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Feedback loop")
             onTriggered: { addMenu.target.push({ feedback: 0.5, stages: [] }); root.changed() }
         }

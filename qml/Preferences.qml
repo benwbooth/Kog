@@ -1571,11 +1571,11 @@ Window {
                             text: qsTr("Add effect")
                             enabled: root.effectsChain.length < 16
                             onClicked: addMenu.open()
-                            Menu {
+                            KogMenu {
                                 id: addMenu
                                 Repeater {
                                     model: root.effectsCatalog.effects
-                                    MenuItem {
+                                    KogMenuItem {
                                         required property var modelData
                                         text: modelData.label
                                         onTriggered: {
@@ -1585,10 +1585,10 @@ Window {
                                         }
                                     }
                                 }
-                                MenuSeparator { visible: root.effectsPatches.length > 0 }
+                                KogMenuSeparator { visible: root.effectsPatches.length > 0 }
                                 Repeater {
                                     model: root.effectsPatches
-                                    MenuItem {
+                                    KogMenuItem {
                                         required property var modelData
                                         text: modelData.name
                                         onTriggered: root.commitEffects(root.editedChain(chain => chain.push({ kind: "custom", patch: modelData.name, enabled: true, params: { mix: 1 } })), "")
@@ -1690,16 +1690,16 @@ Window {
                             objectName: "patchNew"
                             text: qsTr("New custom effect")
                             onClicked: newMenu.open()
-                            Menu {
+                            KogMenu {
                                 id: newMenu
-                                MenuItem {
+                                KogMenuItem {
                                     text: qsTr("Empty")
                                     onTriggered: patchEditor.edit({ name: root.freeName(qsTr("My effect")), modulators: [], stages: [] }, root.effectsPatches.map(p => p.name))
                                 }
-                                MenuSeparator {}
+                                KogMenuSeparator {}
                                 Repeater {
                                     model: root.effectsCatalog.custom.templates
-                                    MenuItem {
+                                    KogMenuItem {
                                         required property var modelData
                                         text: qsTr("From %1").arg(modelData.name)
                                         onTriggered: {

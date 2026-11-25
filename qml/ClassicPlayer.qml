@@ -57,15 +57,15 @@ ApplicationWindow {
         }
     }
     function restoreQueue() { root.hide(); mainWindow.showFromTray() }
-    Menu {
+    KogMenu {
         id: skinMenu
-        MenuItem { text: qsTr("Show playlist"); checkable: true; checked: root.playlistVisible; onTriggered: root.playlistVisible = !root.playlistVisible }
-        MenuItem { objectName: "classicToolbarToggle"; text: qsTr("Show Kog toolbar"); checkable: true; checked: root.toolbarVisible; onTriggered: root.toolbarVisible = !root.toolbarVisible }
-        MenuSeparator {}
-        MenuItem { text: qsTr("Skins…"); icon.name: "preferences-desktop-theme"; onTriggered: root.openGallery() }
-        MenuItem { text: qsTr("Equalizer…"); icon.name: "preferences-desktop-sound"; onTriggered: root.openEqualizer() }
-        MenuItem { text: qsTr("Visualizer…"); icon.name: "audio-equalizer"; onTriggered: root.openVisualizer() }
-        MenuItem { text: qsTr("Return to Kog"); icon.name: "view-restore"; onTriggered: root.restoreQueue() }
+        KogMenuItem { text: qsTr("Show playlist"); checkable: true; checked: root.playlistVisible; onTriggered: root.playlistVisible = !root.playlistVisible }
+        KogMenuItem { objectName: "classicToolbarToggle"; text: qsTr("Show Kog toolbar"); checkable: true; checked: root.toolbarVisible; onTriggered: root.toolbarVisible = !root.toolbarVisible }
+        KogMenuSeparator {}
+        KogMenuItem { text: qsTr("Skins…"); icon.name: "preferences-desktop-theme"; onTriggered: root.openGallery() }
+        KogMenuItem { text: qsTr("Equalizer…"); icon.name: "preferences-desktop-sound"; onTriggered: root.openEqualizer() }
+        KogMenuItem { text: qsTr("Visualizer…"); icon.name: "audio-equalizer"; onTriggered: root.openVisualizer() }
+        KogMenuItem { text: qsTr("Return to Kog"); icon.name: "view-restore"; onTriggered: root.restoreQueue() }
     }
     function buttonAction(index) {
         if (index === 0) app.previous()

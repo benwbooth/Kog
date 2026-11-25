@@ -182,12 +182,12 @@ Item {
         enabled: root.queueActive
         onDropped: drop => { if (drop.hasUrls) { root.app.enqueue_urls_json(JSON.stringify(drop.urls)); drop.acceptProposedAction() } }
     }
-    Menu {
+    KogMenu {
         id: editMenu
-        MenuItem { text: qsTr("Add files…"); icon.name: "document-open"; onTriggered: root.app.open_audio_files() }
-        MenuItem { text: qsTr("Remove selected"); enabled: root.selectedRows.length > 0; icon.name: "edit-delete"; onTriggered: root.removeSelected() }
-        MenuItem { text: qsTr("Save playlist…"); icon.name: "document-save"; onTriggered: root.app.save_playlist() }
-        MenuItem { text: qsTr("Clear playlist"); icon.name: "edit-clear-list"; onTriggered: root.app.clear_playlist() }
+        KogMenuItem { text: qsTr("Add files…"); icon.name: "document-open"; onTriggered: root.app.open_audio_files() }
+        KogMenuItem { text: qsTr("Remove selected"); enabled: root.selectedRows.length > 0; icon.name: "edit-delete"; onTriggered: root.removeSelected() }
+        KogMenuItem { text: qsTr("Save playlist…"); icon.name: "document-save"; onTriggered: root.app.save_playlist() }
+        KogMenuItem { text: qsTr("Clear playlist"); icon.name: "edit-clear-list"; onTriggered: root.app.clear_playlist() }
     }
     Item {
         y: root.height - 30; width: 275; height: 18

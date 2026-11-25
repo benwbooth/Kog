@@ -639,179 +639,179 @@ Rectangle {
         }
     }
 
-    Menu {
+    KogMenu {
         id: columnMenu
 
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Move Column Left")
             icon.name: "go-previous"
             enabled: root.canMoveColumn(root.menuColumn, -1)
             onTriggered: root.moveColumn(root.menuColumn, -1)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Move Column Right")
             icon.name: "go-next"
             enabled: root.canMoveColumn(root.menuColumn, 1)
             onTriggered: root.moveColumn(root.menuColumn, 1)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Auto-Fit Column")
             onTriggered: root.autoFitColumn(root.menuColumn)
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Auto-Fit All Columns")
             onTriggered: root.autoFitAllColumns()
         }
-        MenuSeparator {}
-        MenuItem {
+        KogMenuSeparator {}
+        KogMenuItem {
             text: qsTr("Album")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("album")
             onTriggered: root.toggleColumn("album")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Album Artist")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("albumartist")
             onTriggered: root.toggleColumn("albumartist")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Artist")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("artist")
             onTriggered: root.toggleColumn("artist")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Bitrate")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("bitrate")
             onTriggered: root.toggleColumn("bitrate")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Bits Per Sample")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("bitspersample")
             onTriggered: root.toggleColumn("bitspersample")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Codec")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("codec")
             onTriggered: root.toggleColumn("codec")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Composer")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("composer")
             onTriggered: root.toggleColumn("composer")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Filename")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("filename")
             onTriggered: root.toggleColumn("filename")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("File Size")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("filesize")
             onTriggered: root.toggleColumn("filesize")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("File Size (Bytes)")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("filesizebytes")
             onTriggered: root.toggleColumn("filesizebytes")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Genre")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("genre")
             onTriggered: root.toggleColumn("genre")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Index")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("index")
             onTriggered: root.toggleColumn("index")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Length")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("length")
             onTriggered: root.toggleColumn("length")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Path")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("path")
             onTriggered: root.toggleColumn("path")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Play Count")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("playcount")
             onTriggered: root.toggleColumn("playcount")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Rating")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("rating")
             onTriggered: root.toggleColumn("rating")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Sample Rate")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("samplerate")
             onTriggered: root.toggleColumn("samplerate")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Status")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("status")
             onTriggered: root.toggleColumn("status")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Title")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("title")
             onTriggered: root.toggleColumn("title")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Track")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("track")
             onTriggered: root.toggleColumn("track")
         }
-        MenuItem {
+        KogMenuItem {
             text: qsTr("Year")
             icon.name: checked ? "view-visible" : "view-hidden"
             checkable: true
             checked: root.columnVisible("date")
             onTriggered: root.toggleColumn("date")
         }
-        MenuSeparator {}
-        MenuItem {
+        KogMenuSeparator {}
+        KogMenuItem {
             text: qsTr("Reset Columns")
             icon.name: "edit-undo"
             onTriggered: root.resetLayout()

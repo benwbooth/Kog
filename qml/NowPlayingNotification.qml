@@ -233,26 +233,26 @@ Window {
                     acceptedButtons: Qt.RightButton
                     onTapped: positionMenu.popup()
                 }
-                Menu {
+                KogMenu {
                     id: positionMenu
-                    MenuItem {
+                    KogMenuItem {
                         text: qsTr("Reset position above tray")
                         onTriggered: root.resetPosition()
                     }
-                    MenuSeparator {}
-                    MenuItem {
+                    KogMenuSeparator {}
+                    KogMenuItem {
                         text: qsTr("Move to top left")
                         onTriggered: root.moveToCorner("topLeft")
                     }
-                    MenuItem {
+                    KogMenuItem {
                         text: qsTr("Move to top right")
                         onTriggered: root.moveToCorner("topRight")
                     }
-                    MenuItem {
+                    KogMenuItem {
                         text: qsTr("Move to bottom left")
                         onTriggered: root.moveToCorner("bottomLeft")
                     }
-                    MenuItem {
+                    KogMenuItem {
                         text: qsTr("Move to bottom right")
                         onTriggered: root.moveToCorner("bottomRight")
                     }
