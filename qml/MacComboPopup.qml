@@ -9,7 +9,7 @@ Popup {
     id: pop
     property ComboBox combo: null
     property alias dark: style.dark
-    property alias accent: style.accent
+    property alias accent: style.appAccent
     readonly property MacMenuStyle macStyle: MacMenuStyle {
         id: style
         window: pop.combo ? pop.combo.palette.window : "#2a2a2e"

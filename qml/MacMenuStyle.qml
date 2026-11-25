@@ -15,13 +15,19 @@ QtObject {
     property color window: "#2a2a2e"
     property color highlight: "#0a84ff"
     property bool dark: window.hslLightness < 0.5
-    property color accent: highlight
+    // The selection is macOS's system blue in every app, as in hearth's menus
+    // (an app's own accent, `appAccent`, isn't used for it).
+    property color appAccent: highlight
+    readonly property color accent: dark ? "#0a84ff" : "#007aff"
 
     readonly property real pt: 1.125
+    // SF Pro (macOS's menu font) when it is installed, else Inter (its
+    // closest open relative, installed system-wide, as hearth uses), else
+    // Noto Sans: the same in every app, never the app's own font.
     readonly property string family: {
         const f = Qt.fontFamilies()
         for (const n of ["SF Pro", "SF Pro Text", "Inter", "Inter Variable"]) if (f.indexOf(n) >= 0) return n
-        return Qt.application.font.family
+        return "Noto Sans"
     }
     // 13 pt (Inter runs ~4% larger than SF Pro at the same size).
     readonly property real fontSize: Math.round(13 * pt * (family.indexOf("Inter") === 0 ? 0.962 : 1) * 10) / 10
@@ -40,7 +46,7 @@ QtObject {
     // (vibrancy), a thin bright rim, a darker outline and a soft shadow.
     // (Dark: a raised grey, lighter than the windows under it, as macOS
     // menus are.)
-    readonly property color glassTint: dark ? Qt.rgba(0.21, 0.215, 0.235, 0.62) : Qt.rgba(0.985, 0.985, 0.99, 0.68)
+    readonly property color glassTint: dark ? Qt.rgba(0.235, 0.24, 0.26, 0.70) : Qt.rgba(0.985, 0.985, 0.99, 0.68)
     // (Where nothing behind can be blurred: nearly opaque.)
     readonly property color glassSolid: dark ? Qt.rgba(0.17, 0.175, 0.19, 0.985) : Qt.rgba(0.975, 0.975, 0.98, 0.985)
     readonly property color glassRim: dark ? Qt.rgba(1, 1, 1, 0.05) : Qt.rgba(1, 1, 1, 0.40)

@@ -282,28 +282,10 @@ ApplicationWindow {
         }
     }
 
-    component TitleDragArea: Item {
-        DragHandler {
-            target: null
-            acceptedButtons: Qt.LeftButton
-            onActiveChanged: {
-                if (!active)
-                    return
-                // Active requires a real drag: presses and double-clicks
-                // never activate the handler, so restoring here cannot race
-                // the double-tap toggle below.
-                if (root.visibility === Window.Maximized)
-                    root.showNormal()
-                root.startSystemMove()
-            }
-        }
-        TapHandler {
-            acceptedButtons: Qt.LeftButton
-            onDoubleTapped: root.visibility === Window.Maximized
-                ? root.showNormal()
-                : root.showMaximized()
-        }
-    }
+    // Drag to move (a maximized window is restored first), double-click to
+    // maximize, right-click for the window menu: the shared ChromeTitleArea
+    // (hearth/shared/app-menus), as every app.
+    component TitleDragArea: ChromeTitleArea { window: root }
 
     component DesktopWindowButton: ToolButton {
         id: desktopWindowControl
@@ -3000,33 +2982,13 @@ ApplicationWindow {
                 }
             }
 
-            RowLayout {
+            // Minimize, maximize/restore, close: the shared ChromeButtons,
+            // drawn as arbor draws Breeze's on its title bars.
+            ChromeButtons {
                 visible: !root.useMacWindowControls
+                window: root
                 Layout.leftMargin: 3
-                Layout.rightMargin: 0
-                spacing: 0
-
-                DesktopWindowButton {
-                    themedIconName: "window-minimize"
-                    description: qsTr("Minimize")
-                    onClicked: root.showMinimized()
-                }
-                DesktopWindowButton {
-                    themedIconName: root.visibility === Window.Maximized
-                        ? "window-restore"
-                        : "window-maximize"
-                    description: root.visibility === Window.Maximized
-                        ? qsTr("Restore")
-                        : qsTr("Maximize")
-                    onClicked: root.visibility === Window.Maximized
-                        ? root.showNormal()
-                        : root.showMaximized()
-                }
-                DesktopWindowButton {
-                    themedIconName: "window-close"
-                    description: qsTr("Close")
-                    onClicked: root.close()
-                }
+                Layout.alignment: Qt.AlignVCenter
             }
         }
     }

@@ -22,7 +22,7 @@ Menu {
     // The look: the app's palette by default; set `dark` / `accent` to the
     // app's own theme.
     property alias dark: style.dark
-    property alias accent: style.accent
+    property alias accent: style.appAccent
     readonly property MacMenuStyle macStyle: MacMenuStyle {
         id: style
         window: menu.palette.window
