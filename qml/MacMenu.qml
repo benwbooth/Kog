@@ -43,7 +43,7 @@ Menu {
         for (let i = 0; i < count; i++) {
             const it = itemAt(i)
             if (!it || it.visible === false) continue
-            if ((it.icon && it.icon.name) || it.checkable || (it.swatch && it.swatch.a > 0)) return true
+            if ((it.icon && it.icon.name) || it.iconName || it.checkable || (it.swatch && it.swatch.a > 0)) return true
         }
         return false
     }
