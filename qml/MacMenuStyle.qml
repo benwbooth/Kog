@@ -41,15 +41,17 @@ QtObject {
     readonly property color glassTint: dark ? Qt.rgba(0.13, 0.135, 0.15, 0.56) : Qt.rgba(0.985, 0.985, 0.99, 0.68)
     // (Where nothing behind can be blurred: nearly opaque.)
     readonly property color glassSolid: dark ? Qt.rgba(0.17, 0.175, 0.19, 0.985) : Qt.rgba(0.975, 0.975, 0.98, 0.985)
-    readonly property color glassRim: dark ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(1, 1, 1, 0.55)
+    readonly property color glassRim: dark ? Qt.rgba(1, 1, 1, 0.05) : Qt.rgba(1, 1, 1, 0.40)
     // The specular edge: brightest along the top, fading down the sides.
-    readonly property color glassSpecular: dark ? Qt.rgba(1, 1, 1, 0.32) : Qt.rgba(1, 1, 1, 0.95)
+    readonly property color glassSpecular: dark ? Qt.rgba(1, 1, 1, 0.20) : Qt.rgba(1, 1, 1, 0.85)
     // How the backdrop is treated: blurred well past recognition, its
     // colours lifted (macOS vibrancy), darkened a touch in dark mode.
     readonly property real backdropBlur: 64
     readonly property real backdropSaturation: 0.75
     readonly property real backdropBrightness: dark ? -0.08 : 0.06
-    readonly property color glassEdge: dark ? Qt.rgba(0, 0, 0, 0.55) : Qt.rgba(0, 0, 0, 0.16)
+    // The outline: a faint hairline, just enough to part the menu from what
+    // is behind (macOS: no hard frame).
+    readonly property color glassEdge: dark ? Qt.rgba(0, 0, 0, 0.28) : Qt.rgba(0, 0, 0, 0.09)
     readonly property color shadow: Qt.rgba(0, 0, 0, dark ? 0.32 : 0.2)
     readonly property real shadowBlur: 26
     readonly property real shadowY: 9
