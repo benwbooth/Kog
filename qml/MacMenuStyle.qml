@@ -24,9 +24,16 @@ QtObject {
     // SF Pro (macOS's menu font) when it is installed, else Inter (its
     // closest open relative, installed system-wide, as hearth uses), else
     // Noto Sans: the same in every app, never the app's own font.
+    // (Each asked of the font matcher, which keeps its answers: not
+    // Qt.fontFamilies(), every installed family made into a JS list and
+    // searched, for every menu and menu item; a card's menus made per
+    // command held a terminal's prompt up for most of a second.)
+    readonly property FontInfo sfPro: FontInfo { font.family: "SF Pro" }
+    readonly property FontInfo sfProText: FontInfo { font.family: "SF Pro Text" }
+    readonly property FontInfo inter: FontInfo { font.family: "Inter" }
+    readonly property FontInfo interVariable: FontInfo { font.family: "Inter Variable" }
     readonly property string family: {
-        const f = Qt.fontFamilies()
-        for (const n of ["SF Pro", "SF Pro Text", "Inter", "Inter Variable"]) if (f.indexOf(n) >= 0) return n
+        for (const f of [sfPro, sfProText, inter, interVariable]) if (f.family === f.font.family) return f.family
         return "Noto Sans"
     }
     // 13 pt (Inter runs ~4% larger than SF Pro at the same size).
