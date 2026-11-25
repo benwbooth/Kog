@@ -27,24 +27,37 @@ MenuItem {
     implicitHeight: visible ? st.rowHeight : 0
     height: visible ? implicitHeight : 0
 
-    readonly property MacMenuStyle st: menu && menu.macStyle ? menu.macStyle : ownStyle
-    MacMenuStyle { id: ownStyle; window: mi.palette.window; highlight: mi.palette.highlight }
+    // The menu's style. Rows made with createObject() don't have their menu
+    // yet while they're made, so give them `styleHint: menu.macStyle` (as
+    // AppMenu does): else each made a style of its own first and worked
+    // everything out twice. A row with neither makes its own, once.
+    property MacMenuStyle styleHint: null
+    readonly property MacMenuStyle st: styleHint ? styleHint : menu && menu.macStyle ? menu.macStyle : ownStyle()
+    readonly property var _own: ({})
+    function ownStyle() {
+        if (!_own.style)
+            _own.style = ownStyleMaker.createObject(mi, { window: mi.palette.window, highlight: mi.palette.highlight })
+        return _own.style
+    }
+    Component { id: ownStyleMaker; MacMenuStyle {} }
     readonly property bool gutter: menu && menu.gutter !== undefined ? menu.gutter : true
     // "Text\tCtrl+X" (platform menus' way of giving the key): shown apart.
     readonly property string label: text.split("\t")[0]
     readonly property string tabKey: text.indexOf("\t") >= 0 ? text.split("\t")[1] : ""
     readonly property string keyText: subMenu ? ""
-        : st.pcShortcut(shortcutText !== "" ? shortcutText : tabKey !== "" ? tabKey : keyReader.nativeText)
-    // Only reads the key (a string or a StandardKey, of `shortcut` or the
-    // Action) for display; the app's Shortcut/Action owns it.
-    Shortcut {
+        : st.pcShortcut(shortcutText !== "" ? shortcutText : tabKey !== "" ? tabKey : keyReader.item ? keyReader.item.nativeText : "")
+    // The key (a string or a StandardKey, of `shortcut` or the Action) to
+    // show; the app's Shortcut/Action owns it. (Made only when there's one:
+    // most rows give `shortcutText` or none.)
+    readonly property var _key: shortcut !== undefined && shortcut !== null && shortcut !== "" ? shortcut
+        : action && action.shortcut !== undefined && action.shortcut !== null && action.shortcut !== "" ? action.shortcut : undefined
+    Loader {
         id: keyReader
-        enabled: false
-        // (`sequences`: a StandardKey with several bindings warns as `sequence`.)
-        sequences: {
-            const k = mi.shortcut !== undefined && mi.shortcut !== null && mi.shortcut !== "" ? mi.shortcut
-                : mi.action && mi.action.shortcut !== undefined ? mi.action.shortcut : ""
-            return k === "" || k === undefined || k === null ? [] : [k]
+        active: mi._key !== undefined && mi.shortcutText === "" && mi.tabKey === ""
+        sourceComponent: Shortcut {
+            enabled: false
+            // (`sequences`: a StandardKey with several bindings warns as `sequence`.)
+            sequences: mi._key === undefined ? [] : [mi._key]
         }
     }
 
@@ -123,23 +136,27 @@ MenuItem {
                 border.width: mi.checkable && mi.checked ? 2 : 1
                 border.color: mi.checkable && mi.checked ? mi.textColor : Qt.rgba(0, 0, 0, 0.2)
             }
-            MacMenuIcon {
-                id: rowIcon
-                x: (parent.width - width) / 2 - 2
-                y: (parent.height - height) / 2
-                visible: mi.iconName !== "" && mi.swatch.a === 0
-                name: mi.menu && mi.menu.iconUrl ? mi.iconName : mi.iconName.split("|")[0]
-                iconUrl: mi.menu && mi.menu.iconUrl ? mi.menu.iconUrl : null
-                color: mi.menu && mi.menu.monoIcon && mi.menu.monoIcon(mi.iconName) ? mi.textColor : "transparent"
-                opacity: mi.enabled ? 1 : 0.4
-                // Placed again whenever the menu opens or moves (it opens at
-                // a new spot, then is moved to stay inside the window).
-                Connections {
-                    target: mi.menu
-                    ignoreUnknownSignals: true
-                    function onOpened() { Qt.callLater(rowIcon.snap) }
-                    function onXChanged() { Qt.callLater(rowIcon.snap) }
-                    function onYChanged() { Qt.callLater(rowIcon.snap) }
+            // (Made only for rows with an icon.)
+            Loader {
+                anchors.fill: parent
+                active: mi.iconName !== "" && mi.swatch.a === 0
+                sourceComponent: MacMenuIcon {
+                    id: rowIcon
+                    x: (parent.width - width) / 2 - 2
+                    y: (parent.height - height) / 2
+                    name: mi.menu && mi.menu.iconUrl ? mi.iconName : mi.iconName.split("|")[0]
+                    iconUrl: mi.menu && mi.menu.iconUrl ? mi.menu.iconUrl : null
+                    color: mi.menu && mi.menu.monoIcon && mi.menu.monoIcon(mi.iconName) ? mi.textColor : "transparent"
+                    opacity: mi.enabled ? 1 : 0.4
+                    // Placed again whenever the menu opens or moves (it opens at
+                    // a new spot, then is moved to stay inside the window).
+                    Connections {
+                        target: mi.menu
+                        ignoreUnknownSignals: true
+                        function onOpened() { Qt.callLater(rowIcon.snap) }
+                        function onXChanged() { Qt.callLater(rowIcon.snap) }
+                        function onYChanged() { Qt.callLater(rowIcon.snap) }
+                    }
                 }
             }
         }
@@ -176,24 +193,27 @@ MenuItem {
             textFormat: Text.PlainText
             renderType: Text.NativeRendering
         }
-        // Submenu chevron (SF Symbol chevron.right, ~9 pt).
-        Shape {
-            visible: mi.subMenu !== null
+        // Submenu chevron (SF Symbol chevron.right, ~9 pt); made only for
+        // submenu rows (a Shape costs more to make than the rest of a row).
+        Loader {
+            active: mi.subMenu !== null
             anchors.right: parent.right
             anchors.rightMargin: mi.st.textInset
             anchors.verticalCenter: parent.verticalCenter
-            width: 6
-            height: 11
-            preferredRendererType: Shape.CurveRenderer
-            ShapePath {
-                strokeColor: mi.textColor
-                strokeWidth: 1.6
-                fillColor: "transparent"
-                capStyle: ShapePath.RoundCap
-                joinStyle: ShapePath.RoundJoin
-                startX: 0.8; startY: 0.8
-                PathLine { x: 5.2; y: 5.5 }
-                PathLine { x: 0.8; y: 10.2 }
+            sourceComponent: Shape {
+                width: 6
+                height: 11
+                preferredRendererType: Shape.CurveRenderer
+                ShapePath {
+                    strokeColor: mi.textColor
+                    strokeWidth: 1.6
+                    fillColor: "transparent"
+                    capStyle: ShapePath.RoundCap
+                    joinStyle: ShapePath.RoundJoin
+                    startX: 0.8; startY: 0.8
+                    PathLine { x: 5.2; y: 5.5 }
+                    PathLine { x: 0.8; y: 10.2 }
+                }
             }
         }
     }

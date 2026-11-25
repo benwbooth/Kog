@@ -124,6 +124,13 @@ MacMenu {
         return out
     }
 
+    // The menu's style for a row made for it (rows made with createObject()
+    // don't know their menu yet: without it each made a style of its own,
+    // ~3x the time per row). Only for the Mac delegates, which take it.
+    function _hint(menu, delegate) {
+        return menu && menu.macStyle && (delegate === macItem || delegate === macSeparator) ? { styleHint: menu.macStyle } : {}
+    }
+
     function rebuild() {
         while (count > 0) takeItem(0)
         for (var i = 0; i < _objects.length; i++) _objects[i].destroy()
@@ -134,7 +141,7 @@ MacMenu {
             var menu = stack[stack.length - 1]
             var obj
             if (kind === "sep") {
-                obj = separatorDelegate.createObject(null)
+                obj = separatorDelegate.createObject(null, root._hint(menu, separatorDelegate))
                 menu.addItem(obj)
             } else if (kind === "sub") {
                 obj = submenuDelegate.createObject(null, { title: it.text, enabled: it.enabled !== false })
@@ -150,10 +157,10 @@ MacMenu {
                 stack[stack.length - 1].addMenu(sub)
                 return
             } else {
-                obj = itemDelegate.createObject(null, {
+                obj = itemDelegate.createObject(null, Object.assign({
                     text: it.text, shortcutText: it.shortcut || "",
                     enabled: it.enabled !== false,
-                    checkable: !!it.checkable, checked: !!it.checkable && !!it.checked })
+                    checkable: !!it.checkable, checked: !!it.checkable && !!it.checked }, root._hint(menu, itemDelegate)))
                 setIcon(obj, it.icon || "")
                 const id = it.id || ""
                 obj.triggered.connect(function() { root.triggered(id) })

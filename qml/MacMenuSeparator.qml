@@ -6,9 +6,17 @@ import QtQuick.Controls.Basic
 MenuSeparator {
     id: sep
     readonly property bool macSeparator: true
-    // (Set by its MacMenu to the menu's look.)
-    property MacMenuStyle st: ownStyle
-    MacMenuStyle { id: ownStyle; window: sep.palette.window; highlight: sep.palette.highlight }
+    // (Set by its MacMenu to the menu's look; `styleHint` gives it when it's
+    // made, as for MacMenuItem. One of its own is made only when neither does.)
+    property MacMenuStyle styleHint: null
+    property MacMenuStyle st: styleHint ? styleHint : ownStyle()
+    readonly property var _own: ({})
+    function ownStyle() {
+        if (!_own.style)
+            _own.style = ownStyleMaker.createObject(sep, { window: sep.palette.window, highlight: sep.palette.highlight })
+        return _own.style
+    }
+    Component { id: ownStyleMaker; MacMenuStyle {} }
     padding: 0
     topPadding: 0
     bottomPadding: 0
