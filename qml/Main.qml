@@ -2854,14 +2854,12 @@ ApplicationWindow {
                 color: root.palette.text
                 Accessible.ignored: true
             }
-            ToolbarButton {
+            MacMenuButton {
                 id: hamburgerButton
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: "☰"
-                iconName: "application-menu"
-                toolTip: appMenu.visible ? "" : qsTr("Kog menu")
-                onClicked: appMenu.openAt(hamburgerButton, 0, hamburgerButton.height)
+                dark: root.baseLuminance < 0.5
+                fg: root.palette.text
+                menu: appMenu
+                tip: qsTr("Kog menu")
             }
             ToolbarButton {
                 Layout.preferredWidth: 34
