@@ -2,49 +2,65 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Templates as T
 
-// Kog's right-click and drop-down menus, in the look they had under KDE's
-// org.kde.desktop style (Breeze): the window colour on a rounded panel with
-// a thin frame and a soft shadow, rows with an icon column, the shortcut at
-// the right, and a highlight-tinted rounded row under the pointer. Kog runs
-// the Basic style everywhere now (no Kirigami), whose menus are flat grey
-// boxes, so every menu in Kog is a KogMenu with KogMenuItem rows and
-// KogMenuSeparator lines. Nested KogMenus become submenus.
+// Kog's right-click and drop-down menus, in the same glass look as the ☰
+// menu (AppMenu.qml, grove's and hearth's menus): a 12 pt rounded panel
+// with a soft rim and shadow, 24 pt rows, icons in a column, the accent
+// colour on the highlighted row, the key at the right. Every menu in Kog is
+// a KogMenu with KogMenuItem rows and KogMenuSeparator lines; nested
+// KogMenus become submenus in the same look.
+//
+// Drawn inside the window (Popup.Item): a separate popup window gets
+// another scale from arbor at 4/3 and blurs.
 T.Menu {
     id: control
 
-    readonly property color frameColor: Qt.tint(palette.window,
-        Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.2))
+    // ---- look, shared with the rows (KogMenuItem reads it from `menu`) ----
+    property bool dark: palette.window.hslLightness < 0.5
+    property color accent: palette.highlight
+    readonly property real pt: 1.125   // hearth's point: 1.125 logical px
+    readonly property string family: {
+        const f = Qt.fontFamilies()
+        for (const n of ["SF Pro", "SF Pro Text", "Inter", "Inter Variable"]) if (f.indexOf(n) >= 0) return n
+        return font.family
+    }
+    readonly property real fontSize: Math.round(13 * pt * (family.indexOf("Inter") === 0 ? 0.962 : 1) * 10) / 10
+    readonly property color fg: dark ? "#f5f5f7" : "#1d1d1f"
+    readonly property color fgSecondary: dark ? Qt.rgba(1, 1, 1, 0.55) : Qt.rgba(0, 0, 0, 0.5)
+    readonly property color fgDisabled: dark ? Qt.rgba(1, 1, 1, 0.28) : Qt.rgba(0, 0, 0, 0.26)
+    readonly property color separatorColor: dark ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(0, 0, 0, 0.09)
+    readonly property color glassTint: dark ? Qt.rgba(0.17, 0.175, 0.19, 0.995) : Qt.rgba(0.975, 0.975, 0.98, 0.995)
+    readonly property color glassRim: dark ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.85)
+    readonly property color glassEdge: dark ? Qt.rgba(0, 0, 0, 0.6) : Qt.rgba(0, 0, 0, 0.13)
+    readonly property int radius: Math.round(12 * pt)
+    readonly property int rowHeight: Math.round(24 * pt)
+    readonly property int menuPad: Math.round(5 * pt)
+
+    popupType: Popup.Item
 
     implicitWidth: Math.max(implicitBackgroundWidth + leftInset + rightInset,
                             contentWidth + leftPadding + rightPadding)
     implicitHeight: Math.max(implicitBackgroundHeight + topInset + bottomInset,
                              contentHeight + topPadding + bottomPadding)
 
-    // Kept inside the window; a menu taller than the room scrolls.
-    margins: 0
-    // Breeze's menu margins. The .001 keeps rows off exact half device
-    // pixels at fractional scales, where Qt rounds each glyph on its own
-    // and round letters drop a pixel (the overlay is outside the main
-    // window's own nudge).
-    topPadding: 4.001
-    bottomPadding: 4
-    leftPadding: 4.001
-    rightPadding: 4
-    overlap: 1
+    // The .001 keeps rows off exact half device pixels at fractional scales
+    // (the overlay is outside the window's own nudge).
+    topPadding: menuPad + 0.001
+    bottomPadding: menuPad
+    leftPadding: menuPad + 0.001
+    rightPadding: menuPad
+    overlap: 3
     cascade: true
+    // Kept inside the window; a menu taller than the room scrolls.
+    margins: Math.round(4 * pt)
 
     delegate: KogMenuItem {}
 
     contentItem: ListView {
         id: listview
-        property bool hasCheckables: false
-        property bool hasIcons: false
-
         implicitWidth: Math.max(1, contentItem.children.reduce(
             (w, child) => Math.max(w, child.implicitWidth), 0))
         implicitHeight: Math.max(1, contentItem.visibleChildren.reduce(
             (h, item) => h + item.implicitHeight, 1))
-
         model: control.contentModel
         spacing: 0
         interactive: Window.window
@@ -54,66 +70,47 @@ T.Menu {
         currentIndex: control.currentIndex
         keyNavigationEnabled: true
         keyNavigationWraps: true
-
         ScrollIndicator.vertical: ScrollIndicator {}
-
-        // As Qt Widgets menus do: leaving a row clears its highlight.
-        Connections {
-            target: listview.currentItem
-            ignoreUnknownSignals: true
-            function onHoveredChanged() {
-                const item = listview.currentItem
-                if (item instanceof T.MenuItem && item.highlighted && !item.subMenu && !item.hovered)
-                    control.currentIndex = -1
-            }
-        }
     }
 
-    // Line the rows' icons and check boxes up in columns when any row has one.
-    Connections {
-        target: listview.contentItem
-        function onVisibleChildrenChanged() {
-            let checkables = false, icons = false
-            for (const child of listview.contentItem.visibleChildren) {
-                if (child.checkable) checkables = true
-                if (child.icon && (child.icon.name !== "" || child.icon.source.toString() !== ""))
-                    icons = true
-            }
-            listview.hasCheckables = checkables
-            listview.hasIcons = icons
-        }
-    }
-
-    enter: Transition {
-        NumberAnimation { property: "opacity"; from: 0; to: 1; easing.type: Easing.InOutQuad; duration: 150 }
-    }
-    exit: Transition {
-        NumberAnimation { property: "opacity"; from: 1; to: 0; easing.type: Easing.InOutQuad; duration: 150 }
-    }
+    enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120; easing.type: Easing.OutCubic } }
+    exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 140 } }
 
     background: Item {
-        implicitWidth: 144
-        // Shadow: a few widening, fading rings, offset down by 2.
-        Repeater {
-            model: 4
-            Rectangle {
-                required property int index
-                anchors.fill: parent
-                anchors.margins: -(index + 1)
-                anchors.topMargin: -(index + 1) + 2
-                anchors.bottomMargin: -(index + 1) - 2
-                radius: 5 + index + 1
-                color: "transparent"
-                border.width: 1
-                border.color: Qt.rgba(0, 0, 0, 0.13 - index * 0.03)
-            }
+        implicitWidth: Math.round(200 * control.pt)
+        Rectangle {   // shadow
+            anchors.fill: parent
+            anchors.topMargin: 3
+            anchors.margins: -1
+            radius: control.radius + 1
+            color: "transparent"
+            border.width: 3
+            border.color: Qt.rgba(0, 0, 0, control.dark ? 0.22 : 0.06)
         }
         Rectangle {
             anchors.fill: parent
-            radius: 5
-            color: control.palette.window
+            radius: control.radius
+            color: control.glassTint
             border.width: 1
-            border.color: control.frameColor
+            border.color: control.glassEdge
+        }
+        Rectangle {   // sheen in the top part
+            anchors.fill: parent
+            anchors.margins: 1
+            radius: control.radius - 1
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, control.dark ? 0.05 : 0.25) }
+                GradientStop { position: 0.35; color: Qt.rgba(1, 1, 1, 0) }
+            }
+        }
+        Rectangle {   // specular rim, lit from the top left
+            anchors.fill: parent
+            anchors.margins: 1
+            radius: control.radius - 1
+            color: "transparent"
+            border.width: 1
+            border.color: control.glassRim
+            opacity: 0.9
         }
     }
 }

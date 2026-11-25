@@ -1,56 +1,85 @@
 import QtQuick
-import QtQuick.Layouts
-import QtQuick.Shapes
 import QtQuick.Templates as T
 
-// A row of a KogMenu, in Breeze's look: a check box column (when the menu
-// has checkable rows), a 16 px icon column (when it has icons), the text,
-// the action's shortcut at the right, and a ▸ for a submenu. Under the
-// pointer the row gets a rounded highlight-tinted box with a highlight
-// border; pressed, it fills with the highlight colour.
+// A row of a KogMenu, in the ☰ menu's glass look (AppMenu.qml's glassItem):
+// a 16 pt icon, the text, the action's key at the right, a › for a submenu;
+// the accent colour fills the row under the pointer. A checked row gets a
+// soft accent square behind its icon, or a ✓ when it has none. The look's
+// colours and sizes come from the KogMenu it is in.
 T.MenuItem {
     id: control
 
-    readonly property var view: ListView.view
-    readonly property bool columnForChecks: checkable || (view && view.hasCheckables === true)
-    readonly property bool columnForIcons: icon.name !== "" || icon.source.toString() !== ""
-        || (view && view.hasIcons === true)
-    // (Disabled: the text faded into the menu, as Breeze's inactive text.
-    // The palette's disabled group isn't reliable here: a window that sets
-    // windowText after disabled.windowText overwrites it.)
-    readonly property color textColor: !enabled ? Qt.tint(palette.window, Qt.alpha(palette.windowText, 0.45))
-        : pressed ? palette.highlightedText : palette.windowText
+    // The key shown at the right: the action's shortcut unless set.
+    property string shortcutText: itemShortcut.nativeText
+    // "name|fallback": the first name is used.
+    readonly property string iconName: (icon.name || "").split("|")[0]
 
-    implicitWidth: Math.max(implicitBackgroundWidth + leftInset + rightInset,
-                            implicitContentWidth + leftPadding + rightPadding
-                                + (subMenu ? arrow.implicitWidth + 4 : 0))
-    implicitHeight: Math.max(implicitBackgroundHeight + topInset + bottomInset,
-                             implicitContentHeight + topPadding + bottomPadding,
-                             implicitIndicatorHeight + topPadding + bottomPadding)
+    readonly property var look: menu && menu.rowHeight !== undefined ? menu : null
+    readonly property bool dark: look ? look.dark : palette.window.hslLightness < 0.5
+    readonly property color accent: look ? look.accent : palette.highlight
+    readonly property real pt: 1.125
+    readonly property color fg: look ? look.fg : (dark ? "#f5f5f7" : "#1d1d1f")
+    readonly property color fgSecondary: look ? look.fgSecondary
+        : (dark ? Qt.rgba(1, 1, 1, 0.55) : Qt.rgba(0, 0, 0, 0.5))
+    readonly property color fgDisabled: look ? look.fgDisabled
+        : (dark ? Qt.rgba(1, 1, 1, 0.28) : Qt.rgba(0, 0, 0, 0.26))
+    readonly property bool lit: highlighted && enabled
+
+    implicitHeight: visible ? (look ? look.rowHeight : Math.round(24 * pt)) : 0
+    implicitWidth: Math.max(Math.round(200 * pt), lbl.implicitWidth + sc.implicitWidth + 70)
     // Hidden rows take no room.
     height: visible ? undefined : 0
-
-    padding: 4
-    verticalPadding: 4
+    leftPadding: 8
+    rightPadding: 8
     hoverEnabled: true
 
-    contentItem: RowLayout {
-        spacing: 5
-        Item {
-            Layout.preferredWidth: control.columnForChecks ? control.indicator.width : 4
+    background: Rectangle {
+        radius: Math.round(8 * control.pt)
+        color: control.lit ? control.accent : "transparent"
+    }
+
+    indicator: Item {}
+
+    arrow: Text {
+        visible: control.subMenu !== null
+        x: control.width - width - 8
+        anchors.verticalCenter: parent.verticalCenter
+        text: "›"
+        font.family: lbl.font.family
+        font.pixelSize: Math.round(15 * control.pt)
+        renderType: Text.NativeRendering
+        color: control.lit ? "#ffffff" : control.fgSecondary
+    }
+
+    contentItem: Item {
+        implicitWidth: lbl.implicitWidth + sc.implicitWidth + 60
+        // A toggle that's on: a soft accent square behind its icon (a ✓
+        // when it has none).
+        Rectangle {
+            visible: control.checkable && control.checked && control.iconName !== ""
+            x: -1
+            width: 22; height: 22; radius: 5
+            anchors.verticalCenter: parent.verticalCenter
+            color: control.lit ? Qt.rgba(1, 1, 1, 0.25)
+                : Qt.rgba(control.accent.r, control.accent.g, control.accent.b, 0.28)
+        }
+        GlassText {
+            visible: control.checkable && control.checked && control.iconName === ""
+            x: 4
+            anchors.verticalCenter: parent.verticalCenter
+            text: "✓"
+            color: control.lit ? "#ffffff" : control.fg
         }
         AppMenu.CrispIcon {
             id: rowIcon
-            Layout.alignment: Qt.AlignVCenter
-            Layout.preferredWidth: width
-            Layout.preferredHeight: height
-            visible: control.columnForIcons
-            size: 16
-            name: control.icon.name
-            source: control.icon.name === "" ? control.icon.source : ""
-            color: control.icon.color
+            visible: control.iconName !== ""
+            name: control.iconName
+            x: 2 + (16 - width) / 2
+            anchors.verticalCenter: parent.verticalCenter
             opacity: control.enabled ? 1 : 0.4
-            // Placed on the pixel grid again whenever the menu opens or moves.
+            // Placed on the pixel grid again whenever the menu opens or
+            // moves (it opens at a new spot, then is moved to stay inside
+            // the window).
             Connections {
                 target: control.menu
                 ignoreUnknownSignals: true
@@ -59,104 +88,40 @@ T.MenuItem {
                 function onYChanged() { Qt.callLater(rowIcon.snap) }
             }
         }
-        Text {
-            id: label
-            Layout.alignment: Qt.AlignVCenter
-            Layout.fillWidth: true
+        GlassText {
+            id: lbl
+            x: 24
+            width: parent.width - x - sc.width - 8
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenterOffset: 0.001
             text: control.text
-            font: control.font
-            color: control.textColor
-            elide: Text.ElideRight
-            visible: control.text !== ""
-            textFormat: Text.PlainText
-            renderType: Text.NativeRendering
-            verticalAlignment: Text.AlignVCenter
+            color: !control.enabled ? control.fgDisabled : control.lit ? "#ffffff" : control.fg
         }
-        Text {
-            id: shortcutLabel
-            Layout.alignment: Qt.AlignVCenter
-            Layout.leftMargin: 12
-            visible: text !== ""
-            text: itemShortcut.nativeText
-            font: control.font
-            color: control.textColor
-            opacity: control.pressed ? 1 : 0.7
-            renderType: Text.NativeRendering
-            horizontalAlignment: Text.AlignRight
-            verticalAlignment: Text.AlignVCenter
-            // Only reads the action's key for display; the action itself
-            // owns the shortcut.
-            Shortcut {
-                id: itemShortcut
-                enabled: false
-                sequence: control.action && control.action.shortcut !== undefined
-                    ? control.action.shortcut : ""
-            }
-        }
-        Item {
-            Layout.preferredWidth: 4
+        GlassText {
+            id: sc
+            anchors.right: parent.right
+            anchors.rightMargin: control.subMenu ? 18 : 4
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenterOffset: 0.001
+            text: control.shortcutText
+            color: control.lit ? "#ffffff" : control.fgSecondary
         }
     }
 
-    arrow: Shape {
-        x: control.mirrored ? control.padding : control.width - width - control.padding - 2
-        y: control.topPadding + (control.availableHeight - height) / 2
-        implicitWidth: 8
-        implicitHeight: 10
-        visible: control.subMenu
-        preferredRendererType: Shape.CurveRenderer
-        ShapePath {
-            strokeColor: control.textColor
-            strokeWidth: 1.5
-            fillColor: "transparent"
-            capStyle: ShapePath.RoundCap
-            joinStyle: ShapePath.RoundJoin
-            startX: control.mirrored ? 6 : 2; startY: 1
-            PathLine { x: control.mirrored ? 2 : 6; y: 5 }
-            PathLine { x: control.mirrored ? 6 : 2; y: 9 }
-        }
+    // Only reads the action's key for display; the action owns the shortcut.
+    Shortcut {
+        id: itemShortcut
+        enabled: false
+        sequence: control.action && control.action.shortcut !== undefined
+            ? control.action.shortcut : ""
     }
 
-    // Breeze's check box.
-    indicator: Rectangle {
-        x: control.mirrored ? control.width - width - control.rightPadding : control.leftPadding
-        y: control.topPadding + (control.availableHeight - height) / 2
-        implicitWidth: 16
-        implicitHeight: 16
-        visible: control.checkable
-        radius: 3
-        color: control.palette.base
-        border.width: 1
-        border.color: control.checked || control.highlighted
-            ? control.palette.highlight
-            : Qt.tint(control.palette.window,
-                Qt.rgba(control.palette.windowText.r, control.palette.windowText.g,
-                        control.palette.windowText.b, 0.35))
-        Shape {
-            anchors.fill: parent
-            visible: control.checked
-            preferredRendererType: Shape.CurveRenderer
-            ShapePath {
-                strokeColor: control.palette.highlight
-                strokeWidth: 2
-                fillColor: "transparent"
-                capStyle: ShapePath.RoundCap
-                joinStyle: ShapePath.RoundJoin
-                startX: 4; startY: 8.5
-                PathLine { x: 7; y: 11.5 }
-                PathLine { x: 12.5; y: 5 }
-            }
-        }
-    }
-
-    background: Rectangle {
-        implicitWidth: 144
-        opacity: (control.highlighted || control.down) && control.enabled ? 1 : 0
-        color: control.pressed ? control.palette.highlight
-            : Qt.rgba(control.palette.highlight.r, control.palette.highlight.g,
-                      control.palette.highlight.b, 0.3)
-        border.color: control.palette.highlight
-        border.width: 1
-        radius: 5
+    component GlassText: Text {
+        font.family: control.look ? control.look.family : control.font.family
+        font.pixelSize: control.look ? control.look.fontSize : Math.round(13 * control.pt * 10) / 10
+        renderType: Text.NativeRendering
+        elide: Text.ElideRight
+        verticalAlignment: Text.AlignVCenter
+        textFormat: Text.PlainText
     }
 }
