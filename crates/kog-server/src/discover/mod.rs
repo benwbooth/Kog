@@ -169,11 +169,55 @@ pub fn lower_priority() {
         #[cfg(target_os = "linux")]
         {
             libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+            // And the idle scheduling class: CPU only when nothing else wants it.
+            let param = libc::sched_param { sched_priority: 0 };
+            libc::sched_setscheduler(0, libc::SCHED_IDLE, &param);
             const IOPRIO_WHO_PROCESS: libc::c_long = 1;
             const IOPRIO_CLASS_IDLE: libc::c_long = 3;
             libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, 0 as libc::c_long, IOPRIO_CLASS_IDLE << 13);
         }
     }
+}
+
+/// Keeps the calling thread to about a tenth of one core: after each step
+/// it sleeps long enough that the thread's CPU time stays near 10% of the
+/// time passed. Background discovery is meant to sip, not take whatever's
+/// idle (it showed as 70-100% of a core).
+pub struct Pacer {
+    start_cpu: Duration,
+    start: Instant,
+}
+
+impl Pacer {
+    pub const SHARE: f64 = 0.10;
+
+    pub fn new() -> Self {
+        Self { start_cpu: thread_cpu(), start: Instant::now() }
+    }
+
+    pub fn pace(&mut self) {
+        let cpu = thread_cpu().saturating_sub(self.start_cpu).as_secs_f64();
+        let wall = self.start.elapsed().as_secs_f64();
+        let owed = cpu / Self::SHARE - wall;
+        if owed > 0.0 {
+            // Paid back a minute at a time, so the loop still renews its lease.
+            std::thread::sleep(Duration::from_secs_f64(owed.min(60.0)));
+        } else if wall > 60.0 {
+            // Even: start a fresh window, so a quiet spell doesn't bank credit.
+            *self = Self::new();
+        }
+    }
+}
+
+fn thread_cpu() -> Duration {
+    #[cfg(unix)]
+    unsafe {
+        let mut ts: libc::timespec = std::mem::zeroed();
+        if libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) == 0 {
+            return Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32);
+        }
+    }
+    Duration::ZERO
 }
 
 /// Run `work` on its own idle-priority thread, giving up after `timeout`
@@ -395,7 +439,9 @@ impl Discover {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let mut embedder = EmbedWorker::new(&store);
         self.seed_from_history();
+        let mut pacer = Pacer::new();
         loop {
+            pacer.pace();
             if last_lease.is_none_or(|at| at.elapsed() >= LEASE_RENEW) {
                 leased = store.take_lease(&owner, LEASE_TTL);
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -524,8 +570,12 @@ impl Discover {
         let due = match &previous {
             None => indexed > 0 || db.plays_stamp() > 0,
             Some(home) => {
+                // (`<`, not `!=`: Kogs in other time zones share these mixes --
+                // the docker server runs on UTC -- and with `!=` each saw the
+                // other's day as stale and remade them every few minutes for
+                // the eight hours a day the two disagree, 2026-11-24.)
                 refresh
-                    || home.day != day
+                    || home.day < day
                     || (home.thin
                         && now - home.made_at > 10 * 60 * 1000
                         && indexed >= (home.indexed * 2).max(home.indexed + 500))
