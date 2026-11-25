@@ -90,7 +90,7 @@ Window {
                 text: qsTr("Preset:")
                 color: root.palette.windowText
             }
-            ComboBox {
+            MacComboBox {
                 id: presetSelector
 
                 Layout.preferredWidth: 155

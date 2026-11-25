@@ -223,7 +223,7 @@ ApplicationWindow {
             ToolButton { text: qsTr("Skins"); icon.name: "preferences-desktop-theme"; display: root.scaleFactor === 1 ? AbstractButton.IconOnly : AbstractButton.TextOnly; onClicked: root.openGallery() }
             ToolButton { text: qsTr("Visualize"); icon.name: "audio-equalizer"; display: root.scaleFactor === 1 ? AbstractButton.IconOnly : AbstractButton.TextOnly; onClicked: root.openVisualizer() }
             Item { Layout.fillWidth: true }
-            ComboBox { model: ["1×", "2×", "3×"]; Layout.preferredWidth: 68; currentIndex: root.scaleFactor - 1; onActivated: root.scaleFactor = currentIndex + 1 }
+            MacComboBox { model: ["1×", "2×", "3×"]; Layout.preferredWidth: 68; currentIndex: root.scaleFactor - 1; onActivated: root.scaleFactor = currentIndex + 1 }
         }
     }
 }

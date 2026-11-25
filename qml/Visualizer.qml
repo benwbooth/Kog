@@ -44,7 +44,7 @@ ApplicationWindow {
             anchors.leftMargin: 12
             anchors.rightMargin: 12
             Label { text: qsTr("Visualizations"); font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
-            ComboBox {
+            MacComboBox {
                 id: mode
                 objectName: "visualizerMode"
                 model: [qsTr("Spectrum"), qsTr("Oscilloscope"), qsTr("Spectrogram"),

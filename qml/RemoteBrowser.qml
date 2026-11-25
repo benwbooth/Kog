@@ -173,7 +173,7 @@ Window {
             }
 
             Label { text: qsTr("Auth") }
-            ComboBox {
+            MacComboBox {
                 Layout.preferredWidth: 110
                 model: [qsTr("Token"), qsTr("Password"), qsTr("None")]
                 currentIndex: root.authMode === "basic" ? 1 : (root.authMode === "none" ? 2 : 0)
@@ -211,7 +211,7 @@ Window {
             }
 
             Label { text: qsTr("Stream") }
-            ComboBox {
+            MacComboBox {
                 id: codecBox
                 model: ["aac", "opus", "flac"]
                 currentIndex: Math.max(0, model.indexOf(root.codec))

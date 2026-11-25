@@ -80,7 +80,7 @@ Item {
     SkinSprite { y: root.height - 38; width: 125; height: 38; source: root.sheet; sheetY: 72 }
     SkinSprite { x: 125; y: root.height - 38; width: 150; height: 38; source: root.sheet; sheetX: 126; sheetY: 72 }
     Rectangle { x: 12; y: 20; width: 243; height: root.height - 58; color: root.normalBg }
-    ComboBox {
+    MacComboBox {
         id: savedPicker
         objectName: "classicSavedPlaylists"
         x: 12; y: 20; width: 243; height: 28

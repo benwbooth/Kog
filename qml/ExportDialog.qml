@@ -60,7 +60,7 @@ ApplicationWindow {
             enabled: !root.state.running
 
             Label { text: qsTr("Format") }
-            ComboBox {
+            MacComboBox {
                 objectName: "exportFormat"
                 Layout.fillWidth: true
                 model: root.formats.map(f => f.label)
@@ -68,7 +68,7 @@ ApplicationWindow {
                 onActivated: index => root.formatIndex = index
             }
             Label { text: qsTr("Bitrate"); visible: root.format.lossy === true }
-            ComboBox {
+            MacComboBox {
                 visible: root.format.lossy === true
                 Layout.fillWidth: true
                 readonly property var choices: [96, 128, 160, 192, 256, 320]

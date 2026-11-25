@@ -274,7 +274,7 @@ Window {
                         RowLayout {
                             anchors.fill: parent
                             PreferenceLabel { text: qsTr("Normally:") }
-                            ComboBox {
+                            MacComboBox {
                                 Layout.fillWidth: true
                                 model: [
                                     qsTr("Clear playlist and play"),
@@ -319,7 +319,7 @@ Window {
                             RowLayout {
                                 Layout.fillWidth: true
                                 PreferenceLabel { text: qsTr("Run the sound model on:") }
-                                ComboBox {
+                                MacComboBox {
                                     readonly property var choices: ["auto", "rocm", "webgpu", "cpu", "off"]
                                     Layout.fillWidth: true
                                     model: [
@@ -350,7 +350,7 @@ Window {
                         RowLayout {
                             anchors.fill: parent
                             PreferenceLabel { text: qsTr("Play:") }
-                            ComboBox {
+                            MacComboBox {
                                 readonly property var choices: ["once", "twice", "2min", "3min", "5min"]
                                 Layout.fillWidth: true
                                 model: [
@@ -477,7 +477,7 @@ Window {
                             RowLayout {
                                 Layout.fillWidth: true
                                 PreferenceLabel { text: qsTr("Device:") }
-                                ComboBox {
+                                MacComboBox {
                                     id: outputDeviceSelector
 
                                     Layout.fillWidth: true
@@ -590,7 +590,7 @@ Window {
                         RowLayout {
                             anchors.fill: parent
                             PreferenceLabel { text: qsTr("Colors:") }
-                            ComboBox {
+                            MacComboBox {
                                 readonly property var choices: ["system", "light", "dark"]
                                 Layout.fillWidth: true
                                 model: [
@@ -684,7 +684,7 @@ Window {
                             RowLayout {
                                 Layout.fillWidth: true
                                 PreferenceLabel { text: qsTr("Backend:") }
-                                ComboBox {
+                                MacComboBox {
                                     id: midiEngine
                                     Layout.fillWidth: true
                                     model: [
@@ -1227,7 +1227,7 @@ Window {
                             RowLayout {
                                 Layout.fillWidth: true
                                 PreferenceLabel { text: qsTr("Require") }
-                                ComboBox {
+                                MacComboBox {
                                     Layout.fillWidth: true
                                     model: [qsTr("An API token"), qsTr("Username and password"), qsTr("Nothing (loopback only)")]
                                     currentIndex: serverState.auth === "basic" ? 1
@@ -1400,7 +1400,7 @@ Window {
                             RowLayout {
                                 Layout.fillWidth: true
                                 PreferenceLabel { text: qsTr("HTTPS") }
-                                ComboBox {
+                                MacComboBox {
                                     Layout.fillWidth: true
                                     model: [qsTr("Off (plain HTTP)"), qsTr("Self-signed certificate"),
                                         qsTr("My own certificate")]
@@ -1429,7 +1429,7 @@ Window {
                             RowLayout {
                                 Layout.fillWidth: true
                                 PreferenceLabel { text: qsTr("Stream format") }
-                                ComboBox {
+                                MacComboBox {
                                     Layout.fillWidth: true
                                     model: ["aac", "opus", "flac"]
                                     currentIndex: Math.max(0, model.indexOf(serverState.codec))
@@ -1554,7 +1554,7 @@ Window {
                             onToggled: { root.effectsEnabled = checked; root.commitEffects(root.effectsChain) }
                         }
                         PreferenceLabel { text: qsTr("Preset") }
-                        ComboBox {
+                        MacComboBox {
                             objectName: "effectsPreset"
                             Layout.preferredWidth: 220
                             model: root.effectsCatalog.presets.map(p => p.preset).concat(root.effectsCatalog.presets.some(p => p.preset === root.effectsPreset) ? [] : [qsTr("Custom")])

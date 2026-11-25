@@ -1,71 +1,42 @@
 import QtQuick
 import QtQuick.Controls.Basic
-import QtQuick.Controls.impl
 
 // The app's menus inside the window, from the same model GlobalMenuBar
 // exports to the desktop's global menu bar: one submenu per menu (File ▸,
-// Edit ▸ ...), shortcuts shown on the right. Rebuilt each time it opens so
-// texts and states are current. Opened by the window's ☰ button:
+// Edit ▸ ...), shortcuts shown on the right. Rows are made once and updated
+// in place each time it opens, so texts and states are current. Opened by
+// the window's ☰ button:
 //     AppMenu { id: appMenu; model: root.menuModel; onTriggered: id => root.menuAction(id) }
 //     onClicked: appMenu.openBelow(button)
 //
-// The look is grove's glass menu (hearth's: 12 pt corners, 24 pt rows, an
-// icon on every row, the accent colour on the highlighted row, the key at
-// the right, a fade), in the app's light/dark palette and accent colour.
-// Give every model item an `icon` (a freedesktop icon name).
+// The look is MacMenu's (macOS 26, as hearth draws its menus), in the app's
+// light/dark palette and accent colour (set `dark` and `accent` from the
+// app's theme). Give every model item an `icon` (a freedesktop icon name).
 //
-// Shared by Ben's Qt Quick apps (keep the copies the same).
-Menu {
+// Shared by Ben's Qt Quick apps: the canonical copy is in
+// hearth/shared/app-menus; hearth's scripts/sync-app-menus.sh copies it
+// into each app (keep the copies the same).
+MacMenu {
     id: root
     property var model: []
     signal triggered(string id)
 
-    // ---- look (override per app if needed) ----
-    property bool dark: palette.window.hslLightness < 0.5
-    property color accent: palette.highlight
-    readonly property real pt: 1.125   // hearth's point: 1.125 logical px
-    readonly property string family: {
-        const f = Qt.fontFamilies()
-        for (const n of ["SF Pro", "SF Pro Text", "Inter", "Inter Variable"]) if (f.indexOf(n) >= 0) return n
-        return font.family
+    // The row types (defaults: the Mac ones). An app may give its own: a
+    // MenuItem with a `shortcutText` property; a Menu for submenus; a
+    // MenuSeparator.
+    property Component itemDelegate: macItem
+    property Component submenuDelegate: macSubmenu
+    property Component separatorDelegate: macSeparator
+    Component { id: macItem; MacMenuItem {} }
+    Component { id: macSeparator; MacMenuSeparator {} }
+    Component { id: macSubmenu; MacMenu {} }
+    // Submenus get the root's look and icon settings.
+    function _share(sub) {
+        if (sub.dark !== undefined) sub.dark = Qt.binding(() => root.dark)
+        if (sub.accent !== undefined) sub.accent = Qt.binding(() => root.accent)
+        if (sub.iconUrl !== undefined) sub.iconUrl = Qt.binding(() => root.iconUrl)
+        if (sub.monoIcon !== undefined) sub.monoIcon = Qt.binding(() => root.monoIcon)
     }
-    readonly property real fontSize: Math.round(13 * pt * (family.indexOf("Inter") === 0 ? 0.962 : 1) * 10) / 10
-    readonly property color fg: dark ? "#f5f5f7" : "#1d1d1f"
-    readonly property color fgSecondary: dark ? Qt.rgba(1, 1, 1, 0.55) : Qt.rgba(0, 0, 0, 0.5)
-    readonly property color fgDisabled: dark ? Qt.rgba(1, 1, 1, 0.28) : Qt.rgba(0, 0, 0, 0.26)
-    readonly property color separatorColor: dark ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(0, 0, 0, 0.09)
-    readonly property color glassTint: dark ? Qt.rgba(0.17, 0.175, 0.19, 0.995) : Qt.rgba(0.975, 0.975, 0.98, 0.995)
-    readonly property color glassRim: dark ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.85)
-    readonly property color glassEdge: dark ? Qt.rgba(0, 0, 0, 0.6) : Qt.rgba(0, 0, 0, 0.13)
-    readonly property int radius: Math.round(12 * pt)
-    readonly property int rowHeight: Math.round(24 * pt)
-    readonly property int menuPad: Math.round(5 * pt)
-
-    // The menu item type: a MenuItem with a `shortcutText` property (the
-    // app's own look); the default is the glass row above.
-    property Component itemDelegate: glassItem
-    // The submenus' type (a Menu in the app's own look: background,
-    // padding, and `delegate` for its rows that open further submenus) and
-    // the separators'. Without them, the style's plain ones. Set the root's
-    // own `delegate` too, for its rows (each opens a submenu).
-    property Component submenuDelegate: glassSubmenu
-    property Component separatorDelegate: glassSeparator
-
-    // The root menu in the same look (submenus get it from glassSubmenu).
-    topPadding: menuPad + 0.001
-    bottomPadding: menuPad
-    leftPadding: menuPad + 0.001
-    rightPadding: menuPad
-    overlap: 3
-    cascade: true
-    // Kept inside the window: a menu taller than the room left scrolls
-    // instead of running off the edge (without margins a Popup.Item menu
-    // isn't constrained at all).
-    margins: Math.round(4 * pt)
-    delegate: glassItem
-    background: GlassBack {}
-    enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120; easing.type: Easing.OutCubic } }
-    exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 140 } }
     // Flat: every menu's items inline, a separator between menus (submenus
     // kept), as nixos-update-checker's hamburger does. For apps with short
     // menus; otherwise one submenu per menu (see the model options below).
@@ -167,6 +138,7 @@ Menu {
                 menu.addItem(obj)
             } else if (kind === "sub") {
                 obj = submenuDelegate.createObject(null, { title: it.text, enabled: it.enabled !== false })
+                root._share(obj)
                 if (it.icon && obj.icon) obj.icon.name = it.icon
                 stack.push(obj)
                 entries.push([obj, kind])
@@ -227,206 +199,14 @@ Menu {
     // Wide enough for the longest item and its shortcut (the style's
     // default is a fixed width that cuts long items off).
     function fitWidth(menu) {
+        // (A MacMenu sizes itself to its widest row; other menus are made
+        // wide enough here.)
+        if (menu.macStyle) return
         var w = 0
         for (var i = 0; i < menu.count; i++) {
             var it = menu.itemAt(i)
             if (it) w = Math.max(w, it.implicitWidth)
         }
         menu.width = Math.max(menu.implicitWidth, Math.ceil(w + menu.leftPadding + menu.rightPadding))
-    }
-    // ---- the glass look (grove's GMenu / GMenuItem / GlassPanel) ----
-    component GlassBack: Item {
-        implicitWidth: Math.round(200 * root.pt)
-        Rectangle {   // shadow
-            anchors.fill: parent
-            anchors.topMargin: 3
-            anchors.margins: -1
-            radius: root.radius + 1
-            color: "transparent"
-            border.width: 3
-            border.color: Qt.rgba(0, 0, 0, root.dark ? 0.22 : 0.06)
-        }
-        Rectangle {
-            anchors.fill: parent
-            radius: root.radius
-            color: root.glassTint
-            border.width: 1
-            border.color: root.glassEdge
-        }
-        Rectangle {   // sheen in the top part
-            anchors.fill: parent
-            anchors.margins: 1
-            radius: root.radius - 1
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.05 : 0.25) }
-                GradientStop { position: 0.35; color: Qt.rgba(1, 1, 1, 0) }
-            }
-        }
-        Rectangle {   // specular rim, lit from the top left
-            anchors.fill: parent
-            anchors.margins: 1
-            radius: root.radius - 1
-            color: "transparent"
-            border.width: 1
-            border.color: root.glassRim
-            opacity: 0.9
-        }
-    }
-    // A menu icon drawn pixel-exact. At a fractional scale (4/3) a 16 pt
-    // icon is 21.33 device pixels, so the 16 px symbol was stretched between
-    // pixels and its strokes went soft. Instead: an icon-theme design size
-    // (16/22/24/32 px) whose size in points is whole (Qt rounds sourceSize to
-    // whole points, then multiplies by the scale: 22 px can't be asked for at
-    // 4/3), the one nearest the wanted size, placed on the device pixel grid.
-    // At 4/3 that is 24 px (18 pt); at 1x and 2x, 16 and 32 px (16 pt).
-    component CrispIcon: IconImage {
-        id: ci
-        property real size: 16
-        readonly property real dpr: {
-            const w = ci.Window.window
-            return w && w.devicePixelRatio > 0 ? w.devicePixelRatio : (Screen.devicePixelRatio || 1)
-        }
-        readonly property int px: {
-            const want = size * dpr
-            let best = 0
-            for (const d of [16, 22, 24, 32]) {
-                const pt = d / dpr
-                if (Math.abs(pt - Math.round(pt)) > 0.01) continue
-                if (!best || Math.abs(d - want) < Math.abs(best - want)) best = d
-            }
-            return best
-        }
-        // (No exact size at this scale: the plain size, as before.)
-        readonly property int pt: px > 0 ? Math.round(px / dpr) : Math.round(size)
-        width: px > 0 ? px / dpr : size
-        height: width
-        sourceSize: Qt.size(pt, pt)
-        transform: Translate { id: gridSnap }
-        function snap() {
-            if (!visible || px <= 0) return
-            const p = mapToItem(null, 0, 0)
-            const rx = p.x - gridSnap.x, ry = p.y - gridSnap.y
-            gridSnap.x = Math.round(rx * dpr) / dpr - rx
-            gridSnap.y = Math.round(ry * dpr) / dpr - ry
-        }
-        onVisibleChanged: Qt.callLater(snap)
-        onXChanged: Qt.callLater(snap)
-        onYChanged: Qt.callLater(snap)
-        onDprChanged: Qt.callLater(snap)
-        Component.onCompleted: Qt.callLater(snap)
-    }
-    component GlassText: Text {
-        color: root.fg
-        font.family: root.family
-        font.pixelSize: root.fontSize
-        renderType: Text.NativeRendering
-        elide: Text.ElideRight
-        verticalAlignment: Text.AlignVCenter
-        textFormat: Text.PlainText
-    }
-    Component {
-        id: glassItem
-        MenuItem {
-            id: mi
-            // The key is the app's own Shortcut; this only shows it.
-            property string shortcutText: ""
-            // "name|fallback": the first name is used.
-            readonly property string iconName: (icon.name || "").split("|")[0]
-            implicitHeight: root.rowHeight
-            implicitWidth: Math.max(Math.round(200 * root.pt), lbl.implicitWidth + sc.implicitWidth + 70)
-            hoverEnabled: true
-            background: Rectangle {
-                radius: Math.round(8 * root.pt)
-                color: mi.highlighted && mi.enabled ? root.accent : "transparent"
-            }
-            indicator: Item {}
-            arrow: GlassText {
-                visible: mi.subMenu !== null
-                x: mi.width - width - 8
-                anchors.verticalCenter: parent.verticalCenter
-                text: "›"
-                font.pixelSize: Math.round(15 * root.pt)
-                color: mi.highlighted ? "#ffffff" : root.fgSecondary
-            }
-            contentItem: Item {
-                implicitWidth: lbl.implicitWidth + sc.implicitWidth + 60
-                // A toggle that's on: a soft accent square behind its icon
-                // (a ✓ when it has none).
-                Rectangle {
-                    visible: mi.checkable && mi.checked && mi.iconName !== ""
-                    x: -1
-                    width: 22; height: 22; radius: 5
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: mi.highlighted ? Qt.rgba(1, 1, 1, 0.25) : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.28)
-                }
-                GlassText {
-                    visible: mi.checkable && mi.checked && mi.iconName === ""
-                    x: 4
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "✓"
-                    color: mi.highlighted ? "#ffffff" : root.fg
-                }
-                CrispIcon {
-                    id: rowIcon
-                    visible: mi.iconName !== ""
-                    name: mi.iconName
-                    x: 2 + (16 - width) / 2
-                    anchors.verticalCenter: parent.verticalCenter
-                    opacity: mi.enabled ? 1 : 0.4
-                    // Placed again whenever the menu opens or moves (it opens at
-                    // a new spot, then is moved to stay inside the window).
-                    Connections {
-                        target: mi.menu
-                        function onOpened() { Qt.callLater(rowIcon.snap) }
-                        function onXChanged() { Qt.callLater(rowIcon.snap) }
-                        function onYChanged() { Qt.callLater(rowIcon.snap) }
-                    }
-                }
-                GlassText {
-                    id: lbl
-                    x: 24
-                    width: parent.width - x - sc.width - 8
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.verticalCenterOffset: 0.001
-                    text: mi.text
-                    color: !mi.enabled ? root.fgDisabled : mi.highlighted ? "#ffffff" : root.fg
-                }
-                GlassText {
-                    id: sc
-                    anchors.right: parent.right
-                    anchors.rightMargin: mi.subMenu ? 18 : 4
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.verticalCenterOffset: 0.001
-                    text: mi.shortcutText
-                    color: mi.highlighted ? "#ffffff" : root.fgSecondary
-                }
-            }
-        }
-    }
-    Component {
-        id: glassSubmenu
-        Menu {
-            topPadding: root.menuPad + 0.001
-            bottomPadding: root.menuPad
-            leftPadding: root.menuPad + 0.001
-            rightPadding: root.menuPad
-            overlap: 3
-            cascade: true
-            margins: Math.round(4 * root.pt)
-            delegate: glassItem
-            background: GlassBack {}
-            enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120; easing.type: Easing.OutCubic } }
-            exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 140 } }
-        }
-    }
-    Component {
-        id: glassSeparator
-        MenuSeparator {
-            topPadding: 4
-            bottomPadding: 4
-            leftPadding: 10
-            rightPadding: 10
-            contentItem: Rectangle { implicitHeight: 1; color: root.separatorColor }
-        }
     }
 }

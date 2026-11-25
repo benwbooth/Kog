@@ -47,7 +47,7 @@ ApplicationWindow {
                 TabButton { text: qsTr("Installed") }
             }
             Item { Layout.fillWidth: true }
-            ComboBox {
+            MacComboBox {
                 visible: !root.installedTab
                 model: [qsTr("Classic"), qsTr("Modern (experimental)")]
                 enabled: !root.library.busy

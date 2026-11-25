@@ -105,7 +105,7 @@ ApplicationWindow {
         readonly property var modulation: (owner.modulations || []).find(m => m.param === spec.id)
         spacing: 8
         Label { text: paramRow.spec.label; Layout.preferredWidth: 120; elide: Text.ElideRight }
-        ComboBox {
+        MacComboBox {
             visible: paramRow.spec.choices && paramRow.spec.choices.length > 0
             Layout.fillWidth: true
             model: paramRow.spec.choices || []
@@ -125,7 +125,7 @@ ApplicationWindow {
             Layout.preferredWidth: 80
             horizontalAlignment: Text.AlignRight
         }
-        ComboBox {
+        MacComboBox {
             visible: paramRow.modulatable && (!paramRow.spec.choices || paramRow.spec.choices.length === 0) && root.draft.modulators.length > 0
             Layout.preferredWidth: 150
             model: [qsTr("Fixed")].concat(root.draft.modulators.map((m, i) => qsTr("%1 %2").arg(m.kind === "lfo" ? qsTr("LFO") : qsTr("Envelope")).arg(i + 1)))
