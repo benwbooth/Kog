@@ -535,6 +535,12 @@ ApplicationWindow {
         clearTreeExpandRestore()
     }
 
+    // Files given on the command line or by a second launch (Open With in a
+    // file manager): played the way the "When opening files" setting says.
+    function openFiles(json) {
+        appController.activate_local_paths_json(String(json))
+    }
+
     function showFromTray() {
         if (modernLoader.item) modernLoader.item.hide()
         miniPlayer.hide()

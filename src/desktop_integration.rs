@@ -11,7 +11,10 @@ mod ffi {
         include!("kog/kog_single_instance.h");
 
         #[cxx_name = "kogSingleInstanceStart"]
-        fn single_instance_start() -> QString;
+        fn single_instance_start(files_json: &QString) -> QString;
+
+        #[cxx_name = "kogOpenFiles"]
+        fn open_files(files_json: &QString);
 
         type QApplication;
 
@@ -43,8 +46,13 @@ pub enum GuiInstance {
     Raised,
 }
 
-pub fn claim_gui_instance() -> Result<GuiInstance, String> {
-    match ffi::single_instance_start().to_string().as_str() {
+/// Becomes the one Kog window for this user, or wakes the running one and
+/// hands it `files_json` (a JSON array of paths; empty for none) to play.
+pub fn claim_gui_instance(files_json: &str) -> Result<GuiInstance, String> {
+    match ffi::single_instance_start(&cxx_qt_lib::QString::from(files_json))
+        .to_string()
+        .as_str()
+    {
         "primary" => Ok(GuiInstance::Primary),
         "raised" => Ok(GuiInstance::Raised),
         error => Err(error.to_owned()),
@@ -109,6 +117,12 @@ fn settings_port(
             cxx_qt_lib::QString::default()
         }
     }
+}
+
+/// Plays the files in `files_json` (a JSON array of paths) in this
+/// process's main window: the first now, the rest queued.
+pub fn open_files(files_json: &str) {
+    ffi::open_files(&cxx_qt_lib::QString::from(files_json));
 }
 
 pub fn apply_application_icon() {

@@ -1131,6 +1131,23 @@ fn prepare_scan_input(
     }
 }
 
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// A missing or unreadable file or folder, in plain words for the status line.
+fn unreadable_path_warning(path: &Path, error: &std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => format!("can't find “{}”", display_name(path)),
+        std::io::ErrorKind::PermissionDenied => {
+            format!("can't open “{}”: permission denied", display_name(path))
+        }
+        _ => format!("can't open “{}”: {error}", display_name(path)),
+    }
+}
+
 fn prepare_scan_file(
     path: PathBuf,
     decoders: &DecoderRegistry,
@@ -1144,6 +1161,14 @@ fn prepare_scan_file(
         warnings: Vec::new(),
     };
     if !decoders.accepts_path(&path) {
+        // Files found in a folder are skipped quietly; one asked for by name
+        // (Open With, a drop, the command line) says why nothing played.
+        if explicit_root {
+            prepared.warnings.push(format!(
+                "can't play “{}”: Kog doesn't know this kind of file",
+                display_name(&path)
+            ));
+        }
         return prepared;
     }
     if !kog_audio::library_policy::include_discovered_file(
@@ -1279,7 +1304,7 @@ fn scan_directory_paths(
                 if !send_directory_scan_event(
                     &sender,
                     &cancel,
-                    DirectoryScanEvent::Warning(format!("reading {}: {error}", root.display())),
+                    DirectoryScanEvent::Warning(unreadable_path_warning(&root, &error)),
                 ) {
                     return;
                 }
@@ -3412,6 +3437,7 @@ impl qobject::AppController {
         let scans = std::mem::take(&mut self.as_mut().rust_mut().directory_scans);
         let mut pending = Vec::new();
         let mut completed = Vec::new();
+        let mut reports = Vec::new();
         let mut scanned = 0;
         let mut prepared = 0;
         let mut current_path = None;
@@ -3449,6 +3475,8 @@ impl qobject::AppController {
                         error: "Music load cancelled".into(),
                     }
                 } else {
+                    let notable = scan.combined.added == 0 || scan.combined.warning.is_some();
+                    reports.push((notable, add_path_status(&scan.combined)));
                     IoResult::Expanded {
                         tracks: scan.prepared_tracks,
                     }
@@ -3480,6 +3508,14 @@ impl qobject::AppController {
         for (token, result) in completed {
             self.as_mut()
                 .session_command(SessionCommand::Complete { token, result });
+        }
+        // What was skipped and why (a missing file, one Kog can't play),
+        // after the session's own status so it isn't replaced at once; a
+        // load that added nothing must not stay at "Loading music…".
+        let loading = self.as_ref().rust().status.to_string() == "Loading music…";
+        if reports.iter().any(|(notable, _)| *notable) || (loading && !reports.is_empty()) {
+            let report = reports.into_iter().map(|(_, report)| report).collect::<Vec<_>>();
+            self.as_mut().set_status(qstring(report.join("; ")));
         }
         if !active {
             self.as_mut()

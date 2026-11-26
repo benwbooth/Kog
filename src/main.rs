@@ -56,20 +56,56 @@ enum Mode {
     Server,
 }
 
+/// What the command line asked for: a mode and, for the desktop app, the
+/// audio files to open (absolute paths, in the order given).
+#[derive(Debug, PartialEq, Eq)]
+struct Launch {
+    mode: Mode,
+    files: Vec<std::path::PathBuf>,
+}
+
+/// A file argument as a local path: `file://` URIs (what file managers pass
+/// for `%U`) decoded, relative paths made absolute against `cwd` so a running
+/// Kog in another directory finds them. Other URI schemes are refused.
+fn file_argument(arg: &str, cwd: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let path = if arg.starts_with("file:") {
+        url::Url::parse(arg)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .ok_or_else(|| format!("{arg} is not a local file"))?
+    } else if arg.contains("://") {
+        return Err(format!("{arg} is not a local file (only local files can be opened)"));
+    } else {
+        std::path::PathBuf::from(arg)
+    };
+    Ok(if path.is_absolute() { path } else { cwd.join(path) })
+}
+
 fn select_mode(
     args: impl IntoIterator<Item = String>,
     terminal: bool,
     tui_supported: bool,
-) -> Result<Option<Mode>, String> {
+    cwd: &std::path::Path,
+) -> Result<Option<Launch>, String> {
     let mut chosen = None;
+    let mut files = Vec::new();
+    let mut options_done = false;
     for arg in args {
+        if options_done || !arg.starts_with('-') || arg == "-" {
+            files.push(file_argument(&arg, cwd)?);
+            continue;
+        }
         let mode = match arg.as_str() {
+            "--" => {
+                options_done = true;
+                continue;
+            }
             "--gui" => Mode::Gui,
             "--tui" => Mode::Tui,
             "--server" | "--headless" => Mode::Server,
             "--help" | "-h" => {
                 println!(
-                    "Kog {}\n\nUsage: kog [--gui | --tui | --server]\n\n  --gui       Open the Qt desktop app\n  --tui       Open the terminal player\n  --server    Serve the web app without a UI\n  --help      Show this help\n  --version   Show the version",
+                    "Kog {}\n\nUsage: kog [--gui | --tui | --server] [FILE...]\n\n  --gui       Open the Qt desktop app\n  --tui       Open the terminal player\n  --server    Serve the web app without a UI\n  --help      Show this help\n  --version   Show the version\n\n  FILE...     Audio files (paths or file:// URIs) to play in the desktop\n              app: the first starts now, the rest are queued. A running\n              Kog plays them instead of a new one starting.",
                     env!("CARGO_PKG_VERSION")
                 );
                 return Ok(None);
@@ -87,11 +123,16 @@ fn select_mode(
     if chosen == Some(Mode::Tui) && !tui_supported {
         return Err("--tui is currently supported on Unix terminals only".to_owned());
     }
-    Ok(Some(chosen.unwrap_or(if terminal && tui_supported {
+    if !files.is_empty() && matches!(chosen, Some(Mode::Tui | Mode::Server)) {
+        return Err("files can only be opened in the desktop app (--gui)".to_owned());
+    }
+    // Files always mean the desktop app, even typed in a terminal.
+    let mode = chosen.unwrap_or(if terminal && tui_supported && files.is_empty() {
         Mode::Tui
     } else {
         Mode::Gui
-    })))
+    });
+    Ok(Some(Launch { mode, files }))
 }
 
 fn main() {
@@ -99,8 +140,9 @@ fn main() {
     kog_server::discover::helper::run_if_requested();
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let tui_supported = cfg!(unix);
-    let mode = match select_mode(std::env::args().skip(1), terminal, tui_supported) {
-        Ok(Some(mode)) => mode,
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let Launch { mode, files } = match select_mode(std::env::args().skip(1), terminal, tui_supported, &cwd) {
+        Ok(Some(launch)) => launch,
         Ok(None) => return,
         Err(error) => {
             eprintln!("kog: {error}");
@@ -134,7 +176,25 @@ fn main() {
 
     QGuiApplication::set_desktop_file_name(&QString::from("org.kog.player"));
     application.set_application_name(&QString::from("Kog"));
-    match desktop_integration::claim_gui_instance() {
+    // Said here as well as in the app's status line: a launcher's log shows
+    // why nothing played.
+    for file in &files {
+        if !file.exists() {
+            eprintln!("kog: can't find {}", file.display());
+        }
+    }
+    let files_json = if files.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(
+            &files
+                .iter()
+                .map(|file| file.to_string_lossy())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default()
+    };
+    match desktop_integration::claim_gui_instance(&files_json) {
         Ok(desktop_integration::GuiInstance::Primary) => {}
         Ok(desktop_integration::GuiInstance::Raised) => return,
         Err(error) => {
@@ -180,6 +240,11 @@ fn main() {
     desktop_integration::apply_application_icon();
     desktop_integration::restore_main_window();
     restore_launch_env();
+    // Files from the command line play once the window (and its player)
+    // exists; a running Kog gets them over the activation socket instead.
+    if !files_json.is_empty() {
+        desktop_integration::open_files(&files_json);
+    }
 
     application.exec();
     // Hand the background jobs (library index, sound model) to the server
@@ -231,30 +296,50 @@ fn dev_qml_imports(_directory: &std::path::Path) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
 
+    fn mode(args: &[&str], terminal: bool, tui: bool) -> Result<Option<Mode>, String> {
+        select_mode(args.iter().map(|a| a.to_string()), terminal, tui, std::path::Path::new("/w"))
+            .map(|launch| launch.map(|launch| launch.mode))
+    }
+
     #[test]
     fn selects_terminal_only_for_interactive_launches() {
+        assert_eq!(mode(&[], true, true).unwrap(), Some(Mode::Tui));
+        assert_eq!(mode(&[], false, true).unwrap(), Some(Mode::Gui));
+        assert_eq!(mode(&[], true, false).unwrap(), Some(Mode::Gui));
+        assert_eq!(mode(&["--gui"], true, false).unwrap(), Some(Mode::Gui));
+        assert_eq!(mode(&["--server"], false, false).unwrap(), Some(Mode::Server));
+        assert!(mode(&["--tui"], true, false).is_err());
+        assert!(mode(&["--tui", "--gui"], true, true).is_err());
+        assert!(mode(&["--bogus"], false, true).is_err());
+    }
+
+    #[test]
+    fn accepts_files_and_file_uris_for_the_desktop_app() {
+        let launch = select_mode(
+            [
+                "song.wav",
+                "file:///music/My%20Song.flac",
+                "/abs/b.mod",
+                "--",
+                "--odd-name.mp3",
+            ]
+            .map(String::from),
+            true,
+            true,
+            std::path::Path::new("/w"),
+        )
+        .unwrap()
+        .unwrap();
+        // Files mean the desktop app even from a terminal.
+        assert_eq!(launch.mode, Mode::Gui);
         assert_eq!(
-            select_mode(Vec::new(), true, true).unwrap(),
-            Some(Mode::Tui)
+            launch.files,
+            ["/w/song.wav", "/music/My Song.flac", "/abs/b.mod", "/w/--odd-name.mp3"]
+                .map(std::path::PathBuf::from)
         );
-        assert_eq!(
-            select_mode(Vec::new(), false, true).unwrap(),
-            Some(Mode::Gui)
-        );
-        assert_eq!(
-            select_mode(Vec::new(), true, false).unwrap(),
-            Some(Mode::Gui)
-        );
-        assert_eq!(
-            select_mode(["--gui".to_owned()], true, false).unwrap(),
-            Some(Mode::Gui)
-        );
-        assert_eq!(
-            select_mode(["--server".to_owned()], false, false).unwrap(),
-            Some(Mode::Server)
-        );
-        assert!(select_mode(["--tui".to_owned()], true, false).is_err());
-        assert!(select_mode(["--tui".to_owned(), "--gui".to_owned()], true, true).is_err());
+        assert!(mode(&["--server", "a.wav"], false, true).is_err());
+        assert!(mode(&["--tui", "a.wav"], true, true).is_err());
+        assert!(mode(&["https://example.com/a.mp3"], false, true).is_err());
     }
 }
 

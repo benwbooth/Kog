@@ -5,6 +5,7 @@
 #include <QtCore/QLockFile>
 #include <QtCore/QMetaObject>
 #include <QtCore/QObject>
+#include <QtCore/QVariant>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
 #include <QtCore/QThread>
@@ -105,17 +106,52 @@ bool raiseMainWindow()
     return true;
 }
 
+QWindow *playerRoot()
+{
+    for (QWindow *window : QGuiApplication::topLevelWindows()) {
+        if (window->objectName() == QStringLiteral("kogMainWindow")) {
+            return window;
+        }
+    }
+    return nullptr;
+}
+
+// Requests are read only once the event loop runs, after Main.qml loaded, so
+// the window is there unless loading it failed.
+void deliverFiles(const QString &filesJson)
+{
+    if (filesJson.isEmpty()) {
+        return;
+    }
+    QWindow *window = playerRoot();
+    if (!window || !QMetaObject::invokeMethod(window, "openFiles",
+                                              Q_ARG(QVariant, QVariant(filesJson)))) {
+        qWarning("Kog: no main window to open files in");
+    }
+}
+
 enum class RaiseResult { Unavailable, Raised, Rejected };
 
-RaiseResult requestRaise(const QString &name)
+// The request is "R" (raise) or "RF" + a JSON array of paths + "\n" (raise and
+// play them). Kogs older than the files request read only the "R".
+RaiseResult requestRaise(const QString &name, const QString &filesJson)
 {
     QLocalSocket socket;
     socket.connectToServer(name);
     if (!socket.waitForConnected(100)) {
         return RaiseResult::Unavailable;
     }
-    if (socket.write("R", 1) != 1 || !socket.waitForBytesWritten(1000)) {
+    QByteArray request("R");
+    if (!filesJson.isEmpty()) {
+        request += 'F' + filesJson.toUtf8() + '\n';
+    }
+    if (socket.write(request) != request.size()) {
         return RaiseResult::Rejected;
+    }
+    while (socket.bytesToWrite() > 0) {
+        if (!socket.waitForBytesWritten(1000)) {
+            return RaiseResult::Rejected;
+        }
     }
     if (!socket.waitForReadyRead(5000)) {
         return RaiseResult::Rejected;
@@ -126,11 +162,24 @@ RaiseResult requestRaise(const QString &name)
 void acceptRaiseRequests(QLocalServer *server)
 {
     while (QLocalSocket *socket = server->nextPendingConnection()) {
-        auto handleRequest = [socket] {
+        auto buffer = std::make_shared<QByteArray>();
+        auto handleRequest = [socket, buffer] {
             if (socket->bytesAvailable() == 0) {
                 return;
             }
-            const bool valid = socket->readAll().contains('R');
+            buffer->append(socket->readAll());
+            // A files request is complete at its newline.
+            if (buffer->startsWith("RF") && !buffer->contains('\n')) {
+                return;
+            }
+            const bool valid = buffer->contains('R');
+            if (buffer->startsWith("RF")) {
+                const QByteArray json = buffer->mid(2, buffer->indexOf('\n') - 2);
+                // After replying: playing them may take a moment, and the
+                // launching process waits only so long.
+                QTimer::singleShot(0, qApp, [json] { deliverFiles(QString::fromUtf8(json)); });
+            }
+            buffer->clear();
             socket->write(valid && raiseMainWindow() ? "OK\n" : "NO_WINDOW\n");
             socket->flush();
             socket->disconnectFromServer();
@@ -143,7 +192,12 @@ void acceptRaiseRequests(QLocalServer *server)
 
 } // namespace
 
-QString kogSingleInstanceStart()
+void kogOpenFiles(const QString &filesJson)
+{
+    deliverFiles(filesJson);
+}
+
+QString kogSingleInstanceStart(const QString &filesJson)
 {
     if (guiLock) {
         return QStringLiteral("primary");
@@ -172,7 +226,7 @@ QString kogSingleInstanceStart()
         if (lock->error() != QLockFile::LockFailedError) {
             return QStringLiteral("cannot lock Kog's per-user GUI instance: ") + lock->fileName();
         }
-        switch (requestRaise(address)) {
+        switch (requestRaise(address, filesJson)) {
         case RaiseResult::Raised:
             return QStringLiteral("raised");
         case RaiseResult::Rejected:
@@ -191,7 +245,7 @@ QString kogSingleInstanceStart()
     if (!server->listen(address)) {
         // A socket can remain after a killed GUI. Check for an answering
         // server before removing it, even though we now hold the user lock.
-        switch (requestRaise(address)) {
+        switch (requestRaise(address, filesJson)) {
         case RaiseResult::Raised:
             delete server;
             return QStringLiteral("raised");
