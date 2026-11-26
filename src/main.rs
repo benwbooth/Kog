@@ -18,14 +18,13 @@ use std::io::IsTerminal;
 /// Qt Quick Controls' Basic style, coloured by Kog's own palette (light or
 /// dark as the desktop is, see kog_desktop_integration.cpp), the same on every
 /// desktop. The platform theme stays whatever the session chose, so file
-/// dialogs, fonts and icons still come from the desktop. An explicit
-/// QT_QUICK_CONTROLS_STYLE wins.
+/// dialogs, fonts and icons still come from the desktop. KOG_STYLE picks
+/// another. (Not the session's QT_QUICK_CONTROLS_STYLE: hearth sets that for
+/// other apps, org.hearth.desktop, 2026-11-25.)
 fn configure_controls_style() {
-    if std::env::var_os("QT_QUICK_CONTROLS_STYLE").is_none() {
-        // SAFETY: this runs before Qt, Rodio, or any other worker threads
-        // are created, so no concurrent environment access is possible.
-        set_qt_env("QT_QUICK_CONTROLS_STYLE", "Basic");
-    }
+    // SAFETY: this runs before Qt, Rodio, or any other worker threads
+    // are created, so no concurrent environment access is possible.
+    set_qt_env("QT_QUICK_CONTROLS_STYLE", std::env::var("KOG_STYLE").unwrap_or_else(|_| "Basic".into()));
 }
 
 /// Text drawn the way egui draws the Earshot-look demo: each glyph rasterised
